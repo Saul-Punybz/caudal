@@ -36,7 +36,7 @@ Commercial (prices as reported by agents, **unverified**): Wowza Streaming Engin
 
 ## Where Caudal is genuinely different (verified by our own tests)
 
-1. **One small, memory-safe binary with every modern protocol**: RTMP/E-RTMP, SRT, WHIP, RTSP (in progress) in; LL-HLS, WHEP, MoQ, SRT, RTSP (in progress) out; recording/VOD/clips; tokens; webhooks; HTTPS/HTTP2/ACME; UI. ~3 MB vs MediaMTX's 54 MB.
+1. **One small, memory-safe binary with every modern protocol**: RTMP/E-RTMP, SRT, WHIP, RTSP (in progress) in; LL-HLS, WHEP, MoQ, SRT, RTSP (in progress) out; recording/VOD/clips; tokens; webhooks; HTTPS/HTTP2/ACME; UI. Release binary 11.7 MB on 18 Sep morning (before RTSP, transcoding and channels; re-measure) vs MediaMTX's 54 MB. The ~3 MB figure was M1 only.
 2. **Apple-validated LL-HLS** with rendition reports coming (batch 7) and measured latency: Chrome 1.66 s, Firefox 1.10 s steady; Safari 0.4–0.85 s over HTTP/2 when it joins in low-latency mode.
 3. **Permissive license** (MIT OR Apache-2.0) where the closest feature-peer, OvenMediaEngine, is AGPL.
 4. **MoQ + WHEP + LL-HLS side by side** in the same player UI (MoQ itself is also in MediaMTX).

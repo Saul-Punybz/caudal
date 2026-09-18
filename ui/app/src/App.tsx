@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom';
 import { NavRail } from './components/NavRail';
 import { Overview } from './pages/Overview';
 import { StreamDetail } from './pages/StreamDetail';
+import { Publish } from './pages/Publish';
 
 export function App() {
   return (
@@ -9,6 +10,7 @@ export function App() {
       <NavRail />
       <Routes>
         <Route path="/" element={<Overview />} />
+        <Route path="/publish" element={<Publish />} />
         <Route path="/streams/:name" element={<StreamDetail />} />
         <Route
           path="*"

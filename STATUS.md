@@ -1,18 +1,18 @@
 # STATUS — Caudal
 
-**Last updated:** 19 Sep 2026 (multistreaming merged; wave 1 of batch 8/9 running: SCTE-35, UI screens, RTSP UDP/RTSPS)
+**Last updated:** 19 Sep 2026 (wave 1 merged: SCTE-35, UI screens, RTSP UDP/RTSPS; wave 2 running)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
 ## RESUME HERE (19 Sep 2026)
-`main` pushed: multistreaming merged and verified (clippy 0, deny ok, workspace 200/200, e2e 15/15).
-**Wave 1 running** (agents in worktrees, merge branch by branch with tests between each):
-1. SCTE-35 (Opus): brief = item 3 of the previous resume point, `docs/research/SCTE35.md`.
-2. UI screens (Sonnet): Channels, Restreams, Recordings, "Copy for OBS".
-3. RTSP over UDP + RTSPS (Sonnet): MediaMTX gap (1).
-**Wave 2, after merging wave 1** (all touch `main.rs`/config, so not in parallel with wave 1): hot config reload (Sonnet), admin login + health alerts (Sonnet), benchmark vs MediaMTX v1.21 (Opus, on a quiet machine: no agents compiling).
-Open decision for Saul: commit `6ec88ee` carried 87 MB of build output (`vendor/scuffle-rtmp/target`), removed in the next commit but still in history; rewriting needs a force push to `main`. Saul declined the rewrite (19 Sep): the 87 MB stay in history. scuffle-rtmp bug reported upstream: https://github.com/ScuffleCloud/scuffle/issues/650.
+`main` pushed and verified after wave 1: clippy 0, deny ok, workspace 237/237 (twice), e2e 15/15 with Apple's validator required.
+**Wave 1 merged:** SCTE-35 (TS 0x86 + RTMP onCuePoint + `POST /api/v1/streams/{name}/cues` in; LL-HLS `EXT-X-DATERANGE` + TS PID 0x103 out), UI screens (Channels, Restreams, Recordings, Copy for OBS), RTSP over UDP unicast + RTSPS (`[rtsp] udp_port_range`, `tls_bind`). MSRV is now **1.95** (scte35-splice).
+**Wave 2 running:** hot config reload (Sonnet), admin login + health alerts (Sonnet). Then the benchmark vs MediaMTX v1.21 (Opus) on a quiet machine.
+**SCTE-35 open items (agent's report):** API can't request `splice_insert` (always time_signal); RTMP `onCuePoint` layouts not checked against a real encoder (`duration` read as seconds); cues placed on video DTS, not PTS (off by the B-frame reorder delay); a cue before the first keyframe is dropped; cues inside 24/7 channel files ignored; never played through a real SSAI system.
+**Not verified:** RTSP with VLC (not installed), RTCP SR consumed by a real receiver; UI Skip button on a real channel, Restreams screen with a live target.
+Decisions: history rewrite declined by Saul (87 MB stay). scuffle-rtmp bug reported upstream: https://github.com/ScuffleCloud/scuffle/issues/650.
+Test hygiene (19 Sep): WebRTC/SRT/RTMP tests probed a free port, released it, then bound it; parallel tests' sockets took it first. WebRTC now binds port 0; SRT/RTMP retry when `serve` exits at once.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps
 `scuffle-rtmp` 0.2.3 (latest) returned the previous header unchanged for every Type 3 chunk, so a Type 3 chunk that starts a new message kept the previous timestamp instead of adding the delta (RTMP spec 5.3.1.2.4; FFmpeg `rtmppkt.c`). Any encoder that sends constant-rate frames as Type 3 got frozen timestamps **on Caudal's RTMP ingest**. Found by `caudal-restream`'s loopback test. Patched copy in `vendor/scuffle-rtmp` (`[patch.crates-io]`), regression test fails upstream (`[10, 50, 50, 50]`) and passes patched. Also fixed: the SRT tests probed TCP for free ports while SRT binds UDP (failed every full-workspace run); `caudal-restream`'s push loop now only reads inside `select!` (a cancelled write could corrupt the chunk stream).
@@ -21,10 +21,10 @@ Open decision for Saul: commit `6ec88ee` carried 87 MB of build output (`vendor/
 | Area | State |
 |---|---|
 | Ingest | RTMP/E-RTMP, SRT, WHIP, RTSP pull (retina), 24/7 channel from files (M13) |
-| Output | LL-HLS (Apple-validated, multi-rendition, rendition reports), WHEP, MoQ, SRT push/listen, RTSP server (TCP interleaved), multistreaming RTMP/RTMPS push (`[[restream]]`, `/api/v1/restreams`) |
+| Output | LL-HLS (Apple-validated, multi-rendition, rendition reports), WHEP, MoQ, SRT push/listen, RTSP server (TCP interleaved, UDP unicast, RTSPS), SCTE-35 cues (DATERANGE, TS), multistreaming RTMP/RTMPS push (`[[restream]]`, `/api/v1/restreams`) |
 | Processing | Transcoding ladders (ffmpeg default, rusty_h264 in-process), recording + VOD + clips |
 | Platform | TOML config, API, metrics, TLS/HTTP2/ACME, tokens + webhooks, M3 UI (Overview, Stream, Publish) |
-| Running | Wave 1: SCTE-35, UI screens (Channels, Restreams, Recordings), RTSP UDP + RTSPS |
+| Running | Wave 2: hot config reload, admin login + health alerts |
 | Next | Batch 9: SCTE-35 (`docs/research/SCTE35.md`), admin login, health alerts. Roadmap in `PLAN.md` |
 | OMT | `vmx-codec` ported in pure Rust, byte-identical to libvmx both ways; private repo `Saul-Punybz/open-media-transport` |
 

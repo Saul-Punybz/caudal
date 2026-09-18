@@ -116,11 +116,12 @@ license re-checked by hand with `gh api` and crates.io. Tiers match
 | VOD MP4 demux | kixelated/mp4-atom | 0.15.0 | MIT OR Apache-2.0 | 30 | Sep 2026 | depend (already chosen) |
 | Audio demux/decode | pdeljanov/Symphonia | 0.6.1 | **MPL-2.0** | — | Aug 2026 | depend unmodified only if needed; file-level copyleft |
 | NDI | grafton-ndi (best Rust binding: NDI 6, discovery, send/receive, tally, tokio-friendly) | 1.0.0 | Apache-2.0 bindings over **proprietary Vizrt SDK** | 34 | Jun 2026 | optional plugin only, behind a feature flag, with the user installing Vizrt's SDK; never in the default binary |
-| NDI alternative | cool-japan/oximedia (`oximedia-videoip`) | 0.2.1 | **no license file** | 257 | Sep 2026 | skip until licensed and proven; single author, created Feb 2026 |
+| NDI alternative: **Open Media Transport (OMT)** | github.com/openmediatransport: `libomtnet` (reference, C#, 10,580 lines), `libvmx` (VMX codec, C, 23,472 lines incl. AVX2/NEON), `OMTDiscoveryServer`; ecosystem: OBS plugin, FFmpeg-OMT, TouchDesigner, Resolume, Raspberry Pi 5 encoder/player | 2026 | MIT | 26 / 24 | Sep 2026 | **port to pure Rust** (planned milestone M12): protocol from libomtnet, VMX from libvmx with SIMD behind `std::arch`, discovery via `mdns-sd`. No pure-Rust OMT exists; `libomt` crate 0.2.0 wraps the C/.NET libraries |
+| NDI alternative (other) | cool-japan/oximedia (`oximedia-videoip`) | 0.2.1 | **no license file** | 257 | Sep 2026 | skip until licensed and proven; single author, created Feb 2026 |
 | PSSH boxes (DRM ids) | emarsden/pssh-box-rs (`pssh-box`) | 0.2.5 | MIT | 16 | Jul 2026 | depend |
 | CENC/CBCS packaging | vbasky/sheathe (`sheathe-crypto`, `sheathe-mp4`) | 0.6.1 | MIT OR Apache-2.0 (declared on crates.io; GitHub detects no license file) | 16 | Sep 2026 | trial for CENC before writing our own; `oximedia-drm` 0.2.1 (Apache-2.0, part of a one-author mega-project from Feb 2026) as reference |
 | AES-128 HLS segments | `aes` + `cbc` crates | — | MIT/Apache | — | — | write ourselves (small) |
-| Widevine / FairPlay packager | none legitimate in Rust | — | — | — | — | skip; both need vendor licensing |
+| Widevine / FairPlay packager | none legitimate in any language | — | — | — | — | not a code gap: browsers' CDMs only accept licenses signed by Google / Apple. Open path: CENC/ClearKey (W3C) + play tokens (M7, done); for studio-grade DRM, package CENC and let a commercial license server (EZDRM, Axinom, …) issue Widevine/FairPlay licenses |
 | DASH MPD generation | emarsden/dash-mpd-rs (`dash-mpd`) | 0.20.4 | MIT | 111 | Sep 2026 | depend (has a write path) |
 | WebVTT/TTML → HLS | fishloa/rust-broadcast, subtitle-rs | 0.1.x / 2.7.1 | Apache-2.0 | 1 / 3 | 2026 | write ourselves; thin glue over WebVTT segments |
 | Audio-only HLS (AAC/Opus) | compose mp4-atom + our packager | — | — | — | — | no extra crate needed |

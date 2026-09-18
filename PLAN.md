@@ -100,7 +100,8 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [ ] **M8: Recording and VOD.** MP4 to disk, DVR window, MP4/TS/MKV file inputs.
 - [ ] **M9: RTSP** pull (retina) and server.
 - [ ] **M10: Clustering.** Origin-edge.
-- [ ] **M11: Transcoding.** External ffmpeg process, never linked, so no GPL.
+- [ ] **M11: Transcoding.**
+- [ ] **M12: Open Media Transport (OMT), the open NDI alternative.** Pure-Rust port of the MIT reference (libomtnet C#, ~10.6K lines) and the VMX codec (libvmx C, ~23.5K lines incl. SIMD), mDNS discovery with `mdns-sd`. First native Rust OMT. Send and receive, so Caudal can take in and put out LAN video for live production. External ffmpeg process, never linked, so no GPL.
 
 MistServer outputs that are dead in 2026 (HDS, Flash, Smooth Streaming) are
 not being ported.
@@ -143,5 +144,5 @@ claiming in public.
 ### C. Later
 - HDR metadata passthrough (HEVC SEI via `hevc_parser`), Dolby Vision RPU.
 - Scheduled/playlist channels from VOD files (keep small; ANTENA787 is the real playout).
-- NDI: no pure-Rust option and the SDK is proprietary; skip unless a patent-free alternative matures.
+- NDI itself: proprietary SDK, license restricts reverse engineering, trademarked. Covered instead by OMT (M12), an MIT protocol for the same job.
 - Content protection: CENC/ClearKey first, Widevine/FairPlay only with a real customer.

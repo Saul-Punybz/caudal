@@ -1,6 +1,6 @@
 # STATUS — Caudal
 
-**Last updated:** 18 Sep 2026 (batch 3 closed except the Safari measurement)
+**Last updated:** 18 Sep 2026 (batch 4 closed: WebRTC)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
@@ -104,6 +104,15 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
+
+## Batch 4 result (18 Sep 2026): M5 WebRTC
+Merged M (str0m engine: WHIP ingest, WHEP playback, one UDP socket, ICE-lite, PLI, token gate, CORS; pure-Rust crypto backend), N (Opus in LL-HLS: `Opus`/`dOps`, TOC durations, `CODECS="opus"`), O (UI: LL-HLS/WebRTC toggle, WHEP player with buffer readout, `/publish` webcam page over WHIP, play tokens in the UI).
+
+**Verified:** caudal-webrtc 14/14 (ffmpeg WHIP publish → H.264 1280x720 + Opus, DELETE, 409/400/406, gate 401/403/201, a str0m WHEP client receives IDR with SPS/PPS + Opus); caudal-hls 19/19 (Opus); UI 29/29; e2e `whip_publish_plays_as_ll_hls` **passes** against the real binary (ffmpeg 9 WHIP muxer); **WHEP plays in Chromium through the UI** (`tests/browser/tests/whep.spec.ts`: 2.82 s advanced in 3 s, ≈ 9 ms jitter buffer, AAC-source note shown).
+
+**Not verified yet:** WHEP in Firefox (not run: the laptop was hot after a release build); the `/publish` webcam page against a real camera; Safari native HLS with Opus audio (Apple's validator flags `-50010 Unrecognized codec: opus`, since Apple's HLS spec has no Opus; hls.js browsers play it).
+
+**Known limits:** no TURN / server-reflexive candidates / trickle ICE (PATCH → 405); AAC sources play over WHEP video-only (needs M11 audio transcoding); B-frame sources flagged, sent with pts timestamps; A/V start offset from first arrival, not RTCP SR.
 
 ## Batch 4 (launched 18 Sep 2026): M5 WebRTC
 **Goal:** publish from a browser or ffmpeg over WHIP and it plays everywhere (LL-HLS and WHEP); play any stream over WHEP with sub-second latency.

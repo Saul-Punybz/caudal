@@ -18,8 +18,8 @@ another language; write it only if nothing exists.
 | WebRTC / WHIP / WHEP | `str0m` | 0.23.1 | MIT OR Apache-2.0 | github.com/algesten/str0m | Aug 2026 | dependency |
 | MoQ transport | `moq-net` (was `moq-lite`) | 0.2.22 | MIT OR Apache-2.0 | github.com/moq-dev/moq | Sep 2026 | dependency |
 | MoQ media | `hang` | 0.20.13 | MIT OR Apache-2.0 | same | Sep 2026 | dependency |
-| MoQ relay + clustering | `moq-relay` | 0.14.18 | MIT OR Apache-2.0 | same | Sep 2026 | dependency or reference; already does cluster mesh and path-scoped JWT |
-| SRT | `rsrt` | 0.3.6 | Apache-2.0 | github.com/cesbo/rsrt | Sep 2026 | dependency. Pure Rust, tokio, HaiCrypt AES. Verified 17 Sep 2026: 668 tests pass incl. 101 interop tests against libsrt 1.5.6 in both directions; manual libsrt→rsrt: 700 pkts, 0 lost. Fallbacks: `shiguredo_srt` (sans-I/O, Apache-2.0), `srt-tokio` (stale 2024) |
+| MoQ relay + clustering | `moq-relay` | 0.14.18 | MIT OR Apache-2.0 | same | Sep 2026 | **embeddable library** as well as a binary (`rs/moq-relay/src/lib.rs`: `Relay::load` / `Relay::run`); cluster mesh and path-scoped JWT |
+| SRT | `rsrt` | 0.3.6 | MIT OR Apache-2.0 | github.com/cesbo/rsrt | Sep 2026 | dependency (in use since batch 2). Pure Rust, tokio, HaiCrypt AES; listener and caller can both send. Its authors document interop with libsrt 1.4.4; on 17 Sep 2026 we ran its 668 tests incl. 101 interop tests against the libsrt 1.5.6 installed here, and a manual libsrt→rsrt run (700 pkts, 0 lost). Fallbacks: `shiguredo_srt` (sans-I/O, Apache-2.0), `srt-tokio` (stale 2024) |
 | RIST | `rist-core` + `rist-mio` | 0.1.0 | MIT | github.com/wavey-ai/rist-rs | Aug 2026 | trial. Pure-Rust sans-I/O engine with a C-parity checklist: Simple + Main profiles, SRP/PSK, NACK/recovery, IPv4/6 done; multicast, multipath, Advanced profile not. 210 tests, interop suite vs librist. Repo also ships `rist-sys` (C bindings): not used |
 | RTSP client (pull) | `retina` | 0.4.20 | MIT/Apache-2.0 | github.com/scottlamb/retina | Aug 2026 | dependency |
 | JWT | `jsonwebtoken` | 11.1.0 | MIT | github.com/Keats/jsonwebtoken | Sep 2026 | dependency |
@@ -37,7 +37,7 @@ No usable Rust version exists for these. All three Go sources are MIT, so portin
 
 | What | Go source | Why |
 |---|---|---|
-| RTSP **server** | github.com/bluenviron/gortsplib | Rust only has clients (`retina`) |
+| RTSP **server** | github.com/bluenviron/gortsplib | superseded 18 Sep 2026: Rust server pieces exist after all (see M9 below) |
 | LL-HLS server behavior | github.com/bluenviron/gohlslib + mediamtx's HLS muxer | blocking playlist reload, parts, preload hints: no Rust crate does this turnkey |
 
 ## Reference only (read, don't depend)
@@ -68,7 +68,7 @@ sources above are read as specifications only.
 | # | Piece | Why we write it | Size |
 |---|---|---|---|
 | 1 | **LL-HLS packager** (parts, blocking reload, preload hints) | no Rust crate does the server side | large |
-| 2 | **RTSP server** | Rust only has clients (`retina`); port from gortsplib | large |
+| 2 | **RTSP server** | glue `rtsp-types` + `sdp-types` + webrtc-rs `rtp`, modelled on `rtsp-runtime` (see M9 below) | medium |
 | 3 | **RIST gaps** | `rist-core` covers Simple + Main; we add what its checklist marks ❌ if we need it (multicast, multipath) | medium |
 | 4 | **SRT gaps** | `rsrt` covers live mode; out of scope upstream: rendezvous, FEC filter, AES-GCM, bonding, IPv6. Add IPv6 first | small–medium |
 | 5 | **Clustering for RTMP/HLS/SRT/WebRTC** | `moq-relay` only clusters MoQ; glue on chitchat + hashring | medium |
@@ -150,7 +150,7 @@ license re-checked by hand with `gh api` and crates.io. Tiers match
 | Object storage | apache/arrow-rs `object_store` (S3/GCS/Azure/local) | 0.14.2 | Apache-2.0 | 3,613 | Sep 2026 | depend; write the segment uploader |
 | Object storage, wider | apache/opendal | 0.59.2 | Apache-2.0 | 5,382 | Sep 2026 | alternative |
 | MP4 clip by time range | kixelated/mp4-atom; video-commander/mp4box (`mp4box` 0.14, MIT, 6★, Sep 2026, "non-destructive editing") | — | MIT/Apache | — | 2026 | depend on mp4-atom; write the cut |
-| H.264 / HEVC decoder for thumbnails | **none in pure Rust** (`openh264` is C bindings, 127★, no license field) | — | — | — | — | external ffmpeg |
+| H.264 / HEVC decoder for thumbnails | **none in pure Rust** (`openh264` is C bindings, 127★; BSD-2-Clause per its Cargo.toml) | — | — | — | — | external ffmpeg |
 | AV1 decoder | memorysafety/rav1d (pure-Rust port of dav1d) | — | BSD-2-Clause | 643 | Aug 2026 | depend for AV1 thumbnails |
 | arm64 static builds | rust-cross/cargo-zigbuild + `aarch64-unknown-linux-musl` | 0.23.4 | MIT/Apache | 2,657 | Sep 2026 | depend; `cross` is stale (2023) |
 | Helm chart | teknoir/mediamtx-helm (0★, no license) | — | — | 0 | Jul 2026 | write ourselves |
@@ -169,3 +169,50 @@ license re-checked by hand with `gh api` and crates.io. Tiers match
 | GitOps config | toml-rs/toml `toml_edit` (comment-preserving), GitoxideLabs/gitoxide `gix` (pure-Rust git), GREsau/schemars | — | Apache-2.0 / MIT | 1,074 / 11,960 / 1,411 | Sep 2026 | depend on all three |
 | `caudal doctor` | webrtc-rs `stun` 0.17, `rsntp` 4.1 (MIT/Apache), `x509-parser` 0.18 (MIT/Apache), `rustls` | — | MIT/Apache | — | 2026 | depend; codec probe reuses our demuxers |
 | Conformance in CI | Apple `mediastreamvalidator` via `xcrun` on macOS runners; rust-fuzz/cargo-fuzz (1,896★), proptest (2,237★); cesbo/rsrt `tests/support` as the ffmpeg/libsrt harness pattern | — | Apache-2.0 | — | 2026 | depend on fuzz/proptest; write the harness |
+
+
+## Per milestone: what exists (deep pass, 18 Sep 2026)
+
+Two Sonnet agents read source, not just READMEs; every crate, license and
+repo re-checked by hand with crates.io and `gh api`.
+
+### M6 · MoQ / WebTransport
+- **Publish our frames from inside the process** (verified in `rs/hang/examples/video.rs`, `rs/moq-mux/src/container/producer.rs`): `moq_net::Origin::random().produce()` → `origin.create_broadcast("", Route::new().with_announce(true))` → `broadcast.create_track(name, info)` → `moq_mux::container::Producer::new(track, Container::Legacy)` → `producer.write(Frame { timestamp, payload, keyframe, duration })`. `payload` is length-prefixed NALs, i.e. our AVCC frames as they are; the avcC goes in the catalog's `VideoConfig.description` (`hang::catalog::H264 { inline: false, .. }`).
+- **Relay embeds in our process** (`moq-relay` is lib + bin). Self-signed certs work with SHA-256 fingerprint pinning (`rs/moq-native/src/tls.rs`), the native twin of the browser's `serverCertificateHashes`.
+- **Browser player:** `@moq/watch` 0.5.4 and `@moq/hang` 0.4.3 on npm, MIT OR Apache-2.0. Bundle size unverified.
+- Other Rust MoQ: `moqtail/moqtail` (Apache-2.0, ★103, draft-18, reference), `cloudflare/moq-rs` (reference), `shiguredo/moqt-rs` (too early). moq-net negotiates IETF drafts 14–21; cross-implementation interop not tested by us.
+- **Plan:** depend on `moq-net` + `hang` + `moq-mux` + `moq-native`; embed `moq-relay`. Our ring stays the source; a MoQ output subscribes and writes into a `Producer`.
+
+### M4 (rest) · SRT out
+- `rsrt` sends as listener (viewers pull) and as caller (push to a remote), with TSBPD pacing.
+- **TS muxer exists:** `moq-mux`'s `container/ts/export.rs` (1,914 lines) is a complete live muxer: PAT/PMT every 500 ms and on keyframes, PCR every 25 ms, AVCC→Annex B with SPS/PPS re-injection, AAC→ADTS, built on `mpeg2ts` (which writes as well as reads).
+- **Plan:** `moq-mux` TS export + `rsrt` send. Nothing to write but glue.
+
+### M8 · Recording, DVR, VOD
+- `mp4-atom` (already a dependency) has the full sample tables (`stts`, `stsz`, `stsc`, `stco`/`co64`, `stss`, `ctts`), so a progressive MP4 writer is a moov builder on top of it, next to `crates/caudal-hls/src/fmp4.rs`.
+- `muxide` 0.2.5 (MIT OR Apache-2.0): zero-dependency MP4 muxer for recording (H.264/H.265/AV1/AAC/Opus). Trial it before writing our own.
+- `shiguredo_mp4` 2026.5.0 (Apache-2.0, Shiguredo): mature alternative.
+- Crash-safe recording: `webm-iterable` 0.7.1 (MIT) can write EBML; `matroska` (tuffy) reads only.
+- `object_store::put_multipart` (0.14.2, Apache-2.0) for segment upload to S3/R2/GCS; `m3u8-rs` already writes `#EXT-X-PLAYLIST-TYPE:VOD` (`MediaPlaylistType::Vod`).
+- **Plan:** record fMP4 segments (we already make them) + a VOD playlist; final MP4 via `muxide` or an `mp4-atom` moov builder; upload with `object_store`.
+
+### M9 · RTSP
+- **Pull cameras:** `retina` 0.4.20 (MIT/Apache, ★370), see `examples/client`.
+- **Serve RTSP, pure Rust, corrected:** `rtsp-types` 0.1.3 + `sdp-types` 0.2.0 (MIT, sdroege) for the protocol; webrtc-rs `rtp` 0.17 for H.264 FU-A packetizing; `rtsp-runtime` 0.6.0 (MIT OR Apache-2.0, sans-I/O client+server state machine, single author) as the model or a fork; `shiguredo_rtsp` (Apache-2.0, pre-1.0) and `msf-rtsp` 0.3.1 (MIT) to trial. xiu has a working pure-Rust RTSP server (`protocol/rtsp/src/session/server_session.rs`, crate `xrtsp`, MIT, stale on crates.io since Aug 2024) as a reference.
+- Rejected: `oddity-ai/oddity-rtsp` (links ffmpeg via `video-rs`), `gstreamer-rtsp-server` (LGPL C), `webrtc-sdp` (MPL-2.0), `rtp-rs` (no license).
+- **Plan:** no gortsplib port. Glue `rtsp-types` + `sdp-types` + `rtp`, modelled on `rtsp-runtime`.
+
+### M10 · Clustering
+- `moq-relay`'s `cluster.rs`: full mesh with hop-cost routing, static peers, an HTTP/file peer list, or gossip; JWT per peer.
+- Pull-on-demand pattern: xiu `protocol/rtmp/src/relay/pull_client.rs` pulls from a remote origin when a local viewer subscribes to a stream with no local publisher. Our LL-HLS edges do the same over MoQ.
+- Topology reference: `atm0s-media-server` (MIT): console / gateway / connector / media node roles, GeoIP routing.
+- Membership: keep `chitchat` + `hashring`. Rejected: `al8n/memberlist`, `al8n/serf` (MPL-2.0), `rendezvous` (EUPL-1.2).
+- **Plan:** embedded `moq-relay` between nodes; edges pull on first viewer.
+
+### M11 · Transcoding / ABR
+- Pure Rust: `rav1e` 0.8.1 (AV1 encode), `rav1d` 1.1.0 (AV1 decode), BSD-2. No pure-Rust H.264/HEVC/AAC encoder worth using.
+- **External ffmpeg:** `ffmpeg-sidecar` 2.5.2 (MIT, ★539) drives ffmpeg as a process, which keeps GPL out of our binary.
+- **macOS hardware encode:** `objc2-video-toolbox` 0.3.2 (Zlib OR Apache-2.0 OR MIT).
+- `moq-dev/moq` `moq-transcode` / `moq-video`: per-rung ABR over hang broadcasts with NVENC / VideoToolbox / Media Foundation / openh264. Only reusable as-is if Caudal's internal model becomes `hang`; otherwise reference `rs/moq-transcode/src/{ladder,rung,pipeline}.rs`.
+- Avoid: `fdk-aac` (restrictive libfdk license), `opus`/`audiopus` (C bindings).
+- **Plan:** `ffmpeg-sidecar` for H.264/AAC ladders, VideoToolbox on Macs, `rav1e` for AV1.

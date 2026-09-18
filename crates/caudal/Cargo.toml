@@ -16,7 +16,11 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+toml = "1.1.6"
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 ureq = { version = "3", default-features = false }
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

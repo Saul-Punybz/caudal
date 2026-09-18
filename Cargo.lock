@@ -715,10 +715,13 @@ dependencies = [
 name = "caudal-transcode"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "caudal-core",
  "caudal-ts",
+ "mp4-atom",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

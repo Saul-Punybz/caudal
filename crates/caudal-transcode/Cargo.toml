@@ -12,3 +12,9 @@ caudal-core.workspace = true
 caudal-ts.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true
+mp4-atom = "0.15.0"
+tokio = { workspace = true, features = ["full", "test-util"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

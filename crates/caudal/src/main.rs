@@ -57,16 +57,6 @@ fn resolve_config(explicit: Option<PathBuf>) -> Result<config::Config, String> {
     }
 }
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".to_string()
-    }
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -116,18 +106,10 @@ async fn run(cfg: config::Config) -> ExitCode {
         }
     });
 
-    // The LL-HLS router is built synchronously; until agent C lands it is a
-    // `todo!()` stub, so a panic building it is caught and swapped for an
-    // empty router rather than taking the whole server down.
-    let hls_cfg = caudal_hls::HlsConfig { part_ms: cfg.hls.part_ms, segment_ms: cfg.hls.segment_ms };
-    let hls_registry = registry.clone();
-    let hls_router = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        caudal_hls::router(hls_registry, hls_cfg)
-    }))
-    .unwrap_or_else(|payload| {
-        tracing::error!(error = %panic_message(&*payload), "caudal_hls::router panicked (not yet implemented?)");
-        axum::Router::new()
-    });
+    let hls_router = caudal_hls::router(
+        registry.clone(),
+        caudal_hls::HlsConfig { part_ms: cfg.hls.part_ms, segment_ms: cfg.hls.segment_ms },
+    );
 
     let state = api::AppState::new(registry.clone());
     let app = api::router(state.clone()).merge(hls_router);

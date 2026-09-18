@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Caudal · live</title>
+<style>
+  :root { color-scheme: dark; --fg: #e8e8ea; --dim: #8a8a93; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0b0b0d; color: var(--fg);
+    font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  main { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 12px; }
+  video { width: 100%; height: 100%; max-height: calc(100vh - 64px); background: #000; border-radius: 6px; object-fit: contain; }
+  footer { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; padding: 10px 16px 14px;
+    padding-bottom: max(14px, env(safe-area-inset-bottom)); border-top: 1px solid #1c1c21; }
+  .name { font-weight: 600; }
+  .stat { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .stat b { color: var(--fg); font-weight: 600; }
+  #latency.ok { color: var(--ok); } #latency.warn { color: var(--warn); } #latency.bad { color: var(--bad); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); margin-right: 6px; }
+  .live .dot { background: var(--bad); }
+</style>
+</head>
+<body>
+<main><video id="v" controls autoplay muted playsinline></video></main>
+<footer>
+  <span class="name" id="state"><span class="dot"></span><span id="name"></span></span>
+  <span class="stat">latency <b id="latency">–</b></span>
+  <span class="stat">buffer <b id="buffer">–</b></span>
+  <span class="stat" id="engine"></span>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script>
+(function () {
+  "use strict";
+  var name = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
+  var src = "/hls/" + encodeURIComponent(name) + "/index.m3u8";
+  var video = document.getElementById("v");
+  var $ = function (id) { return document.getElementById(id); };
+  $("name").textContent = name;
+  document.title = name + " · Caudal";
+
+  var isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
+  var useNative = isSafari && video.canPlayType("application/vnd.apple.mpegurl");
+  var hls = null;
+
+  function startHlsJs() {
+    $("engine").textContent = "hls.js " + Hls.version;
+    hls = new Hls({ lowLatencyMode: true, backBufferLength: 30, liveSyncDurationCount: 1 });
+    hls.on(Hls.Events.ERROR, function (_e, data) {
+      if (!data.fatal) return;
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }
+      hls.destroy();
+      setTimeout(startHlsJs, 2000);
+    });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+  }
+
+  function startNative() {
+    $("engine").textContent = "native HLS";
+    video.addEventListener("error", function () {
+      setTimeout(function () { video.src = src + "?t=" + Date.now(); video.play().catch(function () {}); }, 2000);
+    });
+    video.src = src;
+  }
+
+  // Glass-to-glass minus the encoder: now minus the wall clock stamped on
+  // the frame on screen (EXT-X-PROGRAM-DATE-TIME), else hls.js' estimate.
+  function latency() {
+    if (hls) {
+      if (hls.playingDate) return (Date.now() - hls.playingDate.getTime()) / 1000;
+      if (isFinite(hls.latency)) return hls.latency;
+      return NaN;
+    }
+    if (video.getStartDate) {
+      var start = video.getStartDate().getTime();
+      if (!isNaN(start)) return (Date.now() - (start + video.currentTime * 1000)) / 1000;
+    }
+    return NaN;
+  }
+
+  setInterval(function () {
+    var l = latency();
+    var el = $("latency");
+    if (isFinite(l) && !video.paused) {
+      el.textContent = l.toFixed(2) + " s";
+      el.className = l < 3 ? "ok" : l < 6 ? "warn" : "bad";
+      $("state").className = "name live";
+    } else {
+      el.textContent = "–";
+      el.className = "";
+      $("state").className = "name";
+    }
+    var b = video.buffered;
+    $("buffer").textContent = b.length ? (b.end(b.length - 1) - video.currentTime).toFixed(2) + " s" : "–";
+  }, 250);
+
+  if (useNative || typeof Hls === "undefined" || !Hls.isSupported()) startNative(); else startHlsJs();
+})();
+</script>
+</body>
+</html>

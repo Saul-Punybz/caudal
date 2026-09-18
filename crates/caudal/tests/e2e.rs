@@ -124,14 +124,20 @@ fn ll_hls_plays_and_validates() {
     let bytes = s.get_bytes(&format!("/hls/e2e/{part}"));
     assert!(bytes.windows(4).any(|w| w == b"moof"), "part is a CMAF fragment");
 
-    // Blocking reload: asking for the next part must wait, not 404.
+    // Blocking reload: ask for the first part that does not exist yet. The
+    // in-progress segment is MEDIA-SEQUENCE + (full segments listed); its
+    // next part index is the number of parts listed after the last EXTINF.
+    // (Part 0 of that segment usually exists already, so asking for it would
+    // pass or fail by timing luck; caught by agent C in batch 1.)
     let msn: u64 =
         playlist.lines().find_map(|l| l.strip_prefix("#EXT-X-MEDIA-SEQUENCE:")).unwrap().trim().parse().unwrap();
     let segs = playlist.lines().filter(|l| l.starts_with("#EXTINF")).count() as u64;
+    let tail = playlist.rsplit("#EXTINF").next().unwrap_or("");
+    let next_part = tail.lines().filter(|l| l.starts_with("#EXT-X-PART:")).count();
     let t0 = Instant::now();
-    let (code, _) = s.get(&format!("/hls/e2e/index.m3u8?_HLS_msn={}&_HLS_part=0", msn + segs)).unwrap();
+    let (code, _) = s.get(&format!("/hls/e2e/index.m3u8?_HLS_msn={}&_HLS_part={next_part}", msn + segs)).unwrap();
     assert_eq!(code, 200);
-    assert!(t0.elapsed() >= Duration::from_millis(100), "a future part should block until it exists");
+    assert!(t0.elapsed() >= Duration::from_millis(50), "a part that does not exist yet must block until it does");
 
     // A viewer joining now must have a join point within 2 s of playlist age.
     let joined = s.wait_until("/hls/e2e/index.m3u8", Duration::from_secs(5), |b| b.contains("#EXT-X-PART"));

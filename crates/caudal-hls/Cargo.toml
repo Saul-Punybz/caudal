@@ -12,3 +12,12 @@ caudal-core.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+mp4-atom = "0.15.0"
+bytes.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+
+[[example]]
+name = "demo"

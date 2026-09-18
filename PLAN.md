@@ -81,6 +81,13 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 ## Milestones
 
 - [x] **M0: Core.** Media model and live ring buffer (`caudal-core`).
+> **Survey result, 17 Sep 2026 (see REUSE.md, backlog tiers):** moq-dev/moq already
+> ships the gateway family we planned to write (`moq-mux`, `moq-hls`, `moq-rtmp`
+> with enhanced RTMP, `moq-srt`, `moq-relay` with clustering and JWT). Decision for
+> M1: evaluate building Caudal's protocol layer on top of `hang` + `moq-mux`
+> before writing our own packagers. If it holds, M3 and M6 shrink to integration
+> work and `caudal-core` becomes the DVR/failover layer around a hang broadcast.
+
 - [ ] **M1: Server shell.** `caudal` binary, TOML config, HTTP API, `/metrics`, graceful shutdown.
 - [ ] **M2: RTMP ingest.** OBS or ffmpeg publishing into the ring.
 - [ ] **M3: LL-HLS / CMAF output.** First playable path: OBS → Caudal → browser.

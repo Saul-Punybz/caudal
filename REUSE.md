@@ -126,3 +126,46 @@ license re-checked by hand with `gh api` and crates.io. Tiers match
 | Audio-only HLS (AAC/Opus) | compose mp4-atom + our packager | — | — | — | — | no extra crate needed |
 | RTMP push out (YouTube/Twitch) | KallDrexx/rust-media-libs (`rml_rtmp`) client side; xiu's RTMP client as reference | 0.8.0 | MIT | 242 | Apr 2023 (stale) | depend for primitives, write the push wrapper; check scuffle-rtmp client mode first |
 | HLS pull input | sile/hls_m3u8 + aschey/stream-download-rs | 0.7.0 / 0.24.4 | Apache-2.0 | 66 / 114 | 2026 | depend; write the live-edge polling loop |
+
+### Tier A (table stakes)
+
+| Feature | Repo / crate | Version | License | Stars | Last push | Decision |
+|---|---|---|---|---|---|---|
+| Enhanced RTMP (HEVC/AV1/Opus FourCC) | ScuffleCloud/scuffle `scuffle-flv` | 0.2.2 | MIT OR Apache-2.0 | 418 | Apr 2026 | depend: source has `VideoFourCc`/`AudioFourCc`, Hevc, Av1, Opus (grep-verified) |
+| Enhanced RTMP, alternative | moq-dev/moq `moq-rtmp` (15K lines, "RTMP / enhanced-RTMP ingest gateway") | 0.2.11 | MIT OR Apache-2.0 | 1,526 | Sep 2026 | depend if we go MoQ-first (see tier B) |
+| Enhanced RTMP, small | torresjeff/rtmp-rs | 0.6.0 | MIT | 8 | Sep 2026 | reference |
+| WHIP ingest | algesten/str0m (engine) + 8xFF/atm0s-media-server (MIT, 330★, WHIP/WHEP reference) | 0.23.1 | MIT | 624 / 330 | Sep 2026 | depend on str0m; write the WHIP HTTP layer; live777 (311★) is **MPL-2.0**, read only |
+| WebRTC engine, alternative | webrtc-rs/webrtc | 0.20.x | Apache-2.0 | 5,145 | Sep 2026 | fallback to str0m |
+| SRTLA bonding | irlserver/srtla_send (Rust, MIT, 34★, Sep 2026); yannismate/srtla-rs (5★, Jan 2025); BELABOX/srtla is **AGPL** C | — | MIT | — | — | reference; write ourselves on top of `rsrt` |
+| SRT stream-id routing | none | — | — | — | — | write ourselves (small; `rsrt` exposes stream id) |
+| Failover / backup source | none in any Rust server | — | — | — | — | write ourselves in `caudal-core` |
+| Hot config reload | `config` 0.15 + `arc-swap` 1.9 + `notify` 9.0 | — | MIT/Apache | — | 2026 | depend |
+| JSON logs / OTel | `tracing-subscriber` 0.3, `tracing-opentelemetry` 0.33, `opentelemetry-otlp` 0.32 | — | MIT/Apache | — | 2026 | depend |
+| Metrics / shutdown | `metrics-exporter-prometheus` 0.18, `axum-prometheus` 0.10, `tokio-graceful-shutdown` 0.20 | — | MIT/Apache | — | 2026 | depend |
+| SCTE-35 | rafaelcaricio/scte35 (MIT, 9★, Jun 2026) or dholroyd/scte35-reader (Apache-2.0, 8★, Apr 2026) | 0.2.0 / 0.16.0 | MIT / Apache-2.0 | 9 / 8 | 2026 | depend on one; both small |
+| ID3 | `id3` | 1.17.1 | MIT/Apache | — | Jul 2026 | depend |
+| fMP4 `emsg` | fishloa/rust-broadcast `mp4-emsg` (1★, Aug 2026) | 0.4.0 | Apache-2.0 | 1 | Aug 2026 | reference; write on mp4-atom |
+| CEA-608/708 captions | none on crates.io | — | — | — | — | write ourselves |
+| WebVTT | `webvtt` 0.2 (2023), `subtp` 0.2 (2024), both stale | — | unverified | — | — | write ourselves |
+| Object storage | apache/arrow-rs `object_store` (S3/GCS/Azure/local) | 0.14.2 | Apache-2.0 | 3,613 | Sep 2026 | depend; write the segment uploader |
+| Object storage, wider | apache/opendal | 0.59.2 | Apache-2.0 | 5,382 | Sep 2026 | alternative |
+| MP4 clip by time range | kixelated/mp4-atom; video-commander/mp4box (`mp4box` 0.14, MIT, 6★, Sep 2026, "non-destructive editing") | — | MIT/Apache | — | 2026 | depend on mp4-atom; write the cut |
+| H.264 / HEVC decoder for thumbnails | **none in pure Rust** (`openh264` is C bindings, 127★, no license field) | — | — | — | — | external ffmpeg |
+| AV1 decoder | memorysafety/rav1d (pure-Rust port of dav1d) | — | BSD-2-Clause | 643 | Aug 2026 | depend for AV1 thumbnails |
+| arm64 static builds | rust-cross/cargo-zigbuild + `aarch64-unknown-linux-musl` | 0.23.4 | MIT/Apache | 2,657 | Sep 2026 | depend; `cross` is stale (2023) |
+| Helm chart | teknoir/mediamtx-helm (0★, no license) | — | — | 0 | Jul 2026 | write ourselves |
+
+### Tier B (differentiators)
+
+| Feature | Repo / crate | Version | License | Stars | Last push | Decision |
+|---|---|---|---|---|---|---|
+| WASM plugins, engine | bytecodealliance/wasmtime + wit-bindgen (component model) | 48.0 | Apache-2.0 | 18,641 | Sep 2026 | depend: frame filters need typed zero-copy buffers |
+| WASM plugins, easy PDK | extism/extism (plugins in Go/JS/Python too) | 1.4 | BSD-3-Clause | 5,762 | Sep 2026 | depend for triggers/auth decisions |
+| Latency stamps (SEI / `emsg`) | dholroyd/h264-reader (SEI parsing, Apache-2.0, 97★); Eyevinn/mp4ff (Go, MIT) as wire-format reference; Glass2GlassHQ/glass2glass is **MPL-2.0**, 4★ | 0.9.0 | Apache-2.0 | 97 | Sep 2026 | write ourselves (small writer/reader); hls.js `LatencyController` as spec |
+| Network impairment (`caudal lab`) | moqtap/moqtap `quinn-netem` (UDP loss/delay/reorder, MIT, 1★, Sep 2026); oguzbilgener/noxious (Toxiproxy-compatible, 55★, stale 2023) | 0.1.3 | MIT | 1 | Sep 2026 | reference; write our UDP proxy. `tokio-rs/turmoil` (MIT, 1,260★) for deterministic tests: depend |
+| **MoQ-first fan-out** | moq-dev/moq: `moq-mux` (43K lines: fMP4/CMAF, MKV, TS, FLV ↔ hang broadcast), `moq-hls` (LL-HLS gateway, 4.9K lines), `moq-rtmp`, `moq-srt`, `moq-relay` (cluster + JWT), `moq-rtc`, `moq-transcode` | 0.9.16 / 0.4.16 / 0.2.11 | MIT OR Apache-2.0 | 1,526 | Sep 2026 (daily) | **depend. This is the biggest reuse win of the survey: the "everything is a MoQ broadcast" server already exists as a crate family.** Read `rs/moq-mux/src` and `doc/bin/relay/auth.md` before M1 |
+| Rate limiting | boinkor-net/governor + `tower_governor` | 0.10.4 / 0.8.0 | MIT | 938 / 351 | Aug 2026 / Aug 2025 | depend |
+| API keys / tenant quotas | small unverified crates only | — | — | — | — | write ourselves (thin axum middleware) |
+| GitOps config | toml-rs/toml `toml_edit` (comment-preserving), GitoxideLabs/gitoxide `gix` (pure-Rust git), GREsau/schemars | — | Apache-2.0 / MIT | 1,074 / 11,960 / 1,411 | Sep 2026 | depend on all three |
+| `caudal doctor` | webrtc-rs `stun` 0.17, `rsntp` 4.1 (MIT/Apache), `x509-parser` 0.18 (MIT/Apache), `rustls` | — | MIT/Apache | — | 2026 | depend; codec probe reuses our demuxers |
+| Conformance in CI | Apple `mediastreamvalidator` via `xcrun` on macOS runners; rust-fuzz/cargo-fuzz (1,896★), proptest (2,237★); cesbo/rsrt `tests/support` as the ffmpeg/libsrt harness pattern | — | Apache-2.0 | — | 2026 | depend on fuzz/proptest; write the harness |

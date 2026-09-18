@@ -105,6 +105,22 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
 
+## Batch 3 (launched 18 Sep 2026): M7 TLS, HTTP/2, auth
+**Goal:** Caudal can run on a public server: HTTPS with HTTP/2 (Apple's last MUST, -50120, and the likely cause of Safari's ~6 s), tokens to publish and play, webhooks on stream start/end.
+
+| Agent | Model | Owns | Done when |
+|---|---|---|---|
+| K · TLS | Sonnet | `crates/caudal-tls/**` | `serve(TlsConfig, Router, shutdown)` serves h1 + h2 via ALPN; cert files hot-reloaded; ACME via rustls-acme (TLS-ALPN-01, cache dir, staging flag); tests with an rcgen self-signed cert: `curl --http2 -k` negotiates h2, reload picks up a new cert without restart |
+| J · auth | Sonnet | `crates/caudal-auth/**` | `Authorizer::check(action, stream, token)`: HS256 secret or JWKS URL (cached, refreshed, kid lookup), claims `sub` (name or `prefix*`), `act`, `exp`; `Hooks::emit` delivers Standard Webhooks-signed JSON with retries, never blocking; unit tests incl. a local JWKS server |
+| L · latency | Haiku | `tests/browser/**` | a second test that samples ingest-to-glass every second for 30 s per browser and reports min/median/max at steady state (after the first 10 s) |
+| Orchestrator | Opus | root `Cargo.toml`, `crates/caudal/**`, ingest/output crates | config `[tls]`, `[auth]`, `[hooks]`; token extraction in RTMP (`?token=` on the stream key), SRT (stream id), HLS (`?token=` or `Authorization: Bearer`); e2e tests |
+
+**Fixed names (scaffold commit):** `caudal_tls::{serve, TlsConfig { bind, source }, CertSource::{Files{cert,key}, Acme{domains,email,cache_dir,staging}}}`; `caudal_auth::{Authorizer::new(AuthConfig{keys,publish,play}), Authorizer::check, Action::{Publish,Play}, KeySource::{Secret, Jwks{url,refresh}}, AuthError::{Missing,Invalid,Forbidden}, Hooks::new(Option<HooksConfig{urls,secret}>), Hooks::emit(HookEvent::{StreamStarted,StreamEnded})}`.
+
+**Budget:** ≈ $10 agents + ≈ $8 orchestrator, a third held back ⇒ **≈ $25 API-price equivalent**. **Out of scope:** WebRTC, MoQ, recording, clustering. **Needs Saul:** `mkcert -install` (adds a local CA to the keychain) before Safari over HTTP/2 can be measured locally.
+
+**Machine rule:** heavy tests one at a time; after every run, no leftover `ffmpeg`/`srt-live-transmit` of ours.
+
 ## Batch 2 progress (18 Sep 2026)
 - **Merged:** F (rejected RTMP publishers are disconnected), E (Playwright: Chromium plays at 2.4 s ingest-to-glass; WebKit plays but at ~6 s, tracked as a known gap until HTTP/2), I (React + Material 3 UI embedded in the binary; release binary 3.0 MB).
 - **Fixed by orchestrator:** viewer counts (the HLS packager counted as a viewer; HLS players were not counted at all), UI icon size and headline weight.

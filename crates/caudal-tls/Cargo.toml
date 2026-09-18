@@ -1,0 +1,13 @@
+[package]
+name = "caudal-tls"
+description = "HTTPS (HTTP/1.1 + HTTP/2) for Caudal, with file or ACME certificates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "caudal-auth"
+description = "Publish/play authorization (JWT, JWKS) and signed webhooks for Caudal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

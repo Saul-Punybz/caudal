@@ -40,3 +40,19 @@ max_mb = 256  # Maximum buffer size in megabytes
 # [hooks]
 # urls = ["https://example.com/caudal-events"]
 # secret = "whsec_..."
+
+# Recording to disk (and optionally object storage), VOD and clips.
+# Recordings: <dir>/<stream>/<YYYYMMDDTHHMMSSZ>/, played at /vod/<stream>/<id>/index.m3u8.
+# Clips: POST /api/v1/clips {"stream","id","from_ms","to_ms"} -> MP4.
+# [record]
+# enabled = true
+# dir = "recordings"
+# streams = ["*"]            # names or "prefix*"
+# segment_secs = 4
+# retention_hours = 168      # delete ended recordings after 7 days
+# upload_url = "s3://bucket/caudal"   # credentials from AWS_* env vars
+
+# Send streams out over SRT (pull: srt://host:9000?streamid=play/<name>).
+# [[srt.push]]
+# stream = "main"
+# url = "srt://remote.example:9000?streamid=publish/main&passphrase=..."

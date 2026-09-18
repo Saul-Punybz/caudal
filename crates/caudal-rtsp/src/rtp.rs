@@ -1,9 +1,14 @@
-//! RTP packetizing over TCP interleaved framing (`$` + channel + 16-bit
-//! length, RFC 2326 §10.12): H.264 FU-A (RFC 6184) / H.265 FU (RFC 7798) for
-//! video, RFC 3640 AU headers (`mode=AAC-hbr`) for AAC. Hand-rolled rather
-//! than pulled from `webrtc-rs`'s `rtp` crate: its `H264Payloader` expects
+//! RTP packetizing: H.264 FU-A (RFC 6184) / H.265 FU (RFC 7798) for video,
+//! RFC 3640 AU headers (`mode=AAC-hbr`) for AAC. Hand-rolled rather than
+//! pulled from `webrtc-rs`'s `rtp` crate: its `H264Payloader` expects
 //! Annex B input, while `caudal-core::Frame` is always AVCC, so writing the
 //! (small, well-specified) fragmenter directly avoids a lossy round trip.
+//!
+//! [`packetize`] returns bare RTP packets (12-byte header + payload, no
+//! transport framing). The caller frames them per SETUP's chosen
+//! transport: [`interleave`] wraps one in RFC 2326 §10.12's `$` + channel +
+//! 16-bit length for TCP interleaved, or a UDP transport sends the bytes
+//! as-is via `UdpSocket::send_to`.
 
 use caudal_core::{Codec, Frame, TrackInfo};
 
@@ -14,16 +19,47 @@ pub(crate) const AUDIO_PT: u8 = 97;
 /// the 16-bit interleaved frame length and typical path MTUs.
 const MTU: usize = 1200;
 
-/// Per-track RTP state: sequence number and SSRC, both random per session.
+/// Per-track RTP state: sequence number and SSRC (both random per session),
+/// plus the running totals RTCP Sender Reports need.
 pub(crate) struct PacketState {
     seq: u16,
     ssrc: u32,
+    packet_count: u32,
+    octet_count: u32,
+    last_ts: u32,
 }
 
 impl PacketState {
     pub(crate) fn new() -> Self {
-        Self { seq: rand::random(), ssrc: rand::random() }
+        Self { seq: rand::random(), ssrc: rand::random(), packet_count: 0, octet_count: 0, last_ts: 0 }
     }
+
+    pub(crate) fn ssrc(&self) -> u32 {
+        self.ssrc
+    }
+
+    pub(crate) fn packet_count(&self) -> u32 {
+        self.packet_count
+    }
+
+    pub(crate) fn octet_count(&self) -> u32 {
+        self.octet_count
+    }
+
+    pub(crate) fn last_ts(&self) -> u32 {
+        self.last_ts
+    }
+}
+
+/// Wraps one bare RTP packet for TCP interleaved framing (RFC 2326 §10.12):
+/// `$` + channel + 16-bit big-endian length + the packet.
+pub(crate) fn interleave(channel: u8, packet: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4 + packet.len());
+    buf.push(b'$');
+    buf.push(channel);
+    buf.extend_from_slice(&(packet.len() as u16).to_be_bytes());
+    buf.extend_from_slice(packet);
+    buf
 }
 
 /// Splits AVCC (4-byte length-prefixed) NAL units.
@@ -41,35 +77,35 @@ fn avcc_nalus(data: &[u8]) -> Vec<&[u8]> {
     nalus
 }
 
-fn rtp_packet(channel: u8, pt: u8, state: &mut PacketState, ts: u32, marker: bool, payload: &[u8]) -> Vec<u8> {
+fn rtp_packet(pt: u8, state: &mut PacketState, ts: u32, marker: bool, payload: &[u8]) -> Vec<u8> {
     let seq = state.seq;
     state.seq = state.seq.wrapping_add(1);
-    let mut buf = Vec::with_capacity(4 + 12 + payload.len());
-    buf.push(b'$');
-    buf.push(channel);
-    buf.extend_from_slice(&((12 + payload.len()) as u16).to_be_bytes());
+    let mut buf = Vec::with_capacity(12 + payload.len());
     buf.push(0x80); // V=2, P=0, X=0, CC=0
     buf.push((u8::from(marker) << 7) | (pt & 0x7F));
     buf.extend_from_slice(&seq.to_be_bytes());
     buf.extend_from_slice(&ts.to_be_bytes());
     buf.extend_from_slice(&state.ssrc.to_be_bytes());
     buf.extend_from_slice(payload);
+    state.packet_count = state.packet_count.wrapping_add(1);
+    state.octet_count = state.octet_count.wrapping_add(payload.len() as u32);
+    state.last_ts = ts;
     buf
 }
 
-/// Packetizes one access unit into wire-ready interleaved frames.
+/// Packetizes one access unit into bare RTP packets (no transport framing).
 /// Unsupported codecs produce no packets (never panics).
-pub(crate) fn packetize(info: &TrackInfo, frame: &Frame, state: &mut PacketState, channel: u8) -> Vec<Vec<u8>> {
+pub(crate) fn packetize(info: &TrackInfo, frame: &Frame, state: &mut PacketState) -> Vec<Vec<u8>> {
     let ts = frame.pts as u32;
     match info.codec {
-        Codec::H264 => packetize_h264(&frame.data, state, channel, ts),
-        Codec::H265 => packetize_h265(&frame.data, state, channel, ts),
-        Codec::Aac => vec![packetize_aac(&frame.data, state, channel, ts)],
+        Codec::H264 => packetize_h264(&frame.data, state, ts),
+        Codec::H265 => packetize_h265(&frame.data, state, ts),
+        Codec::Aac => vec![packetize_aac(&frame.data, state, ts)],
         _ => Vec::new(),
     }
 }
 
-fn packetize_h264(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) -> Vec<Vec<u8>> {
+fn packetize_h264(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>> {
     let nalus = avcc_nalus(data);
     let n = nalus.len();
     let mut out = Vec::new();
@@ -79,7 +115,7 @@ fn packetize_h264(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) ->
         }
         let last_nalu = i + 1 == n;
         if nalu.len() <= MTU {
-            out.push(rtp_packet(channel, VIDEO_PT, state, ts, last_nalu, nalu));
+            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu, nalu));
             continue;
         }
         // FU-A (RFC 6184 §5.8).
@@ -103,7 +139,7 @@ fn packetize_h264(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) ->
             }
             fu.push(hdr);
             fu.extend_from_slice(&payload[off..end]);
-            out.push(rtp_packet(channel, VIDEO_PT, state, ts, last_nalu && last, &fu));
+            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu && last, &fu));
             off = end;
         }
     }
@@ -112,7 +148,7 @@ fn packetize_h264(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) ->
 
 /// RFC 7798 §4.4.3 FU, for the H.265 tracks `retina` can hand us on pull.
 /// Best-effort: not exercised by the H.264 test suite.
-fn packetize_h265(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) -> Vec<Vec<u8>> {
+fn packetize_h265(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>> {
     let nalus = avcc_nalus(data);
     let n = nalus.len();
     let mut out = Vec::new();
@@ -122,7 +158,7 @@ fn packetize_h265(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) ->
         }
         let last_nalu = i + 1 == n;
         if nalu.len() <= MTU {
-            out.push(rtp_packet(channel, VIDEO_PT, state, ts, last_nalu, nalu));
+            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu, nalu));
             continue;
         }
         let nal_type = (nalu[0] >> 1) & 0x3F;
@@ -147,7 +183,7 @@ fn packetize_h265(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) ->
             }
             fu.push(hdr);
             fu.extend_from_slice(&payload[off..end]);
-            out.push(rtp_packet(channel, VIDEO_PT, state, ts, last_nalu && last, &fu));
+            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu && last, &fu));
             off = end;
         }
     }
@@ -157,11 +193,11 @@ fn packetize_h265(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) ->
 /// RFC 3640 `mode=AAC-hbr`: one 16-bit AU-headers-length, one 16-bit
 /// AU-header (13-bit size, 3-bit index-delta = 0), then the raw AU. AAC
 /// frames are always well under the MTU, so no fragmentation is needed.
-fn packetize_aac(data: &[u8], state: &mut PacketState, channel: u8, ts: u32) -> Vec<u8> {
+fn packetize_aac(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<u8> {
     let size = (data.len() as u16) & 0x1FFF;
     let mut payload = Vec::with_capacity(4 + data.len());
     payload.extend_from_slice(&16u16.to_be_bytes());
     payload.extend_from_slice(&(size << 3).to_be_bytes());
     payload.extend_from_slice(data);
-    rtp_packet(channel, AUDIO_PT, state, ts, true, &payload)
+    rtp_packet(AUDIO_PT, state, ts, true, &payload)
 }

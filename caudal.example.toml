@@ -57,6 +57,22 @@ max_mb = 256  # Maximum buffer size in megabytes
 # stream = "main"
 # url = "srt://remote.example:9000?streamid=publish/main&passphrase=..."
 
+# Serve streams out over RTSP (rtsp://host:8554/<name>), TCP interleaved or
+# UDP unicast (ffplay/VLC's default), chosen per SETUP by the client. RTSPS
+# (TLS, media still interleaved over the same TCP connection) is optional
+# and needs its own bind + certificate.
+# [rtsp]
+# bind = "0.0.0.0:8554"
+# udp_port_range = [8000, 8999]  # RTP/RTCP port pairs for UDP unicast SETUPs
+# tls_bind = "0.0.0.0:322"       # rtsps://; omit to disable
+# tls_cert = "/etc/caudal/fullchain.pem"
+# tls_key = "/etc/caudal/privkey.pem"
+
+# Pull an IP camera in as a live stream.
+# [[rtsp.pull]]
+# stream = "cam1"
+# url = "rtsp://user:pass@192.0.2.10/stream1"
+
 # 24/7 channels from files: each playlist plays as one continuous live stream,
 # available on every output (LL-HLS, WHEP, MoQ, SRT, RTSP, recording).
 # Items are files (MP4/MOV, MPEG-TS) or directories (their media files, sorted

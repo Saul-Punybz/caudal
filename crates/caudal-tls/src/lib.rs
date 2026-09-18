@@ -6,8 +6,10 @@
 //! build simple (no cc/cmake toolchain needed to cross-compile it), and
 //! Caudal doesn't need FIPS or the aws-lc-rs performance edge here.
 
+use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 mod accept;
 mod acme;
@@ -50,4 +52,18 @@ pub async fn serve(
             acme::serve_acme(cfg.bind, domains, email, cache_dir, staging, app, shutdown).await
         }
     }
+}
+
+/// A bare rustls TLS acceptor for protocols other than HTTP: no ALPN
+/// negotiation, no axum `Router`, just "TLS handshake in, `AsyncRead +
+/// AsyncWrite` stream out". Used by `caudal-rtsp` for RTSPS (RTSP text and
+/// interleaved RTP/RTCP framed inside the TLS record layer, same as media
+/// over plain TCP interleaved). Certificates hot-reload the same way
+/// `CertSource::Files` does for HTTPS.
+pub async fn raw_tls_acceptor(cert: PathBuf, key: PathBuf) -> io::Result<tokio_rustls::TlsAcceptor> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let resolver = resolver::FileCertResolver::load(cert, key)?;
+    resolver.spawn_reloader();
+    let server_config = rustls::ServerConfig::builder().with_no_client_auth().with_cert_resolver(resolver);
+    Ok(tokio_rustls::TlsAcceptor::from(Arc::new(server_config)))
 }

@@ -199,6 +199,9 @@ async fn run(cfg: config::Config) -> ExitCode {
             .map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() })
             .collect(),
         buffer: cfg.buffer.to_buffer_config(),
+        tls: cfg.rtsp.to_tls_config().expect("validated"),
+        udp_port_range: cfg.rtsp.udp_port_range,
+        session_timeout: caudal_rtsp::DEFAULT_SESSION_TIMEOUT,
     };
     if rtsp_cfg.bind.is_some() || !rtsp_cfg.pulls.is_empty() {
         let rtsp_handle = tokio::spawn(caudal_rtsp::serve(rtsp_cfg, registry.clone()));

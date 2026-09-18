@@ -25,6 +25,20 @@ fn free_port() -> u16 {
     StdTcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// A UDP port range unlikely to collide with anything already bound: probed
+/// with `UdpSocket::bind` (never `TcpListener`, whose port namespace is
+/// independent from UDP's and so tells you nothing about UDP availability).
+/// Tests that never issue a UDP SETUP just need a harmless placeholder;
+/// tests that do issue one need this actually free, and this is the only
+/// reliable way to get that.
+fn free_udp_port_range() -> (u16, u16) {
+    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind ephemeral udp port to probe for a free range");
+    let port = probe.local_addr().expect("local_addr").port();
+    drop(probe);
+    let start = if port % 2 == 0 { port } else { port - 1 };
+    (start, start.saturating_add(40))
+}
+
 fn fixture() -> Demuxed {
     mp4demux::demux(include_bytes!("../../caudal-hls/tests/fixtures/av.mp4"))
 }
@@ -59,6 +73,19 @@ struct Source {
 
 impl Source {
     async fn start(name: &str, port: u16, gate: Option<Arc<dyn Gate>>) -> Self {
+        // A harmless placeholder range: fine for every test that never
+        // issues a UDP SETUP (the pool only binds ports on demand).
+        Self::start_opts(name, port, gate, None, caudal_rtsp::DEFAULT_SESSION_TIMEOUT, (0, 0)).await
+    }
+
+    async fn start_opts(
+        name: &str,
+        port: u16,
+        gate: Option<Arc<dyn Gate>>,
+        tls: Option<caudal_rtsp::RtspTlsConfig>,
+        session_timeout: Duration,
+        udp_port_range: (u16, u16),
+    ) -> Self {
         let fx = fixture();
         let registry = Registry::new();
         if let Some(gate) = gate {
@@ -91,6 +118,9 @@ impl Source {
             bind: Some(format!("127.0.0.1:{port}").parse().unwrap()),
             pulls: Vec::new(),
             buffer: BufferConfig::default(),
+            tls,
+            udp_port_range,
+            session_timeout,
         };
         let reg = registry.clone();
         let server = tokio::spawn(async move {
@@ -179,6 +209,36 @@ async fn describe_status(port: u16, path: &str) -> u16 {
     text.split_whitespace().nth(1).expect("status line").parse().expect("status code")
 }
 
+/// Sends one raw RTSP request over `sock` and returns the full response
+/// text (status line + headers; no body is expected from any request these
+/// tests send).
+async fn rtsp_request(sock: &mut tokio::net::TcpStream, req: &str) -> String {
+    sock.write_all(req.as_bytes()).await.expect("write");
+    let mut buf = vec![0u8; 8192];
+    let n = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf))
+        .await
+        .expect("response timed out")
+        .expect("read");
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
+/// The first `streamid=<n>` in a DESCRIBE response's SDP body (its control
+/// URL), so SETUP tests don't have to assume track ordering.
+fn first_streamid(describe_resp: &str) -> u32 {
+    let idx = describe_resp.find("streamid=").expect("no streamid= in DESCRIBE response");
+    let rest = &describe_resp[idx + "streamid=".len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().expect("parse streamid")
+}
+
+/// The RTP port from a SETUP response's `Transport: ...;server_port=a-b`.
+fn server_rtp_port(setup_resp: &str) -> u16 {
+    let idx = setup_resp.find("server_port=").expect("no server_port= in SETUP response");
+    let rest = &setup_resp[idx + "server_port=".len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().expect("parse server_port")
+}
+
 struct DenyGate(Denied);
 
 impl Gate for DenyGate {
@@ -204,19 +264,15 @@ async fn describe_setup_play_over_ffmpeg() {
 
     let url = format!("rtsp://127.0.0.1:{port}/test");
     let (ok, out, err) = run_cmd(
-        &format!(
-            "ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name -of csv=p=0 '{url}'"
-        ),
+        &format!("ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name -of csv=p=0 '{url}'"),
         Duration::from_secs(20),
     );
     assert!(ok, "ffprobe failed: stdout={out} stderr={err}");
     assert!(out.contains("h264"), "ffprobe codecs did not include h264: {out}");
     assert!(out.contains("aac"), "ffprobe codecs did not include aac: {out}");
 
-    let (ok, out, err) = run_cmd(
-        &format!("ffmpeg -v error -rtsp_transport tcp -i '{url}' -t 3 -f null -"),
-        Duration::from_secs(25),
-    );
+    let (ok, out, err) =
+        run_cmd(&format!("ffmpeg -v error -rtsp_transport tcp -i '{url}' -t 3 -f null -"), Duration::from_secs(25));
     assert!(ok, "ffmpeg decode failed: stdout={out} stderr={err}");
     assert!(err.trim().is_empty(), "ffmpeg reported errors: {err}");
 
@@ -260,6 +316,9 @@ async fn pull_republishes_camera_and_reconnects() {
         bind: None,
         pulls: vec![RtspPull { stream: "cam".to_owned(), url: format!("rtsp://127.0.0.1:{port}/test") }],
         buffer: BufferConfig::default(),
+        tls: None,
+        udp_port_range: (0, 0),
+        session_timeout: caudal_rtsp::DEFAULT_SESSION_TIMEOUT,
     };
     let dest2 = dest.clone();
     let pull_handle = tokio::spawn(async move {
@@ -316,4 +375,169 @@ async fn pull_republishes_camera_and_reconnects() {
 
     pull_handle.abort();
     source2.kill();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn describe_setup_play_over_ffmpeg_udp() {
+    if !have("ffprobe") || !have("ffmpeg") {
+        eprintln!("SKIP: ffprobe/ffmpeg not installed");
+        return;
+    }
+    let port = free_port();
+    let udp_range = free_udp_port_range();
+    let source = Source::start_opts("test", port, None, None, caudal_rtsp::DEFAULT_SESSION_TIMEOUT, udp_range).await;
+
+    let url = format!("rtsp://127.0.0.1:{port}/test");
+    let (ok, out, err) = run_cmd(
+        &format!("ffprobe -v error -rtsp_transport udp -show_entries stream=codec_name -of csv=p=0 '{url}'"),
+        Duration::from_secs(20),
+    );
+    assert!(ok, "ffprobe (udp) failed: stdout={out} stderr={err}");
+    assert!(out.contains("h264"), "ffprobe (udp) codecs did not include h264: {out}");
+    assert!(out.contains("aac"), "ffprobe (udp) codecs did not include aac: {out}");
+
+    let (ok, out, err) =
+        run_cmd(&format!("ffmpeg -v error -rtsp_transport udp -i '{url}' -t 3 -f null -"), Duration::from_secs(25));
+    assert!(ok, "ffmpeg (udp) decode failed: stdout={out} stderr={err}");
+    assert!(err.trim().is_empty(), "ffmpeg (udp) reported errors: {err}");
+
+    source.kill();
+}
+
+/// Writes a freshly generated self-signed cert/key pair to
+/// `<dir>/<name>.{cert,key}.pem` for the given SANs.
+fn write_cert(dir: &std::path::Path, name: &str, sans: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+    let sans: Vec<String> = sans.iter().map(|s| s.to_string()).collect();
+    let certified = rcgen::generate_simple_self_signed(sans).expect("generate self-signed cert");
+    let cert_path = dir.join(format!("{name}.cert.pem"));
+    let key_path = dir.join(format!("{name}.key.pem"));
+    std::fs::write(&cert_path, certified.cert.pem()).expect("write cert pem");
+    std::fs::write(&key_path, certified.key_pair.serialize_pem()).expect("write key pem");
+    (cert_path, key_path)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rtsps_over_tls_with_ffmpeg() {
+    if !have("ffprobe") || !have("ffmpeg") {
+        eprintln!("SKIP: ffprobe/ffmpeg not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (cert_path, key_path) = write_cert(dir.path(), "rtsps", &["127.0.0.1", "localhost"]);
+
+    let port = free_port();
+    let tls_port = free_port();
+    let tls_cfg = caudal_rtsp::RtspTlsConfig {
+        bind: format!("127.0.0.1:{tls_port}").parse().unwrap(),
+        cert: cert_path,
+        key: key_path,
+    };
+    let source = Source::start_opts(
+        "test",
+        port,
+        None,
+        Some(tls_cfg),
+        caudal_rtsp::DEFAULT_SESSION_TIMEOUT,
+        (0, 0), // media stays TCP interleaved inside TLS; UDP never offered
+    )
+    .await;
+
+    let url = format!("rtsps://127.0.0.1:{tls_port}/test");
+    // Self-signed cert: tell ffmpeg's tls protocol not to verify it.
+    let (ok, out, err) = run_cmd(
+        &format!(
+            "ffprobe -v error -tls_verify 0 -rtsp_transport tcp -show_entries stream=codec_name -of csv=p=0 '{url}'"
+        ),
+        Duration::from_secs(20),
+    );
+    assert!(ok, "ffprobe (rtsps) failed: stdout={out} stderr={err}");
+    assert!(out.contains("h264"), "ffprobe (rtsps) codecs did not include h264: {out}");
+    assert!(out.contains("aac"), "ffprobe (rtsps) codecs did not include aac: {out}");
+
+    let (ok, out, err) = run_cmd(
+        &format!("ffmpeg -v error -tls_verify 0 -rtsp_transport tcp -i '{url}' -t 3 -f null -"),
+        Duration::from_secs(25),
+    );
+    assert!(ok, "ffmpeg (rtsps) decode failed: stdout={out} stderr={err}");
+    assert!(err.trim().is_empty(), "ffmpeg (rtsps) reported errors: {err}");
+
+    source.kill();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn udp_setup_allocates_from_configured_range_and_teardown_frees_it() {
+    let port = free_port();
+    let (udp_start, udp_end) = free_udp_port_range();
+    let source =
+        Source::start_opts("test", port, None, None, caudal_rtsp::DEFAULT_SESSION_TIMEOUT, (udp_start, udp_end)).await;
+
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.expect("connect");
+    let describe = format!("DESCRIBE rtsp://127.0.0.1:{port}/test RTSP/1.0\r\nCSeq: 1\r\n\r\n");
+    let resp = rtsp_request(&mut sock, &describe).await;
+    assert!(resp.starts_with("RTSP/1.0 200"), "describe: {resp}");
+    let track_id = first_streamid(&resp);
+
+    let setup = format!(
+        "SETUP rtsp://127.0.0.1:{port}/test/streamid={track_id} RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP;unicast;client_port=41000-41001\r\n\r\n"
+    );
+    let resp = rtsp_request(&mut sock, &setup).await;
+    assert!(resp.starts_with("RTSP/1.0 200"), "setup: {resp}");
+    let allocated = server_rtp_port(&resp);
+    assert!(
+        (udp_start..=udp_end).contains(&allocated),
+        "server_port {allocated} outside configured range {udp_start}-{udp_end}"
+    );
+    assert_eq!(allocated % 2, 0, "server RTP port should be even");
+
+    // Held while the session is alive: binding it ourselves must fail.
+    assert!(
+        std::net::UdpSocket::bind(("127.0.0.1", allocated)).is_err(),
+        "udp port {allocated} should be held by the live session"
+    );
+
+    let teardown = format!("TEARDOWN rtsp://127.0.0.1:{port}/test RTSP/1.0\r\nCSeq: 3\r\n\r\n");
+    let resp = rtsp_request(&mut sock, &teardown).await;
+    assert!(resp.starts_with("RTSP/1.0 200"), "teardown: {resp}");
+
+    // The RTCP listener's abort isn't synchronous with TEARDOWN returning,
+    // so poll briefly for the port to actually free.
+    let freed = wait_for(Duration::from_secs(2), || std::net::UdpSocket::bind(("127.0.0.1", allocated)).ok()).await;
+    assert!(freed.is_some(), "udp port {allocated} was not freed after TEARDOWN");
+
+    source.kill();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_session_times_out_and_frees_the_udp_port() {
+    let port = free_port();
+    let (udp_start, udp_end) = free_udp_port_range();
+    let timeout = Duration::from_secs(2);
+    let source = Source::start_opts("test", port, None, None, timeout, (udp_start, udp_end)).await;
+
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.expect("connect");
+    let describe = format!("DESCRIBE rtsp://127.0.0.1:{port}/test RTSP/1.0\r\nCSeq: 1\r\n\r\n");
+    let resp = rtsp_request(&mut sock, &describe).await;
+    let track_id = first_streamid(&resp);
+
+    let setup = format!(
+        "SETUP rtsp://127.0.0.1:{port}/test/streamid={track_id} RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP;unicast;client_port=41010-41011\r\n\r\n"
+    );
+    let resp = rtsp_request(&mut sock, &setup).await;
+    assert!(resp.starts_with("RTSP/1.0 200"), "setup: {resp}");
+    assert!(
+        resp.contains(&format!("timeout={}", timeout.as_secs())),
+        "Session header should advertise the configured timeout: {resp}"
+    );
+    let allocated = server_rtp_port(&resp);
+
+    // No further RTSP requests and no RTCP: the idle clock must fire and
+    // the server must drop the connection once it does.
+    let mut probe = [0u8; 16];
+    let closed = tokio::time::timeout(timeout + Duration::from_secs(3), sock.read(&mut probe)).await;
+    assert!(matches!(closed, Ok(Ok(0))), "server did not close the idle connection: {closed:?}");
+
+    let freed = wait_for(Duration::from_secs(2), || std::net::UdpSocket::bind(("127.0.0.1", allocated)).ok()).await;
+    assert!(freed.is_some(), "udp port {allocated} was not freed after the idle timeout");
+
+    source.kill();
 }

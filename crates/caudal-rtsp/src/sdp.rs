@@ -22,14 +22,12 @@ fn control_url(host: &str, stream: &str, track_id: u32, query: &str) -> String {
 
 /// `profile-level-id` + `sprop-parameter-sets` from an avcC blob.
 fn h264_fmtp(init: &[u8]) -> Option<String> {
-    let record = scuffle_h264::AVCDecoderConfigurationRecord::parse(&mut Cursor::new(Bytes::copy_from_slice(init))).ok()?;
+    let record =
+        scuffle_h264::AVCDecoderConfigurationRecord::parse(&mut Cursor::new(Bytes::copy_from_slice(init))).ok()?;
     let profile_level =
         format!("{:02X}{:02X}{:02X}", record.profile_indication, record.profile_compatibility, record.level_indication);
-    let sprop =
-        record.sps.iter().chain(record.pps.iter()).map(|nal| BASE64.encode(nal)).collect::<Vec<_>>().join(",");
-    Some(format!(
-        "{VIDEO_PT} packetization-mode=1;profile-level-id={profile_level};sprop-parameter-sets={sprop}"
-    ))
+    let sprop = record.sps.iter().chain(record.pps.iter()).map(|nal| BASE64.encode(nal)).collect::<Vec<_>>().join(",");
+    Some(format!("{VIDEO_PT} packetization-mode=1;profile-level-id={profile_level};sprop-parameter-sets={sprop}"))
 }
 
 /// `sprop-vps`/`sprop-sps`/`sprop-pps` from an hvcC blob.

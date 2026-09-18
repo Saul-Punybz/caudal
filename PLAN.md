@@ -32,20 +32,45 @@ MistServer's recurring bugs come from its design, not from typos:
 7. **OpenTelemetry traces** alongside Prometheus metrics.
 8. **MistServer config import**: read an existing `mistserver.conf` so people can migrate.
 
+## Why Rust and not Go
+
+Measured on an M-series Mac, 17 Sep 2026:
+
+| | Go: MediaMTX 1.21 | Rust: tokio + axum baseline |
+|---|---|---|
+| Binary | 54 MB | 0.5 MB (full Caudal expected at 10–20 MB, to be measured) |
+| Idle RSS | 38 MB | 6.5 MB |
+
+Go's media ecosystem is more mature (pion, gortsplib, gosrt, mp4ff), but a
+Go rewrite would be a second MediaMTX (MIT, ★20K). Rust gives predictable
+memory with no GC pauses at multi-Gbps fan-out, and the compiler rejects
+data races, the class behind MistServer's deadlocks (#119). Where Rust has
+gaps (RTSP server, SRT maturity) the MIT Go code is ported, not linked.
+
+## UI
+
+MistServer's UI is one ~21K-line jQuery file. Caudal ships React + Vite +
+TypeScript + Tailwind + shadcn/ui, with uPlot charts, live updates over
+WebSocket/SSE and an OpenAPI-generated client, embedded in the binary with
+`rust-embed`. Same screens (overview, streams, protocols, push, triggers,
+logs, stats, keys, embed, preview), redesigned.
+
 ## Libraries (reuse before writing)
+
+Full list with repos and licenses: [REUSE.md](REUSE.md).
 
 Picked from a crates.io survey on 17 Sep 2026. All MIT or Apache-2.0 except where noted.
 
 | Area | Crate | Note |
 |---|---|---|
-| RTMP | `rml_rtmp` 0.8 (fallback `scuffle-rtmp`) | sans-I/O |
+| RTMP | `scuffle-rtmp` + `scuffle-flv` + `scuffle-transmuxer` (fallback `rml_rtmp`) | shortest path to fMP4 |
 | SRT | `srt-tokio` 0.4 | pure Rust but says "not production ready". Risk: fall back to libsrt over FFI behind a feature flag |
 | WebRTC / WHIP / WHEP | `str0m` 0.23 | sans-I/O |
 | MP4 / CMAF | `mp4-atom` 0.15 | |
 | MPEG-TS | `mpeg2ts` 0.6 | |
 | HLS playlists | `m3u8-rs` 6 | |
 | H.264 / HEVC / AV1 | `h264-reader`, `scuffle-h265`, `scuffle-av1` | AV1 parsing is young |
-| MoQ | `moq-lite`, `hang`, `quinn`, `wtransport` | |
+| MoQ | `moq-net` (was `moq-lite`), `hang`, `moq-relay`, `quinn` | |
 | HTTP / TLS / ACME | `axum`, `rustls`, `rustls-acme` | |
 | Metrics | `metrics` + `metrics-exporter-prometheus` | |
 | RTSP client | `retina` | no Rust RTSP **server** exists; we write it |

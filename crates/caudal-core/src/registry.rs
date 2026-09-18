@@ -1,11 +1,12 @@
 //! Stream names to live streams, with one publisher per name.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
+use crate::gate::{Access, Denied, Gate};
 use crate::media::{Frame, TrackInfo, valid_stream_name};
 use crate::stream::{BufferConfig, PushError, StartAt, Stream, Subscriber};
 
@@ -20,11 +21,18 @@ pub enum PublishError {
 pub struct Registry {
     streams: Mutex<HashMap<Arc<str>, Arc<Stream>>>,
     published: broadcast::Sender<Arc<Stream>>,
+    ended: broadcast::Sender<Arc<str>>,
+    gate: OnceLock<Arc<dyn Gate>>,
 }
 
 impl Default for Registry {
     fn default() -> Self {
-        Self { streams: Mutex::default(), published: broadcast::channel(64).0 }
+        Self {
+            streams: Mutex::default(),
+            published: broadcast::channel(64).0,
+            ended: broadcast::channel(64).0,
+            gate: OnceLock::new(),
+        }
     }
 }
 
@@ -37,6 +45,28 @@ impl Registry {
     /// run ahead of their first viewer (LL-HLS) start their packager here.
     pub fn subscribe_publishes(&self) -> broadcast::Receiver<Arc<Stream>> {
         self.published.subscribe()
+    }
+
+    /// Names of streams whose publisher went away, from now on.
+    pub fn subscribe_ends(&self) -> broadcast::Receiver<Arc<str>> {
+        self.ended.subscribe()
+    }
+
+    /// Installs the access policy. Once, at startup; without one, every
+    /// publish and play is allowed.
+    pub fn set_gate(&self, gate: Arc<dyn Gate>) {
+        if self.gate.set(gate).is_err() {
+            tracing::warn!("registry gate already set; keeping the first one");
+        }
+    }
+
+    /// Asks the installed gate. Ingest calls this before `publish`, outputs
+    /// before serving a viewer.
+    pub async fn authorize(&self, access: Access, stream: &str, token: Option<&str>) -> Result<(), Denied> {
+        match self.gate.get() {
+            Some(g) => g.check(access, stream, token).await,
+            None => Ok(()),
+        }
     }
 
     /// Claims `name` for a new publisher. The claim lasts until the returned
@@ -104,6 +134,8 @@ impl Drop for Publisher {
         if map.get(self.stream.name()).is_some_and(|s| Arc::ptr_eq(s, &self.stream)) {
             map.remove(self.stream.name());
         }
+        drop(map);
+        let _ = self.registry.ended.send(self.stream.name().into());
         tracing::info!(stream = %self.stream.name(), "publish ended");
     }
 }

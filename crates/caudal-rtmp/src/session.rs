@@ -181,6 +181,15 @@ impl SessionHandler for Handler {
             return Err(reject_error());
         }
 
+        // OBS and ffmpeg carry credentials in the stream key:
+        // rtmp://host/live/<name>?token=<jwt>
+        let (stream_name, query) = stream_name.split_once('?').unwrap_or((stream_name, ""));
+        let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).filter(|t| !t.is_empty());
+        if let Err(denied) = self.registry.authorize(caudal_core::Access::Publish, stream_name, token).await {
+            tracing::info!(app = %app_name, stream = %stream_name, reason = ?denied, "rtmp publish rejected");
+            return Err(reject_error());
+        }
+
         match self.registry.publish(stream_name, self.buffer) {
             Ok(publisher) => {
                 let shared = Arc::new(Shared { publisher, pending: Mutex::new(Pending::default()) });

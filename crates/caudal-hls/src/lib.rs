@@ -256,15 +256,29 @@ async fn hls_file(
     req: Request,
 ) -> Response {
     let Some(entry) = hls.get(&name) else { return error(StatusCode::NOT_FOUND) };
+    let query = query.as_deref().unwrap_or("");
+    let token = request_token(query, &req);
+    if token.is_some_and(|t| !token_is_url_safe(t)) {
+        return error(StatusCode::FORBIDDEN);
+    }
+    match hls.registry.authorize(caudal_core::Access::Play, &name, token).await {
+        Ok(()) => {}
+        Err(caudal_core::Denied::Missing) => {
+            let mut r = error(StatusCode::UNAUTHORIZED);
+            r.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+            return r;
+        }
+        Err(caudal_core::Denied::Refused(_)) => return error(StatusCode::FORBIDDEN),
+    }
     if file.ends_with(".m3u8") {
         entry.seen(viewer_key(&req));
     }
     match file.as_str() {
-        "index.m3u8" => playlist(&entry, query.as_deref().unwrap_or("")).await,
+        "index.m3u8" => playlist(&entry, query, token).await,
         "master.m3u8" => {
             let wait = entry.block_timeout();
             match entry.wait(wait, |p| p.multivariant()).await {
-                Some(m) => respond(StatusCode::OK, PLAYLIST, "no-cache", m),
+                Some(m) => respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&m, token)),
                 None => error(StatusCode::NOT_FOUND),
             }
         }
@@ -335,7 +349,7 @@ fn parse_directives(query: &str) -> Result<Directives, ()> {
     Ok(d)
 }
 
-async fn playlist(entry: &Entry, query: &str) -> Response {
+async fn playlist(entry: &Entry, query: &str, token: Option<&str>) -> Response {
     let Ok(d) = parse_directives(query) else { return error(StatusCode::BAD_REQUEST) };
     if let Some(msn) = d.msn {
         // RFC 8216bis §6.2.5.2: too far past the live edge is a client bug.
@@ -357,9 +371,56 @@ async fn playlist(entry: &Entry, query: &str) -> Response {
         })
         .await;
     match body {
-        Some(b) => respond(StatusCode::OK, PLAYLIST, "no-cache", b),
+        Some(b) => respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&b, token)),
         None => error(StatusCode::SERVICE_UNAVAILABLE),
     }
+}
+
+/// `?token=` wins over `Authorization: Bearer`, so a player that can only
+/// set URLs still works.
+fn request_token<'a>(query: &'a str, req: &'a Request) -> Option<&'a str> {
+    let from_query = query.split('&').find_map(|kv| kv.strip_prefix("token=")).filter(|t| !t.is_empty());
+    from_query.or_else(|| {
+        req.headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    })
+}
+
+/// JWTs are base64url segments joined by dots. Anything else is refused, so
+/// a token can never inject text into a playlist.
+fn token_is_url_safe(t: &str) -> bool {
+    t.len() <= 4096 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// Players only put the token on the first playlist request; hls.js does
+/// not carry it to the URIs inside. So every URI in a playlist we serve
+/// carries it forward: plain URI lines and `URI="..."` attributes.
+fn with_token(playlist: &str, token: Option<&str>) -> String {
+    let Some(token) = token else { return playlist.to_owned() };
+    let add = |uri: &str| format!("{uri}{}token={token}", if uri.contains('?') { '&' } else { '?' });
+    let mut out = String::with_capacity(playlist.len() + 64);
+    for line in playlist.lines() {
+        if line.is_empty() {
+        } else if !line.starts_with('#') {
+            out.push_str(&add(line));
+        } else {
+            let mut rest = line;
+            while let Some(i) = rest.find("URI=\"") {
+                let (head, tail) = rest.split_at(i + 5);
+                out.push_str(head);
+                let end = tail.find('"').unwrap_or(tail.len());
+                out.push_str(&add(&tail[..end]));
+                rest = &tail[end..];
+            }
+            out.push_str(rest);
+        }
+        out.push('\n');
+    }
+    out
 }
 
 async fn play(State(hls): State<Arc<Hls>>, Path(name): Path<String>) -> Response {
@@ -375,3 +436,26 @@ async fn play(State(hls): State<Arc<Hls>>, Path(name): Path<String>) -> Response
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod token_tests {
+    use super::{token_is_url_safe, with_token};
+
+    #[test]
+    fn every_uri_carries_the_token() {
+        let pl = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART:DURATION=0.2,URI=\"s1.p0.m4s\",INDEPENDENT=YES\n#EXTINF:2.0,\ns1.m4s\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"s2.p0.m4s\"\n";
+        let out = with_token(pl, Some("a.b.c"));
+        assert!(out.contains("URI=\"init.mp4?token=a.b.c\""), "{out}");
+        assert!(out.contains("URI=\"s1.p0.m4s?token=a.b.c\",INDEPENDENT=YES"), "{out}");
+        assert!(out.contains("\ns1.m4s?token=a.b.c\n"), "{out}");
+        assert!(out.contains("URI=\"s2.p0.m4s?token=a.b.c\""), "{out}");
+        assert_eq!(with_token(pl, None), pl);
+    }
+
+    #[test]
+    fn only_jwt_alphabet_tokens() {
+        assert!(token_is_url_safe("eyJhbGciOi.J9-_x.sig"));
+        assert!(!token_is_url_safe("a\"#EXT-X-ENDLIST"));
+        assert!(!token_is_url_safe("a b"));
+    }
+}

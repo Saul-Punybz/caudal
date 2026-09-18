@@ -115,10 +115,10 @@ license re-checked by hand with `gh api` and crates.io. Tiers match
 | Playlist / linear channels | ffplayout/ffplayout | — | **GPL-3.0** | 589 | Sep 2026 | reference only, never link |
 | VOD MP4 demux | kixelated/mp4-atom | 0.15.0 | MIT OR Apache-2.0 | 30 | Sep 2026 | depend (already chosen) |
 | Audio demux/decode | pdeljanov/Symphonia | 0.6.1 | **MPL-2.0** | — | Aug 2026 | depend unmodified only if needed; file-level copyleft |
-| NDI | grafton-ndi and other bindings | 1.0.0 | Apache-2.0 bindings over **proprietary Vizrt SDK** | 34 | Jun 2026 | skip; SDK cannot ship with an OSS binary |
+| NDI | grafton-ndi (best Rust binding: NDI 6, discovery, send/receive, tally, tokio-friendly) | 1.0.0 | Apache-2.0 bindings over **proprietary Vizrt SDK** | 34 | Jun 2026 | optional plugin only, behind a feature flag, with the user installing Vizrt's SDK; never in the default binary |
 | NDI alternative | cool-japan/oximedia (`oximedia-videoip`) | 0.2.1 | **no license file** | 257 | Sep 2026 | skip until licensed and proven; single author, created Feb 2026 |
 | PSSH boxes (DRM ids) | emarsden/pssh-box-rs (`pssh-box`) | 0.2.5 | MIT | 16 | Jul 2026 | depend |
-| CENC/CBCS packaging | vbasky/sheathe | 0.6.1 | **no license file** | 16 | Sep 2026 | reference only; write our `senc`/`tenc` writer on mp4-atom |
+| CENC/CBCS packaging | vbasky/sheathe (`sheathe-crypto`, `sheathe-mp4`) | 0.6.1 | MIT OR Apache-2.0 (declared on crates.io; GitHub detects no license file) | 16 | Sep 2026 | trial for CENC before writing our own; `oximedia-drm` 0.2.1 (Apache-2.0, part of a one-author mega-project from Feb 2026) as reference |
 | AES-128 HLS segments | `aes` + `cbc` crates | — | MIT/Apache | — | — | write ourselves (small) |
 | Widevine / FairPlay packager | none legitimate in Rust | — | — | — | — | skip; both need vendor licensing |
 | DASH MPD generation | emarsden/dash-mpd-rs (`dash-mpd`) | 0.20.4 | MIT | 111 | Sep 2026 | depend (has a write path) |
@@ -210,7 +210,9 @@ repo re-checked by hand with crates.io and `gh api`.
 - **Plan:** embedded `moq-relay` between nodes; edges pull on first viewer.
 
 ### M11 · Transcoding / ABR
-- Pure Rust: `rav1e` 0.8.1 (AV1 encode), `rav1d` 1.1.0 (AV1 decode), BSD-2. No pure-Rust H.264/HEVC/AAC encoder worth using.
+- **Correction, 18 Sep 2026 (found by Saul):** a pure-Rust H.264 encoder AND decoder exists: `rusty_h264` 0.16.0 (BSD-2-Clause, github.com/remade-with-rust/rusty_h264, Mata Network). 77K lines, 247 tests, fuzzed decoder, codec core `#![forbid(unsafe_code)]` with SIMD/asm isolated in `rusty_h264-accel` (needs `nasm`; `--no-default-features` = 100% safe, slower). Decoder: Constrained Baseline + most of High, CABAC; encoder: Baseline + Main, ABR rate control, CABAC, opt-in B-frames. Its "bit-exact" claims are conformance (ffmpeg decodes its output identically; its decoder matches Cisco's reference), not speed or quality vs x264. Young (created Jun 2026, 6★). **Trial for thumbnails and H.264 ladders; benchmark against ffmpeg/x264 on this machine before relying on it.**
+- `rust_h264` 0.4.0 (MIT OR Apache-2.0): pure-Rust H.264 decoder only, no release since Apr 2026. Fallback decoder.
+- Pure Rust AV1: `rav1e` 0.8.1 (encode), `rav1d` 1.1.0 (decode), BSD-2. Still no pure-Rust HEVC or AAC encoder worth using.
 - **External ffmpeg:** `ffmpeg-sidecar` 2.5.2 (MIT, ★539) drives ffmpeg as a process, which keeps GPL out of our binary.
 - **macOS hardware encode:** `objc2-video-toolbox` 0.3.2 (Zlib OR Apache-2.0 OR MIT).
 - `moq-dev/moq` `moq-transcode` / `moq-video`: per-rung ABR over hang broadcasts with NVENC / VideoToolbox / Media Foundation / openh264. Only reusable as-is if Caudal's internal model becomes `hang`; otherwise reference `rs/moq-transcode/src/{ladder,rung,pipeline}.rs`.

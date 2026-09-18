@@ -94,27 +94,32 @@ fn spawn_announce_deadline(shared: &Arc<Shared>) {
     });
 }
 
-/// Extracts the publish target from an SRT stream id: `publish/<name>` or
-/// the SRT access-control form `#!::r=<name>,m=publish`. Any other `m=`
-/// value, a missing name, or an id matching neither form is rejected
+/// Extracts the publish target and optional token from an SRT stream id:
+/// `publish/<name>` or `publish/<name>?token=<t>`, or the SRT access-control
+/// form `#!::r=<name>,m=publish` with an optional `t=<token>`. Any other
+/// `m=` value, a missing name, or an id matching neither form is rejected
 /// (`None`).
-fn parse_publish_name(streamid: &str) -> Option<&str> {
-    if let Some(name) = streamid.strip_prefix("publish/") {
-        return (!name.is_empty()).then_some(name);
+fn parse_publish(streamid: &str) -> Option<(&str, Option<&str>)> {
+    if let Some(rest) = streamid.strip_prefix("publish/") {
+        let (name, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let token = query.split('&').find_map(|kv| kv.strip_prefix("token="));
+        return (!name.is_empty()).then_some((name, token.filter(|t| !t.is_empty())));
     }
     if let Some(rest) = streamid.strip_prefix("#!::") {
         let mut mode: Option<&str> = None;
         let mut name: Option<&str> = None;
+        let mut token: Option<&str> = None;
         for field in rest.split(',') {
             let (key, value) = field.split_once('=')?;
             match key {
                 "m" => mode = Some(value),
                 "r" => name = Some(value),
+                "t" => token = Some(value),
                 _ => {}
             }
         }
         if mode == Some("publish") {
-            return name.filter(|n| !n.is_empty());
+            return name.filter(|n| !n.is_empty()).map(|n| (n, token.filter(|t| !t.is_empty())));
         }
         return None;
     }
@@ -126,10 +131,14 @@ fn parse_publish_name(streamid: &str) -> Option<&str> {
 /// path), never the listener.
 pub(crate) async fn handle(mut socket: SrtSocket, peer: SocketAddrV4, registry: Arc<Registry>, buffer: BufferConfig) {
     let streamid = socket.streamid().unwrap_or_default();
-    let Some(name) = parse_publish_name(&streamid) else {
+    let Some((name, token)) = parse_publish(&streamid) else {
         tracing::debug!(%peer, %streamid, "srt rejected: not a publish stream id");
         return;
     };
+    if let Err(denied) = registry.authorize(caudal_core::Access::Publish, name, token).await {
+        tracing::info!(%peer, stream = %name, reason = ?denied, "srt publish rejected");
+        return;
+    }
 
     let publisher = match registry.publish(name, buffer) {
         Ok(p) => p,
@@ -193,23 +202,25 @@ mod tests {
 
     #[test]
     fn publish_form_accepted() {
-        assert_eq!(parse_publish_name("publish/test"), Some("test"));
-        assert_eq!(parse_publish_name("publish/"), None);
+        assert_eq!(parse_publish("publish/test"), Some(("test", None)));
+        assert_eq!(parse_publish("publish/test?token=abc"), Some(("test", Some("abc"))));
+        assert_eq!(parse_publish("#!::r=test,m=publish,t=abc"), Some(("test", Some("abc"))));
+        assert_eq!(parse_publish("publish/"), None);
     }
 
     #[test]
     fn access_control_form_accepted() {
-        assert_eq!(parse_publish_name("#!::r=test,m=publish"), Some("test"));
-        assert_eq!(parse_publish_name("#!::m=publish,r=test"), Some("test"));
-        assert_eq!(parse_publish_name("#!::u=alice,r=test,m=publish"), Some("test"));
+        assert_eq!(parse_publish("#!::r=test,m=publish"), Some(("test", None)));
+        assert_eq!(parse_publish("#!::m=publish,r=test"), Some(("test", None)));
+        assert_eq!(parse_publish("#!::u=alice,r=test,m=publish"), Some(("test", None)));
     }
 
     #[test]
     fn play_and_other_modes_rejected() {
-        assert_eq!(parse_publish_name("play/test"), None);
-        assert_eq!(parse_publish_name("#!::r=test,m=request"), None);
-        assert_eq!(parse_publish_name("#!::m=publish"), None);
-        assert_eq!(parse_publish_name(""), None);
-        assert_eq!(parse_publish_name("garbage"), None);
+        assert_eq!(parse_publish("play/test"), None);
+        assert_eq!(parse_publish("#!::r=test,m=request"), None);
+        assert_eq!(parse_publish("#!::m=publish"), None);
+        assert_eq!(parse_publish(""), None);
+        assert_eq!(parse_publish("garbage"), None);
     }
 }

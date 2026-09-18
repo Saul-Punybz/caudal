@@ -138,7 +138,7 @@ test.describe("Caudal LL-HLS in a real browser", () => {
     const metrics: Metrics = { ...partial, currentTimeStart, currentTimeEnd, currentTimeDelta };
 
     console.log(`[${browserName}] readyState=${metrics.readyState} videoWidth=${metrics.videoWidth}x${metrics.videoHeight}`);
-    console.log(`[${browserName}] currentTime delta over 3s wall time: ${metrics.currentTimeDelta.toFixed(2)}s`);
+    console.log(`[${browserName}] currentTime delta over 3s wall time: ${(metrics.currentTimeDelta ?? 0).toFixed(2)}s`);
     console.log(
       `[${browserName}] live-edge distance: ${metrics.liveEdgeDistanceSec !== null ? metrics.liveEdgeDistanceSec.toFixed(2) + "s" : "n/a"}`,
     );

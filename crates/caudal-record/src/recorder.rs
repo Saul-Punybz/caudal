@@ -175,7 +175,12 @@ async fn apply(
     Ok(())
 }
 
-async fn create(shared: &Arc<Shared>, stream: &str, seg: &Segmenter, started: SystemTime) -> std::io::Result<Recording> {
+async fn create(
+    shared: &Arc<Shared>,
+    stream: &str,
+    seg: &Segmenter,
+    started: SystemTime,
+) -> std::io::Result<Recording> {
     let parent = shared.cfg.dir.join(stream);
     tokio::fs::create_dir_all(&parent).await?;
     let base = id_for(started);

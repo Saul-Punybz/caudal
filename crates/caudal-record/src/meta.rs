@@ -208,10 +208,7 @@ pub(crate) fn parse_rfc3339(s: &str) -> Option<SystemTime> {
 /// Writes `data` to `path` through a temp file and a rename, so readers
 /// (and a crash) only ever see the old or the new version.
 pub(crate) async fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("")
-    ));
+    let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
     let res = async {
         tokio::fs::write(&tmp, data).await?;
         tokio::fs::rename(&tmp, path).await
@@ -251,7 +248,10 @@ mod tests {
         }
         assert_eq!(rfc3339(SystemTime::UNIX_EPOCH + Duration::from_secs(1_789_000_000)), "2026-09-10T00:26:40.000Z");
         assert_eq!(id_for(SystemTime::UNIX_EPOCH + Duration::from_secs(1_789_000_000)), "20260910T002640Z");
-        assert_eq!(parse_rfc3339("2020-01-01T00:00:00Z"), Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_577_836_800)));
+        assert_eq!(
+            parse_rfc3339("2020-01-01T00:00:00Z"),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_577_836_800))
+        );
         assert_eq!(parse_rfc3339("garbage"), None);
     }
 

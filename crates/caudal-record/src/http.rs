@@ -246,7 +246,12 @@ struct ClipRequest {
     to_ms: i64,
 }
 
-async fn clip_route(State(shared): State<Arc<Shared>>, RawQuery(q): RawQuery, headers: HeaderMap, body: Bytes) -> Response {
+async fn clip_route(
+    State(shared): State<Arc<Shared>>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Ok(req) = serde_json::from_slice::<ClipRequest>(&body) else {
         return error(StatusCode::BAD_REQUEST, "expected {\"stream\", \"id\", \"from_ms\", \"to_ms\"}");
     };

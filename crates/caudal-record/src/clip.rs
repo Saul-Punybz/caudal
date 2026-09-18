@@ -16,8 +16,8 @@
 use std::path::{Path, PathBuf};
 
 use mp4_atom::{
-    Any, Co64, Ctts, CttsEntry, Decode, Edts, Elst, ElstEntry, Encode, Ftyp, Moov, Stco, Stsc, StscEntry, Stss,
-    Stsz, StszSamples, Stts, SttsEntry, Trak,
+    Any, Co64, Ctts, CttsEntry, Decode, Edts, Elst, ElstEntry, Encode, Ftyp, Moov, Stco, Stsc, StscEntry, Stss, Stsz,
+    StszSamples, Stts, SttsEntry, Trak,
 };
 
 use crate::meta::{parse_segment_name, playlist_segments};
@@ -217,7 +217,11 @@ pub(crate) async fn plan(dir: &Path, from_ms: i64, to_ms: i64) -> Result<ClipPla
 
         let mut trak = t.trak.clone();
         let stbl = &mut trak.mdia.minf.stbl;
-        stbl.stts = Stts { entries: run_length(ss.iter().map(|s| s.dur)).map(|(v, n)| SttsEntry { sample_count: n, sample_delta: v }).collect() };
+        stbl.stts = Stts {
+            entries: run_length(ss.iter().map(|s| s.dur))
+                .map(|(v, n)| SttsEntry { sample_count: n, sample_delta: v })
+                .collect(),
+        };
         let has_cts = ss.iter().any(|s| s.cts != 0);
         stbl.ctts = has_cts.then(|| Ctts {
             entries: run_length(ss.iter().map(|s| s.cts))
@@ -259,7 +263,11 @@ pub(crate) async fn plan(dir: &Path, from_ms: i64, to_ms: i64) -> Result<ClipPla
             } else {
                 let skip = (i128::from(-gap_us) * i128::from(ts) / 1_000_000) as i64;
                 let media = to_ms(media_dur as i64 - skip);
-                entries.push(ElstEntry { segment_duration: media, media_time: Some(skip as u64), media_rate: 1.into() });
+                entries.push(ElstEntry {
+                    segment_duration: media,
+                    media_time: Some(skip as u64),
+                    media_rate: 1.into(),
+                });
                 track_ms = media;
             }
         }

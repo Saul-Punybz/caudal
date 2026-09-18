@@ -1,18 +1,22 @@
 # STATUS — Caudal
 
-**Last updated:** 19 Sep 2026 (wave 1 merged: SCTE-35, UI screens, RTSP UDP/RTSPS; wave 2 running)
+**Last updated:** 19 Sep 2026 (wave 2 merged: admin login, health alerts, hot reload; next: MediaMTX benchmark)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (19 Sep 2026)
-`main` pushed and verified after wave 1: clippy 0, deny ok, workspace 237/237 (twice), e2e 15/15 with Apple's validator required.
-**Wave 1 merged:** SCTE-35 (TS 0x86 + RTMP onCuePoint + `POST /api/v1/streams/{name}/cues` in; LL-HLS `EXT-X-DATERANGE` + TS PID 0x103 out), UI screens (Channels, Restreams, Recordings, Copy for OBS), RTSP over UDP unicast + RTSPS (`[rtsp] udp_port_range`, `tls_bind`). MSRV is now **1.95** (scte35-splice).
-**Wave 2 running:** hot config reload (Sonnet), admin login + health alerts (Sonnet). Then the benchmark vs MediaMTX v1.21 (Opus) on a quiet machine.
-**SCTE-35 open items (agent's report):** API can't request `splice_insert` (always time_signal); RTMP `onCuePoint` layouts not checked against a real encoder (`duration` read as seconds); cues placed on video DTS, not PTS (off by the B-frame reorder delay); a cue before the first keyframe is dropped; cues inside 24/7 channel files ignored; never played through a real SSAI system.
-**Not verified:** RTSP with VLC (not installed), RTCP SR consumed by a real receiver; UI Skip button on a real channel, Restreams screen with a live target.
+## RESUME HERE (19 Sep 2026, wave 2 merged)
+`main` pushed and verified: clippy 0, deny ok, workspace 298/298 (two runs), e2e 15/15 with Apple's validator required, reload e2e 3/3.
+**Wave 1:** SCTE-35, UI screens (Channels, Restreams, Recordings, Copy for OBS), RTSP over UDP + RTSPS. MSRV **1.95**.
+**Wave 2:**
+- **Admin login** (`crates/caudal-admin`): `[admin]` users (argon2id, `caudal hash-password`), OIDC code+PKCE (`openidconnect` =4.0.1), API tokens, server-side sessions + per-session CSRF token, 10 logins/min/IP. Public routes: `/healthz`, `/readyz`, `/hls/`, `/play/`, `/vod/`, `/whip/`, `/whep/`, `/moq/`, UI assets (GET). `/metrics` needs admin unless `public_metrics = true`. **Refuses to start on a non-loopback bind without `[admin]` or `allow_unauthenticated = true`** (Docker image with no config now stops with an error; pending Saul's call, recommended: keep, document in README).
+- **Health alerts** (`crates/caudal-health`): no keyframe / bitrate floor / publisher lost (grace) / no audio, hysteresis, Standard Webhooks signing, `GET /api/v1/alerts`, `caudal_alerts_*` metrics.
+- **Hot reload** (`crates/caudal/src/subsystems.rs`, `reload.rs`): SIGHUP + `POST /api/v1/config/reload`. Hot: restream, channel, srt.push, rtsp.pull, auth, hooks, transcode (new publishes). Restarted listener only: rtmp, srt, rtsp. `requires_restart`: server, tls, webrtc, moq, hls, record, buffer, admin, health.
+**Next:** benchmark vs MediaMTX v1.21 (Opus) on a quiet machine: no agents compiling. Then the roadmap in `PLAN.md`.
+**Open items:** SCTE-35 (API can't ask for splice_insert; onCuePoint layouts unverified; cues on DTS not PTS; cue before first keyframe dropped; channel-file cues ignored; no real SSAI test). Admin (no real IdP tested; Entra needs `allowed_groups`; behind a proxy the rate limit sees the proxy IP; sessions in memory). Health (`publisher_lost` map not pruned for one-off names). Not verified: RTSP with VLC, UI Skip button on a real channel, Restreams screen with a live target, login screen in a browser.
+**Flaky to watch:** `caudal-rtmp` `h264_aac_publish_end_to_end` / `busy_name_second_publisher_is_rejected` failed once in a full run (publisher not seen in 10 s), passed 4/4 alone and in two full runs after.
 Decisions: history rewrite declined by Saul (87 MB stay). scuffle-rtmp bug reported upstream: https://github.com/ScuffleCloud/scuffle/issues/650.
-Test hygiene (19 Sep): WebRTC/SRT/RTMP tests probed a free port, released it, then bound it; parallel tests' sockets took it first. WebRTC now binds port 0; SRT/RTMP retry when `serve` exits at once.
+Test hygiene (19 Sep): never probe a free port and release it; bind port 0 or retry when `serve` exits at once.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps
 `scuffle-rtmp` 0.2.3 (latest) returned the previous header unchanged for every Type 3 chunk, so a Type 3 chunk that starts a new message kept the previous timestamp instead of adding the delta (RTMP spec 5.3.1.2.4; FFmpeg `rtmppkt.c`). Any encoder that sends constant-rate frames as Type 3 got frozen timestamps **on Caudal's RTMP ingest**. Found by `caudal-restream`'s loopback test. Patched copy in `vendor/scuffle-rtmp` (`[patch.crates-io]`), regression test fails upstream (`[10, 50, 50, 50]`) and passes patched. Also fixed: the SRT tests probed TCP for free ports while SRT binds UDP (failed every full-workspace run); `caudal-restream`'s push loop now only reads inside `select!` (a cancelled write could corrupt the chunk stream).
@@ -23,8 +27,8 @@ Test hygiene (19 Sep): WebRTC/SRT/RTMP tests probed a free port, released it, th
 | Ingest | RTMP/E-RTMP, SRT, WHIP, RTSP pull (retina), 24/7 channel from files (M13) |
 | Output | LL-HLS (Apple-validated, multi-rendition, rendition reports), WHEP, MoQ, SRT push/listen, RTSP server (TCP interleaved, UDP unicast, RTSPS), SCTE-35 cues (DATERANGE, TS), multistreaming RTMP/RTMPS push (`[[restream]]`, `/api/v1/restreams`) |
 | Processing | Transcoding ladders (ffmpeg default, rusty_h264 in-process), recording + VOD + clips |
-| Platform | TOML config, API, metrics, TLS/HTTP2/ACME, tokens + webhooks, M3 UI (Overview, Stream, Publish) |
-| Running | Wave 2: hot config reload, admin login + health alerts |
+| Platform | TOML config with hot reload, API, metrics, TLS/HTTP2/ACME, tokens + webhooks, admin login (password, OIDC, API tokens), health alerts, M3 UI (Overview, Stream, Publish, Channels, Restreams, Recordings, Login) |
+| Running | Benchmark vs MediaMTX (next) |
 | Next | Batch 9: SCTE-35 (`docs/research/SCTE35.md`), admin login, health alerts. Roadmap in `PLAN.md` |
 | OMT | `vmx-codec` ported in pure Rust, byte-identical to libvmx both ways; private repo `Saul-Punybz/open-media-transport` |
 

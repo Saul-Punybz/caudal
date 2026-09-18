@@ -1,5 +1,7 @@
 [server]
-http_bind = "0.0.0.0:8080"  # HTTP server bind address
+# HTTP server bind address. Without an [admin] login (below) Caudal refuses
+# to listen on anything but loopback; set [admin] before using 0.0.0.0.
+http_bind = "127.0.0.1:8080"
 
 [rtmp]
 bind = "0.0.0.0:1935"  # RTMP server bind address
@@ -95,3 +97,30 @@ max_mb = 256  # Maximum buffer size in megabytes
 # [[restream]]
 # stream = "main"
 # url = "rtmp://live.twitch.tv/app/live_xxxxxxxx"
+
+# Admin login for the web UI and every /api/v1 route (not for players and
+# encoders: /hls, /play, /vod, /whip, /whep and /moq keep their own [auth]
+# tokens). Without [admin], the HTTP listeners must be on loopback.
+# Hash a password: printf '%s\n' 'my passphrase' | caudal hash-password
+# [admin]
+# session_ttl_secs = 43200       # 12 h, absolute
+# public_metrics = false         # true: /metrics without a token
+# secure_cookies = false         # true behind a TLS-terminating proxy
+# allow_unauthenticated = false  # true: run open on a public address anyway
+# [[admin.users]]
+# name = "ana"
+# password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
+# API tokens for scripts and Prometheus (Authorization: Bearer <token>);
+# store only the SHA-256: printf %s "$TOKEN" | shasum -a 256
+# [[admin.api_tokens]]
+# name = "prometheus"
+# token_sha256 = "<64 hex characters>"
+# Single sign-on (OpenID Connect, authorization code + PKCE):
+# [admin.oidc]
+# issuer = "https://accounts.google.com"
+# client_id = "..."
+# client_secret = "..."
+# redirect_url = "https://caudal.example.com/api/v1/auth/oidc/callback"
+# allowed_emails = ["ana@example.com"]   # needs email_verified in the ID token
+# allowed_groups = []                    # matched against the `groups` claim
+# scopes = []                            # extra scopes, e.g. ["groups"]

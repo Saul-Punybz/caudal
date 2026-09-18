@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  getSession,
   getStream,
+  login,
+  logout,
+  setCsrfToken,
+  setLoginRequiredHandler,
   listChannels,
   listRecordings,
   listRestreams,
@@ -43,6 +48,8 @@ const sample: Stream = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setCsrfToken(null);
+  setLoginRequiredHandler(null);
 });
 
 describe('listStreams', () => {
@@ -252,5 +259,83 @@ describe('requestClip', () => {
 describe('vodPlaylistUrl', () => {
   it('builds the VOD playlist path, URL-encoded', () => {
     expect(vodPlaylistUrl('my stream', '20260918T101500Z')).toBe('/vod/my%20stream/20260918T101500Z/index.m3u8');
+  });
+});
+
+describe('admin login', () => {
+  const session = {
+    required: true,
+    authenticated: true,
+    user: 'ana',
+    csrf_token: 'tok123',
+    password: true,
+    oidc: false,
+  };
+
+  it('getSession stores the CSRF token and later writes send it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, session));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getSession()).resolves.toEqual(session);
+
+    fetchMock.mockResolvedValue({ ok: true, status: 204 });
+    await skipChannel('main');
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/channels/main/skip',
+      expect.objectContaining({ method: 'POST', headers: { 'x-csrf-token': 'tok123' } }),
+    );
+  });
+
+  it('never sends the CSRF token on reads', async () => {
+    setCsrfToken('tok123');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, []));
+    vi.stubGlobal('fetch', fetchMock);
+    await listStreams();
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty('x-csrf-token');
+  });
+
+  it("a gate 401 calls the login handler; a route's own token 401 does not", async () => {
+    const handler = vi.fn();
+    setLoginRequiredHandler(handler);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 401, headers: new Headers({ 'x-caudal-login': 'required' }) }),
+    );
+    await expect(listStreams()).rejects.toMatchObject({ status: 401 });
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 401, headers: new Headers({ 'www-authenticate': 'Bearer' }) }),
+    );
+    await expect(skipChannel('main')).rejects.toMatchObject({ status: 401 });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('login posts JSON, keeps the CSRF token, and reports rate limits', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { user: 'ana', csrf_token: 'fresh' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(login('ana', 'pw')).resolves.toEqual({ user: 'ana' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/auth/login',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'ana', password: 'pw' }) }),
+    );
+
+    fetchMock.mockResolvedValue({ ok: true, status: 204 });
+    await logout();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/auth/logout',
+      expect.objectContaining({ headers: { 'x-csrf-token': 'fresh' } }),
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 429, headers: new Headers({ 'retry-after': '42' }) }),
+    );
+    await expect(login('ana', 'pw')).rejects.toMatchObject({ status: 429, retryAfter: 42 });
+  });
+
+  it('a server without login routes reads as "not required"', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(htmlFallbackResponse()));
+    await expect(getSession()).resolves.toMatchObject({ required: false });
   });
 });

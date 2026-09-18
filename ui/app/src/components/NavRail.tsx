@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { useAuth } from '../auth';
 
 interface RailLinkProps {
   to: string;
@@ -57,6 +58,29 @@ function RailPlaceholder({ icon, label }: { icon: string; label: string }) {
  * is shown disabled, per DESIGN.md's screen inventory, rather than built
  * as fake pages. "Push" in that inventory is restreaming out to other
  * targets, so it links to /restreams instead of staying a placeholder. */
+/** Shown only when an admin is signed in; the tooltip names who. */
+function SignOut() {
+  const { state, signOut } = useAuth();
+  if (state.status !== 'signed-in') return null;
+  return (
+    <button
+      type="button"
+      onClick={() => void signOut()}
+      aria-label={`Sign out ${state.user}`}
+      title={`Signed in as ${state.user}`}
+      className="state-layer flex flex-col items-center gap-1 rounded-lg border-0 bg-transparent py-1 text-xs font-medium text-on-surface-variant"
+      style={{ minHeight: 44, minWidth: 44 }}
+    >
+      <span className="flex h-8 w-14 items-center justify-center rounded-full">
+        <span className="ms" aria-hidden="true">
+          logout
+        </span>
+      </span>
+      Sign out
+    </button>
+  );
+}
+
 export function NavRail() {
   return (
     <nav
@@ -88,6 +112,7 @@ export function NavRail() {
       <RailPlaceholder icon="key" label="Keys" />
       <div className="flex-grow" />
       <RailPlaceholder icon="settings" label="Settings" />
+      <SignOut />
     </nav>
   );
 }

@@ -37,22 +37,30 @@ struct TestServer {
 
 impl TestServer {
     async fn start(app: &str) -> Self {
-        let port = free_port();
         let registry = Registry::new();
-        let cfg = RtmpConfig {
-            bind: format!("127.0.0.1:{port}").parse().unwrap(),
-            app: app.to_string(),
-            buffer: BufferConfig::default(),
-        };
-        let reg = registry.clone();
-        let handle = tokio::spawn(async move {
-            let _ = serve(cfg, reg).await;
-        });
-        // Let the listener bind before ffmpeg tries to connect.
-        wait_for(Duration::from_secs(2), || std::net::TcpStream::connect(("127.0.0.1", port)).ok().map(|_| ()))
-            .await
-            .expect("rtmp listener never came up");
-        Self { registry, port, handle }
+        // The probed port can be taken before `serve` binds it; `serve` then
+        // returns at once with EADDRINUSE. Retry on a fresh port.
+        for _ in 0..5 {
+            let port = free_port();
+            let cfg = RtmpConfig {
+                bind: format!("127.0.0.1:{port}").parse().unwrap(),
+                app: app.to_string(),
+                buffer: BufferConfig::default(),
+            };
+            let reg = registry.clone();
+            let handle = tokio::spawn(async move {
+                let _ = serve(cfg, reg).await;
+            });
+            // Let the listener bind before ffmpeg tries to connect.
+            let up =
+                wait_for(Duration::from_secs(2), || std::net::TcpStream::connect(("127.0.0.1", port)).ok().map(|_| ()))
+                    .await;
+            if up.is_some() && !handle.is_finished() {
+                return Self { registry, port, handle };
+            }
+            handle.abort();
+        }
+        panic!("rtmp listener could not bind a free port in 5 tries");
     }
 
     fn rtmp_url(&self, app: &str, name: &str) -> String {

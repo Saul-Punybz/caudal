@@ -47,25 +47,34 @@ impl TestServer {
     }
 
     async fn start_full(passphrase: Option<&str>, gate: Option<Arc<dyn Gate>>, pushes: Vec<SrtPush>) -> Self {
-        let port = free_port();
         let registry = Registry::new();
         if let Some(gate) = gate {
             registry.set_gate(gate);
         }
-        let cfg = SrtConfig {
-            bind: format!("127.0.0.1:{port}").parse().unwrap(),
-            latency_ms: 120,
-            passphrase: passphrase.map(str::to_owned),
-            buffer: BufferConfig::default(),
-            pushes,
-        };
-        let reg = registry.clone();
-        let handle = tokio::spawn(async move {
-            let _ = serve(cfg, reg).await;
-        });
-        // Let the listener bind before the pipeline tries to connect.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        Self { registry, port, handle }
+        // The probed port can be taken by another parallel test's socket
+        // before `serve` binds it; `serve` then returns at once with
+        // EADDRINUSE. Retry on a fresh port instead of failing later with a
+        // confusing "never appeared".
+        for _ in 0..5 {
+            let port = free_port();
+            let cfg = SrtConfig {
+                bind: format!("127.0.0.1:{port}").parse().unwrap(),
+                latency_ms: 120,
+                passphrase: passphrase.map(str::to_owned),
+                buffer: BufferConfig::default(),
+                pushes: pushes.clone(),
+            };
+            let reg = registry.clone();
+            let handle = tokio::spawn(async move {
+                let _ = serve(cfg, reg).await;
+            });
+            // Let the listener bind before the pipeline tries to connect.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            if !handle.is_finished() {
+                return Self { registry, port, handle };
+            }
+        }
+        panic!("SRT listener could not bind a free port in 5 tries");
     }
 }
 

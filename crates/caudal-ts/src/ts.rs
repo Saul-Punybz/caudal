@@ -315,11 +315,10 @@ impl TsDemux {
     fn handle_pes_continuation(&mut self, pid: Pid, data: &[u8], out: &mut Vec<EsUnit>) {
         let Some(partial) = self.partial.get_mut(&pid) else { return };
         partial.data.extend_from_slice(data);
-        if partial.is_complete() {
-            if let Some(partial) = self.partial.remove(&pid) {
+        if partial.is_complete()
+            && let Some(partial) = self.partial.remove(&pid) {
                 out.push(partial.finish());
             }
-        }
     }
 }
 

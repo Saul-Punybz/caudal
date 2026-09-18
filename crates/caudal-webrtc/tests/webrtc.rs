@@ -26,7 +26,9 @@ struct Server {
 }
 
 async fn serve(registry: Arc<Registry>) -> Server {
-    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+    // Port 0: the engine binds and advertises whatever port it gets. Probing
+    // a free port first raced with the client sockets of parallel tests.
+    let udp = "127.0.0.1:0".parse().unwrap();
     let app = router(registry, WebRtcConfig { udp_bind: udp, public_ips: vec![], buffer: BufferConfig::default() });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http = format!("http://{}", listener.local_addr().unwrap());

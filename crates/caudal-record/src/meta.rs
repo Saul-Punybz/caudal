@@ -113,11 +113,10 @@ pub(crate) fn playlist_segments(text: &str) -> Vec<(String, f64)> {
     for line in text.lines() {
         if let Some(v) = line.strip_prefix("#EXTINF:") {
             dur = v.split(',').next().and_then(|d| d.trim().parse::<f64>().ok());
-        } else if !line.starts_with('#') && !line.is_empty() {
-            if let Some(d) = dur.take() {
+        } else if !line.starts_with('#') && !line.is_empty()
+            && let Some(d) = dur.take() {
                 out.push((line.to_owned(), d));
             }
-        }
     }
     out
 }

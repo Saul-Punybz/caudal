@@ -279,10 +279,10 @@ pub(crate) fn parse_metadata_fps(data: Bytes) -> Option<f64> {
         if let Amf0Value::Object(obj) = value {
             for (key, val) in obj.iter() {
                 let key = key.as_str();
-                if key.eq_ignore_ascii_case("framerate") || key.eq_ignore_ascii_case("fps") {
-                    if let Amf0Value::Number(n) = val {
-                        return Some(*n);
-                    }
+                if (key.eq_ignore_ascii_case("framerate") || key.eq_ignore_ascii_case("fps"))
+                    && let Amf0Value::Number(n) = val
+                {
+                    return Some(*n);
                 }
             }
         }

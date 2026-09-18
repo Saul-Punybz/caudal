@@ -79,14 +79,13 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
                     let id = next_id;
                     next_id += 1;
                     let mut peer = *peer;
-                    if let Role::Whep(e) = &mut peer.role {
-                        if let Some(sub) = e.sub.take() {
+                    if let Role::Whep(e) = &mut peer.role
+                        && let Some(sub) = e.sub.take() {
                             let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
                             e.ctl = Some(ctl_tx);
                             let task = tokio::spawn(egress::forward(id, sub, media_tx.clone(), ctl_rx));
                             e.task = Some(task.abort_handle());
                         }
-                    }
                     tracing::info!(stream = %peer.name, session = %peer.session, kind = kind(&peer), "webrtc: session created");
                     let now = Instant::now();
                     slots.insert(id, Slot { peer, deadline: now, last_activity: now, video_mid: None, last_pli: None });
@@ -161,11 +160,11 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
         let now = Instant::now();
         let due: Vec<u64> = slots.iter().filter(|(_, s)| s.deadline <= now).map(|(id, _)| *id).collect();
         for id in due {
-            if let Some(slot) = slots.get_mut(&id) {
-                if let Err(e) = slot.peer.rtc.handle_input(Input::Timeout(now)) {
-                    tracing::debug!(session = %slot.peer.session, error = %e, "webrtc: timeout error");
-                    slot.peer.rtc.disconnect();
-                }
+            if let Some(slot) = slots.get_mut(&id)
+                && let Err(e) = slot.peer.rtc.handle_input(Input::Timeout(now))
+            {
+                tracing::debug!(session = %slot.peer.session, error = %e, "webrtc: timeout error");
+                slot.peer.rtc.disconnect();
             }
             drive(&socket, id, &mut slots).await;
         }
@@ -188,14 +187,13 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
                         s.peer.rtc.disconnect();
                     }
                     // Ask for a keyframe at start and after loss.
-                    if ing.wants_keyframe() && s.last_pli.is_none_or(|t| now.duration_since(t) >= PLI_EVERY) {
-                        if let Some(mid) = s.video_mid {
-                            if let Some(mut w) = s.peer.rtc.writer(mid) {
-                                if w.request_keyframe(None, KeyframeRequestKind::Pli).is_ok() {
-                                    s.last_pli = Some(now);
-                                }
-                            }
-                        }
+                    if ing.wants_keyframe()
+                        && s.last_pli.is_none_or(|t| now.duration_since(t) >= PLI_EVERY)
+                        && let Some(mid) = s.video_mid
+                        && let Some(mut w) = s.peer.rtc.writer(mid)
+                        && w.request_keyframe(None, KeyframeRequestKind::Pli).is_ok()
+                    {
+                        s.last_pli = Some(now);
                     }
                 }
             }

@@ -78,7 +78,7 @@ fn main() {
             Encoder::new(c).expect("encoder")
         });
         let t = Instant::now();
-        if frames % 60 == 0 {
+        if frames.is_multiple_of(60) {
             e.request_keyframe();
         }
         out.extend_from_slice(&e.try_encode(&small).expect("encode"));

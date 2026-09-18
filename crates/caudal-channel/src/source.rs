@@ -526,7 +526,7 @@ fn pes_pts(buf: &[u8]) -> Vec<u64> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for p in buf[start..].chunks_exact(188) {
+    for p in buf[start..].as_chunks::<188>().0 {
         if p[0] != 0x47 || p[1] & 0x40 == 0 {
             continue;
         }

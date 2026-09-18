@@ -66,10 +66,10 @@ impl Shared {
     fn update_video(&self, mut info: TrackInfo) {
         {
             let mut pending = self.pending.lock();
-            if let Some(fps) = pending.meta_fps {
-                if let Some(video) = info.video.as_mut() {
-                    video.fps = Some(fps);
-                }
+            if let Some(fps) = pending.meta_fps
+                && let Some(video) = info.video.as_mut()
+            {
+                video.fps = Some(fps);
             }
             pending.video = Some(info);
         }
@@ -103,10 +103,10 @@ impl Shared {
                 tracks
             })
         };
-        if let Some(tracks) = tracks_to_reannounce {
-            if let Err(err) = self.publisher.set_tracks(tracks) {
-                tracing::warn!(stream = %self.publisher.stream().name(), %err, "set_tracks failed");
-            }
+        if let Some(tracks) = tracks_to_reannounce
+            && let Err(err) = self.publisher.set_tracks(tracks)
+        {
+            tracing::warn!(stream = %self.publisher.stream().name(), %err, "set_tracks failed");
         }
     }
 

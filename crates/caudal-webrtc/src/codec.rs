@@ -145,10 +145,10 @@ impl RtpClock {
         self.last_low = ts;
         self.ext += delta;
         let mut out = self.offset + self.ext;
-        if let Some(last) = self.last_out {
-            if out <= last {
-                out = last + 1;
-            }
+        if let Some(last) = self.last_out
+            && out <= last
+        {
+            out = last + 1;
         }
         self.last_out = Some(out);
         out

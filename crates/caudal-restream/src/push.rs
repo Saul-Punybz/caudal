@@ -40,11 +40,10 @@ async fn wait_for_publish(registry: &Arc<Registry>, name: &str) -> Option<Arc<St
     let mut publishes = registry.subscribe_publishes();
     // A publish may have landed between the caller's check and this
     // subscription; check once more before waiting on the broadcast.
-    if let Some(s) = registry.get(name) {
-        if !s.is_ended() {
+    if let Some(s) = registry.get(name)
+        && !s.is_ended() {
             return Some(s);
         }
-    }
     loop {
         match publishes.recv().await {
             Ok(stream) if stream.name() == name => return Some(stream),
@@ -131,15 +130,14 @@ async fn push_frames(client: &mut RtmpClient, stream: &Arc<Stream>, status: &Arc
                             continue;
                         }
 
-                        if headers_sent.insert(info.id) {
-                            if let Some(header) = flv::sequence_header(&info) {
+                        if headers_sent.insert(info.id)
+                            && let Some(header) = flv::sequence_header(&info) {
                                 let ts = to_rtmp_ms(&info, frame.dts);
                                 match send(client, &info, header, ts).await {
                                     Ok(n) => { status.add_bytes(n); sent_any = true; }
                                     Err(err) => { status.set_retrying(err); return sent_any; }
                                 }
                             }
-                        }
 
                         let cts_ms = ((info.to_micros(frame.pts) - info.to_micros(frame.dts)) / 1000) as i32;
                         if let Some(tag) = flv::frame_tag(&info, &frame, cts_ms) {

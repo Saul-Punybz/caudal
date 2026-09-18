@@ -35,7 +35,7 @@ fn free_udp_port_range() -> (u16, u16) {
     let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind ephemeral udp port to probe for a free range");
     let port = probe.local_addr().expect("local_addr").port();
     drop(probe);
-    let start = if port % 2 == 0 { port } else { port - 1 };
+    let start = if port.is_multiple_of(2) { port } else { port - 1 };
     (start, start.saturating_add(40))
 }
 

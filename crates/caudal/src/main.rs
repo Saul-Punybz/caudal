@@ -214,11 +214,10 @@ async fn run(cfg: config::Config) -> ExitCode {
         });
     }
 
-    if let Some(tc) = cfg.transcode.to_transcode_config(cfg.buffer.to_buffer_config()).expect("validated") {
-        if let Err(e) = caudal_transcode::start(registry.clone(), tc) {
+    if let Some(tc) = cfg.transcode.to_transcode_config(cfg.buffer.to_buffer_config()).expect("validated")
+        && let Err(e) = caudal_transcode::start(registry.clone(), tc) {
             tracing::error!(error = %e, "transcoding disabled");
         }
-    }
 
     let hls_router = caudal_hls::router(
         registry.clone(),

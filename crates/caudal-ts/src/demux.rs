@@ -212,8 +212,8 @@ impl Demuxer {
             } else {
                 build_avcc(state.sps.as_deref().unwrap(), state.pps.as_deref().unwrap())
             };
-            if let Some(init) = init {
-                if state.init.as_deref() != Some(&init[..]) {
+            if let Some(init) = init
+                && state.init.as_deref() != Some(&init[..]) {
                     let (width, height) = if h265 {
                         h265_dimensions(state.sps.as_deref().unwrap()).unwrap_or((0, 0))
                     } else {
@@ -230,7 +230,6 @@ impl Demuxer {
                         audio: None,
                     }));
                 }
-            }
         }
 
         if data.is_empty() {

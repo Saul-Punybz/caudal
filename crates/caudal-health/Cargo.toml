@@ -1,0 +1,29 @@
+[package]
+name = "caudal-health"
+description = "Stream health alerts (no keyframes, bitrate floor, publisher lost) as signed webhooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+# Same Standard Webhooks scheme and header names as caudal-auth's hooks
+# (`webhook-id`/`webhook-timestamp`/`webhook-signature`); kept as a separate
+# small delivery path rather than depending on caudal-auth's crate-private
+# module, since both crates are edited by different agents in this batch.
+standardwebhooks = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+base64 = "0.22"

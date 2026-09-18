@@ -581,6 +581,7 @@ dependencies = [
  "caudal-auth",
  "caudal-channel",
  "caudal-core",
+ "caudal-health",
  "caudal-hls",
  "caudal-moq",
  "caudal-record",
@@ -688,6 +689,24 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "caudal-health"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "caudal-core",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "standardwebhooks",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -23,11 +23,20 @@ pub struct AppState {
     pub ready: AtomicBool,
     /// splice/segmentation event ids for cues inserted over the API.
     cue_seq: AtomicU32,
+    /// Set once, if `[health]` starts (see `crate::main::run`); read by
+    /// `/metrics` for `caudal_alerts_*`. `GET /api/v1/alerts` itself is
+    /// mounted separately by `caudal_health::HealthService::router`.
+    health: std::sync::OnceLock<Arc<caudal_health::HealthService>>,
 }
 
 impl AppState {
     pub fn new(registry: Arc<Registry>) -> Arc<Self> {
-        Arc::new(Self { registry, ready: AtomicBool::new(false), cue_seq: AtomicU32::new(1) })
+        Arc::new(Self {
+            registry,
+            ready: AtomicBool::new(false),
+            cue_seq: AtomicU32::new(1),
+            health: std::sync::OnceLock::new(),
+        })
     }
 
     pub fn mark_ready(&self) {
@@ -36,6 +45,10 @@ impl AppState {
 
     fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
+    }
+
+    pub fn set_health(&self, service: Arc<caudal_health::HealthService>) {
+        let _ = self.health.set(service);
     }
 }
 
@@ -208,7 +221,7 @@ async fn post_cue(State(state): State<Arc<AppState>>, Path(name): Path<String>, 
 }
 
 async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let body = metrics::render(&state.registry);
+    let body = metrics::render(&state.registry, state.health.get().map(|h| h.as_ref()));
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 

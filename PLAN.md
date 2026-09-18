@@ -101,3 +101,38 @@ not being ported.
 - Measured, not claimed: every "faster / smaller" claim comes with a benchmark against MistServer on the same machine.
 - Every parser gets a fuzz target before it touches the network.
 - 100% Rust: no C or Go linked. `unsafe` needs a written justification and never appears in `caudal-core`.
+
+## Backlog: beyond parity (added 17 Sep 2026)
+
+Ranked by value for a small team running live video in 2026. "Nobody" means
+neither MistServer nor MediaMTX ships it, as far as checked; verify before
+claiming in public.
+
+### A. Table stakes that MistServer lacks
+- **Enhanced RTMP** (HEVC/AV1 over RTMP, what OBS and YouTube use since 2023). Check `scuffle-rtmp` support first (unverified).
+- **WHIP ingest from OBS 30+** and browsers, not only WHEP playback.
+- **SRT stream-id routing** (one port, many streams, stream key in the id) and **SRTLA bonding** for IRL streaming (`srtla-rs` exists, MIT, verify).
+- **Backup source / failover**: a stream declares a primary and a backup input; viewers never see the switch.
+- **Hot config reload** with validation (`caudal check config.toml`), atomic apply, no restart.
+- **Structured JSON logs**, OpenTelemetry traces, `/healthz` + `/readyz`, graceful drain on shutdown.
+- **Timed metadata**: SCTE-35 → `EXT-X-DATERANGE`, ID3 in fMP4 (`emsg`), CEA-608/708 caption passthrough, WebVTT subtitles, multi-audio.
+- **Recording to object storage** (S3/R2/GCS via `object_store`), segment upload as they close, HLS VOD from recordings.
+- **Clip export by time range**: `POST /streams/x/clips {from,to}` → MP4. Uses the DVR window.
+- **Thumbnails / preview sprites** via external ffmpeg (no pure-Rust H.264 decoder that is production grade).
+- **Static builds for arm64** (Raspberry Pi, Ampere, Apple Silicon) in CI, plus Helm chart and a Kubernetes example.
+
+### B. Differentiators nobody has
+- **WASM plugins** (wasmtime): triggers, auth decisions and frame-level filters run in a sandbox at native speed. MistServer's triggers are shell scripts; this replaces them safely.
+- **End-to-end latency measurement**: the server stamps wall-clock into `emsg`/SEI; the shipped player reports glass-to-glass latency and rebuffering back to `/beacon`. The UI shows real QoE per viewer, not just bytes sent.
+- **Built-in network impairment** for testing (`caudal lab --loss 3% --jitter 40ms`): reproduce field problems on a laptop.
+- **MoQ-first fan-out**: every stream is a MoQ broadcast internally, so HLS/WebRTC/SRT are views of it. Clustering comes from `moq-relay` instead of a second mechanism.
+- **Multi-tenancy**: namespaces with quotas (viewers, Mbps, storage) and per-tenant API keys. Needed to sell hosting on top of it.
+- **Declarative streams** (GitOps): the config file is the source of truth; the UI edits it and commits, not the other way around.
+- **`caudal doctor`**: checks ports, NAT, TLS, clock, codecs of an incoming stream, and prints what to fix.
+- **Conformance in CI**: Apple `mediastreamvalidator` on every LL-HLS change, fuzz targets on every parser, interop tests against libsrt/librist/ffmpeg/OBS.
+
+### C. Later
+- HDR metadata passthrough (HEVC SEI via `hevc_parser`), Dolby Vision RPU.
+- Scheduled/playlist channels from VOD files (keep small; ANTENA787 is the real playout).
+- NDI: no pure-Rust option and the SDK is proprietary; skip unless a patent-free alternative matures.
+- Content protection: CENC/ClearKey first, Widevine/FairPlay only with a real customer.

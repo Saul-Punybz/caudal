@@ -124,20 +124,27 @@ fn ll_hls_plays_and_validates() {
     let bytes = s.get_bytes(&format!("/hls/e2e/{part}"));
     assert!(bytes.windows(4).any(|w| w == b"moof"), "part is a CMAF fragment");
 
-    // Blocking reload: ask for the first part that does not exist yet. The
-    // in-progress segment is MEDIA-SEQUENCE + (full segments listed); its
-    // next part index is the number of parts listed after the last EXTINF.
-    // (Part 0 of that segment usually exists already, so asking for it would
-    // pass or fail by timing luck; caught by agent C in batch 1.)
-    let msn: u64 =
-        playlist.lines().find_map(|l| l.strip_prefix("#EXT-X-MEDIA-SEQUENCE:")).unwrap().trim().parse().unwrap();
-    let segs = playlist.lines().filter(|l| l.starts_with("#EXTINF")).count() as u64;
-    let tail = playlist.rsplit("#EXTINF").next().unwrap_or("");
-    let next_part = tail.lines().filter(|l| l.starts_with("#EXT-X-PART:")).count();
+    // Blocking reload (RFC 8216bis 6.2.5.2). Re-read the playlist right now,
+    // then ask for part 0 of the segment AFTER the one in progress: it is up
+    // to a full segment away, so it cannot exist yet even on a slow CI runner.
+    // (Asking for the next part of the current segment raced on GitHub
+    // runners; asking for part 0 of the current one raced locally.)
+    let edge = |pl: &str| -> u64 {
+        let ms: u64 =
+            pl.lines().find_map(|l| l.strip_prefix("#EXT-X-MEDIA-SEQUENCE:")).unwrap().trim().parse().unwrap();
+        ms + pl.lines().filter(|l| l.starts_with("#EXTINF")).count() as u64
+    };
+    let fresh = s.get("/hls/e2e/index.m3u8").unwrap().1;
+    let want = edge(&fresh) + 1;
     let t0 = Instant::now();
-    let (code, _) = s.get(&format!("/hls/e2e/index.m3u8?_HLS_msn={}&_HLS_part={next_part}", msn + segs)).unwrap();
+    let (code, answered) = s.get(&format!("/hls/e2e/index.m3u8?_HLS_msn={want}&_HLS_part=0")).unwrap();
     assert_eq!(code, 200);
-    assert!(t0.elapsed() >= Duration::from_millis(50), "a part that does not exist yet must block until it does");
+    assert!(
+        t0.elapsed() >= Duration::from_millis(200),
+        "a part one segment ahead must block, answered in {:?}",
+        t0.elapsed()
+    );
+    assert!(edge(&answered) >= want, "the blocked answer must include segment {want} in progress:\n{answered}");
 
     // A viewer joining now must have a join point within 2 s of playlist age.
     let joined = s.wait_until("/hls/e2e/index.m3u8", Duration::from_secs(5), |b| b.contains("#EXT-X-PART"));

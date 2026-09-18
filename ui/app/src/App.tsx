@@ -3,6 +3,9 @@ import { NavRail } from './components/NavRail';
 import { Overview } from './pages/Overview';
 import { StreamDetail } from './pages/StreamDetail';
 import { Publish } from './pages/Publish';
+import { Channels } from './pages/Channels';
+import { Restreams } from './pages/Restreams';
+import { Recordings } from './pages/Recordings';
 
 export function App() {
   return (
@@ -12,6 +15,9 @@ export function App() {
         <Route path="/" element={<Overview />} />
         <Route path="/publish" element={<Publish />} />
         <Route path="/streams/:name" element={<StreamDetail />} />
+        <Route path="/channels" element={<Channels />} />
+        <Route path="/restreams" element={<Restreams />} />
+        <Route path="/recordings" element={<Recordings />} />
         <Route
           path="*"
           element={

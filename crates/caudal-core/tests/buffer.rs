@@ -242,3 +242,18 @@ fn api_names() {
     assert_eq!(Codec::H264.as_str(), "h264");
     assert_eq!(Codec::Aac.kind().as_str(), "audio");
 }
+
+#[test]
+fn internal_readers_are_not_viewers_and_outputs_report_their_own() {
+    let reg = Registry::new();
+    let publ = reg.publish("live", cfg(50)).unwrap();
+    let s = publ.stream().clone();
+    let _pkg = s.subscribe_internal(StartAt::LiveEdge);
+    assert_eq!(s.stats().viewers, 0, "a packager is not a viewer");
+    let direct = s.subscribe(StartAt::LiveEdge);
+    s.set_output_viewers("hls", 3);
+    assert_eq!(s.stats().viewers, 4);
+    s.set_output_viewers("hls", 1);
+    drop(direct);
+    assert_eq!(s.stats().viewers, 1);
+}

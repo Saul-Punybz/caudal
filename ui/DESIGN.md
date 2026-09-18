@@ -23,7 +23,7 @@ Regenerate: `cd ui/theme && npm install && npm run build`.
 ## The rest of M3
 | Token set | Choice |
 |---|---|
-| Typography | M3 type scale (display / headline / title / body / label). **Roboto Flex** for UI, **Roboto Mono** for every number that updates live (bitrate, viewers, timestamps), so digits don't jitter. |
+| Typography | M3 type scale (display / headline / title / body / label). **Roboto Flex** for UI (headlines condensed: wdth 62, weight 750), **Roboto Mono** for every number that updates live (bitrate, viewers, timestamps), so digits don't jitter. |
 | Shape | M3 shape scale: extra-small 4, small 8, medium 12, large 16, extra-large 28 px; full for chips and the LIVE badge. |
 | Elevation | Tonal: `surface-container-*` levels, shadows only on floating elements (menus, dialogs, FAB). |
 | State layers | M3 opacities: hover 8%, focus 10%, pressed 10%, dragged 16%, on the content color. |

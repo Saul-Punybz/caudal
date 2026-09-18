@@ -10,11 +10,14 @@ mod fmp4;
 mod packager;
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::SocketAddr;
+use std::sync::Weak;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::Router;
-use axum::extract::{Path, RawQuery, State};
+use axum::extract::{ConnectInfo, Path, RawQuery, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -32,6 +35,11 @@ pub struct HlsConfig {
     /// Target full-segment duration.
     pub segment_ms: u32,
 }
+
+/// A player that has not asked for a playlist in this long has left. LL-HLS
+/// players reload every part (~200 ms); a player that fell back to plain HLS
+/// reloads about once per target duration (2 s).
+const VIEWER_IDLE: Duration = Duration::from_secs(10);
 
 /// How long an ended stream keeps answering (with `#EXT-X-ENDLIST`).
 const LINGER: Duration = Duration::from_secs(30);
@@ -73,6 +81,8 @@ struct Entry {
     stream: Arc<Stream>,
     pkg: Mutex<Packager>,
     tick: watch::Sender<u64>,
+    /// Players seen recently, keyed by a hash of address + user agent.
+    viewers: Mutex<HashMap<u64, Instant>>,
 }
 
 impl Entry {
@@ -94,6 +104,20 @@ impl Entry {
                 _ => return None,
             }
         }
+    }
+
+    fn seen(&self, key: u64) {
+        self.viewers.lock().unwrap_or_else(|e| e.into_inner()).insert(key, Instant::now());
+    }
+
+    /// Drops players idle past `VIEWER_IDLE` and reports the rest.
+    fn count_viewers(&self) {
+        let n = {
+            let mut v = self.viewers.lock().unwrap_or_else(|e| e.into_inner());
+            v.retain(|_, last| last.elapsed() < VIEWER_IDLE);
+            v.len()
+        };
+        self.stream.set_output_viewers("hls", n);
     }
 
     fn block_timeout(&self) -> Duration {
@@ -120,14 +144,17 @@ impl Hls {
                 stream: stream.clone(),
                 pkg: Mutex::new(Packager::new(self.cfg)),
                 tick: watch::channel(0).0,
+                viewers: Mutex::default(),
             });
             map.insert(stream.name().to_owned(), entry.clone());
             entry
         };
         // Subscribe now, not when the task first runs, so no frame pushed
         // in between is missed.
-        let sub = stream.subscribe(StartAt::LiveEdge);
+        // The packager is not a viewer; players are counted per request.
+        let sub = stream.subscribe_internal(StartAt::LiveEdge);
         tracing::debug!(stream = %stream.name(), "ll-hls packager started");
+        rt.spawn(count_viewers(Arc::downgrade(&entry)));
         rt.spawn(run(self.clone(), entry, sub));
     }
 }
@@ -144,6 +171,27 @@ async fn listen(hls: Arc<Hls>, rt: Handle, mut publishes: broadcast::Receiver<Ar
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }
+}
+
+/// Once a second, until the entry is dropped.
+async fn count_viewers(entry: Weak<Entry>) {
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tick.tick().await;
+        match entry.upgrade() {
+            Some(e) => e.count_viewers(),
+            None => return,
+        }
+    }
+}
+
+/// A stable key for one player: its address (when the server was started
+/// with connect info) plus its user agent.
+fn viewer_key(req: &Request) -> u64 {
+    let mut h = DefaultHasher::new();
+    req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip()).hash(&mut h);
+    req.headers().get(header::USER_AGENT).map(|v| v.as_bytes()).hash(&mut h);
+    h.finish()
 }
 
 /// The packager task for one stream.
@@ -205,8 +253,12 @@ async fn hls_file(
     State(hls): State<Arc<Hls>>,
     Path((name, file)): Path<(String, String)>,
     RawQuery(query): RawQuery,
+    req: Request,
 ) -> Response {
     let Some(entry) = hls.get(&name) else { return error(StatusCode::NOT_FOUND) };
+    if file.ends_with(".m3u8") {
+        entry.seen(viewer_key(&req));
+    }
     match file.as_str() {
         "index.m3u8" => playlist(&entry, query.as_deref().unwrap_or("")).await,
         "master.m3u8" => {

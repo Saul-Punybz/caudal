@@ -278,3 +278,39 @@ fn ui_is_served_with_spa_fallback() {
     // API and HLS routes still win over the fallback.
     assert_eq!(s.get("/api/v1/streams").unwrap().1.trim(), "[]");
 }
+
+/// Viewers are people watching, not internal readers. Caught 18 Sep 2026:
+/// the LL-HLS packager's own subscription showed up as "1 viewer".
+#[test]
+fn hls_viewers_count_players_not_the_packager() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start();
+    let _publ = Publisher::rtmp(&s.rtmp_url("v"), 60);
+    // Wait on the API, not the playlist: polling the playlist is exactly what
+    // a player does, so it would count this test as a viewer.
+    s.wait_until("/api/v1/streams/v", Duration::from_secs(20), |b| b.contains("\"h264\""));
+    let viewers = |s: &Server| -> u64 {
+        let b = s.get("/api/v1/streams/v").unwrap().1;
+        b.split("\"viewers\":")
+            .nth(1)
+            .and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|n| n.parse().ok())
+            .unwrap()
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(viewers(&s), 0, "nobody is watching yet");
+
+    // One player polling the playlist like hls.js does.
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) {
+        let _ = s.get("/hls/v/index.m3u8");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(viewers(&s), 1, "one player polling");
+
+    // It leaves; after the idle window the count drops back.
+    std::thread::sleep(Duration::from_secs(12));
+    assert_eq!(viewers(&s), 0, "the player left");
+}

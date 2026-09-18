@@ -141,7 +141,9 @@ async fn run(cfg: config::Config) -> ExitCode {
     tracing::info!(bind = %cfg.server.http_bind, "listening");
     state.mark_ready();
 
-    let result = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(shutdown::signal()).await;
+    let result = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(shutdown::signal())
+        .await;
 
     match result {
         Ok(()) => {

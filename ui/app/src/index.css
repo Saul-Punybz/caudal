@@ -40,6 +40,14 @@
   }
 }
 
+/* Icon default size lives in the components layer so size utilities
+   (text-xl, text-5xl) still win. Without it icons inherit the label size. */
+@layer components {
+  .ms {
+    font-size: 24px;
+  }
+}
+
 @layer utilities {
   /* Material Symbols Rounded, per Google's recommended base rule. */
   .ms {
@@ -73,8 +81,9 @@
   }
   /* Condensed display type per DESIGN.md. */
   .display {
-    font-variation-settings: 'wdth' 40, 'opsz' 96;
-    font-weight: 800;
+    /* wdth 40 / 800 smeared letters together at 40 px (seen 18 Sep 2026). */
+    font-variation-settings: 'wdth' 62, 'opsz' 96;
+    font-weight: 750;
     letter-spacing: -0.01em;
   }
   /* Table row hover/press: M3 state layer at 8%, on the content color. */

@@ -154,7 +154,11 @@ pub struct Stream {
     notify: watch::Sender<u64>,
     frames_in: AtomicU64,
     bytes_in: AtomicU64,
+    /// Viewers reading frames directly (`Stream::subscribe`).
     viewers: AtomicUsize,
+    /// Viewers counted by outputs whose audience never subscribes (HLS
+    /// players poll over HTTP; the packager is one internal subscriber).
+    output_viewers: parking_lot::Mutex<Vec<(&'static str, usize)>>,
 }
 
 impl Stream {
@@ -177,6 +181,7 @@ impl Stream {
             frames_in: AtomicU64::new(0),
             bytes_in: AtomicU64::new(0),
             viewers: AtomicUsize::new(0),
+            output_viewers: parking_lot::Mutex::new(Vec::new()),
         })
     }
 
@@ -204,7 +209,18 @@ impl Stream {
             buffered_micros: span,
             frames_in: self.frames_in.load(Ordering::Relaxed),
             bytes_in: self.bytes_in.load(Ordering::Relaxed),
-            viewers: self.viewers.load(Ordering::Relaxed),
+            viewers: self.viewers.load(Ordering::Relaxed)
+                + self.output_viewers.lock().iter().map(|&(_, n)| n).sum::<usize>(),
+        }
+    }
+
+    /// Sets how many viewers `output` is serving right now. For outputs
+    /// whose viewers are not subscribers, such as HLS.
+    pub fn set_output_viewers(&self, output: &'static str, n: usize) {
+        let mut v = self.output_viewers.lock();
+        match v.iter_mut().find(|(o, _)| *o == output) {
+            Some(e) => e.1 = n,
+            None => v.push((output, n)),
         }
     }
 
@@ -261,7 +277,19 @@ impl Stream {
         self.wake();
     }
 
+    /// A viewer: counted in `StreamStats::viewers`.
     pub fn subscribe(self: &Arc<Self>, start: StartAt) -> Subscriber {
+        self.viewers.fetch_add(1, Ordering::Relaxed);
+        self.reader(start, true)
+    }
+
+    /// An internal consumer (a packager, a recorder): reads like a viewer
+    /// but is not counted as one.
+    pub fn subscribe_internal(self: &Arc<Self>, start: StartAt) -> Subscriber {
+        self.reader(start, false)
+    }
+
+    fn reader(self: &Arc<Self>, start: StartAt, counted: bool) -> Subscriber {
         let next = {
             let r = self.ring.read();
             match start {
@@ -271,8 +299,7 @@ impl Stream {
             // No keyframe yet: wait for the first one.
             .unwrap_or(u64::MAX)
         };
-        self.viewers.fetch_add(1, Ordering::Relaxed);
-        Subscriber { stream: self.clone(), next, tracks_version: 0, notify: self.notify.subscribe() }
+        Subscriber { stream: self.clone(), next, tracks_version: 0, notify: self.notify.subscribe(), counted }
     }
 }
 
@@ -284,6 +311,7 @@ pub struct Subscriber {
     next: u64,
     tracks_version: u64,
     notify: watch::Receiver<u64>,
+    counted: bool,
 }
 
 impl Subscriber {
@@ -363,6 +391,8 @@ impl Subscriber {
 
 impl Drop for Subscriber {
     fn drop(&mut self) {
-        self.stream.viewers.fetch_sub(1, Ordering::Relaxed);
+        if self.counted {
+            self.stream.viewers.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }

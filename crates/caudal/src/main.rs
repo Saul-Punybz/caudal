@@ -83,7 +83,12 @@ fn main() -> ExitCode {
 
     init_logging();
 
-    tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime").block_on(run(cfg))
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime");
+    let code = rt.block_on(run(cfg));
+    // Dropping a runtime waits forever for blocking tasks (file reads,
+    // DNS); a stuck one once kept the process alive after a clean shutdown.
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+    code
 }
 
 /// Plugs `caudal-auth` into the core's access gate.
@@ -264,12 +269,34 @@ async fn run(cfg: config::Config) -> ExitCode {
         None => axum::Router::new(),
     };
 
+    let channel_router = if cfg.channel.is_empty() {
+        axum::Router::new()
+    } else {
+        let channels = cfg
+            .channel
+            .iter()
+            .map(|c| caudal_channel::Channel {
+                name: c.name.clone(),
+                items: c.items.clone(),
+                r#loop: c.r#loop,
+                shuffle: c.shuffle,
+            })
+            .collect::<Vec<_>>();
+        tracing::info!(channels = channels.len(), "24/7 channels enabled");
+        let handle = caudal_channel::start(
+            registry.clone(),
+            caudal_channel::ChannelConfig { channels, buffer: cfg.buffer.to_buffer_config() },
+        );
+        caudal_channel::router(handle)
+    };
+
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
         .merge(hls_router)
         .merge(webrtc_router)
         .merge(moq_router)
         .merge(record_router)
+        .merge(channel_router)
         .merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {

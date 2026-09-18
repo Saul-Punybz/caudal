@@ -538,6 +538,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "caudal-auth",
+ "caudal-channel",
  "caudal-core",
  "caudal-hls",
  "caudal-moq",

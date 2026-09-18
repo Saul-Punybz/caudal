@@ -150,6 +150,21 @@ pub struct Config {
     pub record: RecordSection,
     pub rtsp: RtspSection,
     pub transcode: TranscodeSection,
+    /// 24/7 channels from files: `[[channel]]` entries.
+    pub channel: Vec<ChannelEntry>,
+}
+
+/// One 24/7 channel: a playlist of files (or directories) published as a
+/// continuous live stream named `name`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelEntry {
+    pub name: String,
+    pub items: Vec<std::path::PathBuf>,
+    #[serde(default = "default_true")]
+    pub r#loop: bool,
+    #[serde(default)]
+    pub shuffle: bool,
 }
 
 /// RTSP: pull cameras in (`[[rtsp.pull]]`), serve streams out (`bind`).

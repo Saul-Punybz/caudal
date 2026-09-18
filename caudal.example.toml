@@ -56,3 +56,15 @@ max_mb = 256  # Maximum buffer size in megabytes
 # [[srt.push]]
 # stream = "main"
 # url = "srt://remote.example:9000?streamid=publish/main&passphrase=..."
+
+# 24/7 channels from files: each playlist plays as one continuous live stream,
+# available on every output (LL-HLS, WHEP, MoQ, SRT, RTSP, recording).
+# Items are files (MP4/MOV, MPEG-TS) or directories (their media files, sorted
+# by name). All files of a channel must share codec parameters; a file that
+# differs is skipped and reported in GET /api/v1/channels.
+# POST /api/v1/channels/{name}/skip jumps to the next item.
+# [[channel]]
+# name = "tv"
+# items = ["/media/intro.mp4", "/media/shows"]
+# loop = true      # default true; false ends the stream after the last item
+# shuffle = false  # default false; reshuffles on every pass

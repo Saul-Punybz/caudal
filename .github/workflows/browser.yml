@@ -1,0 +1,45 @@
+name: Browser playback
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y ffmpeg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release -p caudal
+      - name: npm ci
+        working-directory: tests/browser
+        run: npm ci
+      - name: Install browsers
+        working-directory: tests/browser
+        run: npx playwright install --with-deps chromium webkit
+      - name: Run browser suite (Chromium + WebKit vs. the real binary)
+        working-directory: tests/browser
+        env:
+          CAUDAL_BIN: ${{ github.workspace }}/target/release/caudal
+        run: npm test
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-results
+          path: tests/browser/results/
+          if-no-files-found: warn
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: tests/browser/test-results/
+          if-no-files-found: ignore

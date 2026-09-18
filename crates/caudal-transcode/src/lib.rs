@@ -35,6 +35,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use arc_swap::ArcSwap;
 use caudal_core::{Codec, Event, Registry, StartAt, Stream, Subscriber, TrackInfo, TrackKind};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -69,10 +70,7 @@ pub struct TranscodeConfig {
     pub buffer: caudal_core::BufferConfig,
 }
 
-/// Starts transcoding matching streams (current and future). Must be called
-/// inside a tokio runtime.
-pub fn start(registry: Arc<Registry>, cfg: TranscodeConfig) -> std::io::Result<()> {
-    tokio::runtime::Handle::try_current().map_err(|_| std::io::Error::other("transcode: no tokio runtime"))?;
+fn validate(cfg: &TranscodeConfig) -> std::io::Result<()> {
     for ladder in &cfg.ladders {
         for r in &ladder.renditions {
             if r.label.is_empty() || !caudal_core::media::valid_stream_name(&r.label) || r.height < 2 {
@@ -80,28 +78,59 @@ pub fn start(registry: Arc<Registry>, cfg: TranscodeConfig) -> std::io::Result<(
             }
         }
     }
-    let cfg = Arc::new(cfg);
+    Ok(())
+}
+
+/// A handle to the running transcode subsystem. Cheap to clone.
+///
+/// [`TranscodeHandle::reload`] swaps the ladder config that new publishes
+/// consult; a transcode already running for a source keeps the snapshot it
+/// started with (its own `Arc<TranscodeConfig>`, loaded once in
+/// [`consider`]), so an in-flight rendition is never interrupted by a
+/// reload — only publishes from here on see the new ladders.
+#[derive(Clone)]
+pub struct TranscodeHandle {
+    cfg: Arc<ArcSwap<TranscodeConfig>>,
+}
+
+impl TranscodeHandle {
+    /// Validates `cfg` the same way [`start`] does, then swaps it in.
+    /// Rejected (and the old config kept) if any rendition label is bad.
+    pub fn reload(&self, cfg: TranscodeConfig) -> std::io::Result<()> {
+        validate(&cfg)?;
+        self.cfg.store(Arc::new(cfg));
+        Ok(())
+    }
+}
+
+/// Starts transcoding matching streams (current and future). Must be called
+/// inside a tokio runtime.
+pub fn start(registry: Arc<Registry>, cfg: TranscodeConfig) -> std::io::Result<TranscodeHandle> {
+    tokio::runtime::Handle::try_current().map_err(|_| std::io::Error::other("transcode: no tokio runtime"))?;
+    validate(&cfg)?;
+    let cfg = Arc::new(ArcSwap::from_pointee(cfg));
     let active: Arc<Mutex<HashSet<usize>>> = Arc::default();
     // Subscribe before listing, so a stream published in between is seen
     // (twice at worst; `active` dedupes).
     let mut publishes = registry.subscribe_publishes();
     for s in registry.list() {
-        consider(&registry, &cfg, &active, s);
+        consider(&registry, &cfg.load_full(), &active, s);
     }
+    let handle = TranscodeHandle { cfg: cfg.clone() };
     tokio::spawn(async move {
         loop {
             match publishes.recv().await {
-                Ok(s) => consider(&registry, &cfg, &active, s),
+                Ok(s) => consider(&registry, &cfg.load_full(), &active, s),
                 Err(RecvError::Lagged(_)) => {
                     for s in registry.list() {
-                        consider(&registry, &cfg, &active, s);
+                        consider(&registry, &cfg.load_full(), &active, s);
                     }
                 }
                 Err(RecvError::Closed) => break,
             }
         }
     });
-    Ok(())
+    Ok(handle)
 }
 
 /// Does `pattern` (exact, `prefix*` or `*`) select stream `name`? Names
@@ -220,5 +249,44 @@ mod tests {
         assert!(!matches("*", "main+480p"));
         assert!(!matches("main*", "main+480p"));
         assert!(!matches("main+480p", "main+480p"));
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    fn one_ladder(label: &str, height: u32) -> TranscodeConfig {
+        TranscodeConfig {
+            ladders: vec![Ladder {
+                streams: vec!["src".into()],
+                renditions: vec![Rendition { label: label.into(), height, video_kbps: 500, audio_kbps: 128 }],
+            }],
+            engine: Engine::Ffmpeg,
+            ffmpeg: "ffmpeg".into(),
+            buffer: caudal_core::BufferConfig::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reload_swaps_the_snapshot_new_publishes_will_load() {
+        let registry = Registry::new();
+        let handle = start(registry, one_ladder("240p", 240)).unwrap();
+        let before = handle.cfg.load_full();
+        handle.reload(one_ladder("480p", 480)).unwrap();
+        let after = handle.cfg.load_full();
+        assert!(!Arc::ptr_eq(&before, &after), "reload must publish a new snapshot");
+        assert_eq!(after.ladders[0].renditions[0].label, "480p");
+    }
+
+    #[tokio::test]
+    async fn reload_rejects_a_bad_rendition_and_keeps_the_running_config() {
+        let registry = Registry::new();
+        let handle = start(registry, one_ladder("240p", 240)).unwrap();
+        let before = handle.cfg.load_full();
+        let err = handle.reload(one_ladder("", 240)).unwrap_err();
+        assert!(err.to_string().contains("bad rendition"), "{err}");
+        let after = handle.cfg.load_full();
+        assert!(Arc::ptr_eq(&before, &after), "an invalid reload must not touch the running config");
     }
 }

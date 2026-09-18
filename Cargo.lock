@@ -573,6 +573,7 @@ dependencies = [
  "caudal-webrtc",
  "clap",
  "jsonwebtoken",
+ "parking_lot",
  "rcgen 0.14.10",
  "serde",
  "serde_json",
@@ -757,6 +758,7 @@ dependencies = [
  "caudal-tls",
  "futures",
  "mp4-atom",
+ "parking_lot",
  "rand 0.8.8",
  "rcgen 0.13.2",
  "retina",
@@ -828,6 +830,7 @@ dependencies = [
 name = "caudal-transcode"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "caudal-core",
  "caudal-ts",

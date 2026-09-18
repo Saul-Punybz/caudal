@@ -24,6 +24,7 @@ caudal-restream.workspace = true
 caudal-transcode.workspace = true
 caudal-scte35.workspace = true
 axum.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

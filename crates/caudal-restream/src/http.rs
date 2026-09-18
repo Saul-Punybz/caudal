@@ -23,5 +23,5 @@ pub(crate) fn router(handle: RestreamHandle) -> Router {
 }
 
 async fn list(State(handle): State<RestreamHandle>) -> axum::Json<Vec<RestreamStatusJson>> {
-    axum::Json(handle.targets.iter().map(|t| t.to_json()).collect())
+    axum::Json(handle.statuses())
 }

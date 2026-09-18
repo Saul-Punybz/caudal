@@ -6,7 +6,9 @@
 mod api;
 mod config;
 mod metrics;
+mod reload;
 mod shutdown;
+mod subsystems;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -47,13 +49,18 @@ fn init_logging() {
     }
 }
 
-fn resolve_config(explicit: Option<PathBuf>) -> Result<config::Config, String> {
-    match explicit {
-        Some(path) => config::load(&path),
-        None => {
-            let default_path = PathBuf::from("caudal.toml");
-            if default_path.exists() { config::load(&default_path) } else { Ok(config::Config::default()) }
-        }
+/// Resolves the config to start with, and the file path (if any) that a
+/// later reload should re-read: explicit `--config`, or `caudal.toml` in
+/// the current directory if it exists, otherwise built-in defaults with no
+/// file to reload from.
+fn resolve_config(explicit: Option<PathBuf>) -> Result<(config::Config, Option<PathBuf>), String> {
+    let path = explicit.or_else(|| {
+        let default_path = PathBuf::from("caudal.toml");
+        default_path.exists().then_some(default_path)
+    });
+    match path {
+        Some(path) => config::load(&path).map(|cfg| (cfg, Some(path))),
+        None => Ok((config::Config::default(), None)),
     }
 }
 
@@ -73,7 +80,7 @@ fn main() -> ExitCode {
         };
     }
 
-    let cfg = match resolve_config(cli.config) {
+    let (cfg, config_path) = match resolve_config(cli.config) {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("{e}");
@@ -84,140 +91,22 @@ fn main() -> ExitCode {
     init_logging();
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime");
-    let code = rt.block_on(run(cfg));
+    let code = rt.block_on(run(cfg, config_path));
     // Dropping a runtime waits forever for blocking tasks (file reads,
     // DNS); a stuck one once kept the process alive after a clean shutdown.
     rt.shutdown_timeout(std::time::Duration::from_secs(5));
     code
 }
 
-/// Plugs `caudal-auth` into the core's access gate.
-struct AuthGate(caudal_auth::Authorizer);
-
-impl caudal_core::Gate for AuthGate {
-    fn check<'a>(
-        &'a self,
-        access: caudal_core::Access,
-        stream: &'a str,
-        token: Option<&'a str>,
-    ) -> caudal_core::GateFuture<'a> {
-        Box::pin(async move {
-            let action = match access {
-                caudal_core::Access::Publish => caudal_auth::Action::Publish,
-                caudal_core::Access::Play => caudal_auth::Action::Play,
-            };
-            self.0.check(action, stream, token).await.map_err(|e| match e {
-                caudal_auth::AuthError::Missing => caudal_core::Denied::Missing,
-                other => caudal_core::Denied::Refused(other.to_string()),
-            })
-        })
-    }
-}
-
-/// Sends a webhook for every stream that starts or ends.
-fn spawn_hooks(registry: &std::sync::Arc<caudal_core::Registry>, hooks: caudal_auth::Hooks) {
-    let mut started = registry.subscribe_publishes();
-    let mut ended = registry.subscribe_ends();
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                s = started.recv() => match s {
-                    Ok(s) => hooks.emit(caudal_auth::HookEvent::StreamStarted { stream: s.name().to_owned() }),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => tracing::warn!(missed = n, "webhooks lagged"),
-                    Err(_) => return,
-                },
-                e = ended.recv() => match e {
-                    Ok(name) => hooks.emit(caudal_auth::HookEvent::StreamEnded { stream: name.to_string() }),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => tracing::warn!(missed = n, "webhooks lagged"),
-                    Err(_) => return,
-                },
-            }
-        }
-    });
-}
-
-async fn run(cfg: config::Config) -> ExitCode {
+async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     let registry = caudal_core::Registry::new();
 
-    // Validated at load; unwraps below cannot fail.
-    let auth = cfg.auth.to_auth_config().expect("validated");
-    if auth.keys.is_some() {
-        tracing::info!(publish = auth.publish, play = auth.play, "token auth enabled");
-        registry.set_gate(std::sync::Arc::new(AuthGate(caudal_auth::Authorizer::new(auth))));
-    } else {
-        tracing::warn!("no [auth] keys: anyone who can reach the server can publish and play");
-    }
-    if let Some(hooks) = cfg.hooks.to_hooks_config().expect("validated") {
-        spawn_hooks(&registry, caudal_auth::Hooks::new(Some(hooks)));
-    }
-
-    // RTMP ingest runs in its own task; a panic or I/O error there is logged
+    // Starts RTMP, SRT, RTSP, restream, channels and transcode, and wires
+    // auth/webhooks: everything `subsystems::Supervisor::reload` can later
+    // apply hot or restart on its own (see that module's docs). Each
+    // listener runs in its own task; a panic or I/O error there is logged
     // and does not bring down the HTTP side.
-    let rtmp_cfg = caudal_rtmp::RtmpConfig {
-        bind: cfg.rtmp.bind,
-        app: cfg.rtmp.app.clone(),
-        buffer: cfg.buffer.to_buffer_config(),
-    };
-    tracing::info!(bind = %rtmp_cfg.bind, app = %rtmp_cfg.app, "starting rtmp listener");
-    let rtmp_handle = tokio::spawn(caudal_rtmp::serve(rtmp_cfg, registry.clone()));
-    tokio::spawn(async move {
-        match rtmp_handle.await {
-            Ok(Ok(())) => tracing::info!("rtmp listener stopped"),
-            Ok(Err(e)) => tracing::error!(error = %e, "rtmp listener failed"),
-            Err(join_err) => tracing::error!(error = %join_err, "rtmp task panicked"),
-        }
-    });
-
-    let srt_cfg = caudal_srt::SrtConfig {
-        bind: cfg.srt.bind,
-        latency_ms: cfg.srt.latency_ms,
-        passphrase: cfg.srt.passphrase.clone(),
-        buffer: cfg.buffer.to_buffer_config(),
-        pushes: cfg
-            .srt
-            .push
-            .iter()
-            .map(|p| caudal_srt::SrtPush { stream: p.stream.clone(), url: p.url.clone() })
-            .collect(),
-    };
-    tracing::info!(bind = %srt_cfg.bind, "starting srt listener");
-    let srt_handle = tokio::spawn(caudal_srt::serve(srt_cfg, registry.clone()));
-    tokio::spawn(async move {
-        match srt_handle.await {
-            Ok(Ok(())) => tracing::info!("srt listener stopped"),
-            Ok(Err(e)) => tracing::error!(error = %e, "srt listener failed"),
-            Err(join_err) => tracing::error!(error = %join_err, "srt task panicked"),
-        }
-    });
-
-    let rtsp_cfg = caudal_rtsp::RtspConfig {
-        bind: cfg.rtsp.bind,
-        pulls: cfg
-            .rtsp
-            .pull
-            .iter()
-            .map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() })
-            .collect(),
-        buffer: cfg.buffer.to_buffer_config(),
-        tls: cfg.rtsp.to_tls_config().expect("validated"),
-        udp_port_range: cfg.rtsp.udp_port_range,
-        session_timeout: caudal_rtsp::DEFAULT_SESSION_TIMEOUT,
-    };
-    if rtsp_cfg.bind.is_some() || !rtsp_cfg.pulls.is_empty() {
-        let rtsp_handle = tokio::spawn(caudal_rtsp::serve(rtsp_cfg, registry.clone()));
-        tokio::spawn(async move {
-            match rtsp_handle.await {
-                Ok(Ok(())) => tracing::info!("rtsp stopped"),
-                Ok(Err(e)) => tracing::error!(error = %e, "rtsp failed"),
-                Err(e) => tracing::error!(error = %e, "rtsp task panicked"),
-            }
-        });
-    }
-
-    if let Some(tc) = cfg.transcode.to_transcode_config(cfg.buffer.to_buffer_config()).expect("validated")
-        && let Err(e) = caudal_transcode::start(registry.clone(), tc) {
-            tracing::error!(error = %e, "transcoding disabled");
-        }
+    let started = subsystems::Supervisor::start(&cfg, registry.clone());
 
     let hls_router = caudal_hls::router(
         registry.clone(),
@@ -271,39 +160,8 @@ async fn run(cfg: config::Config) -> ExitCode {
         None => axum::Router::new(),
     };
 
-    let channel_router = if cfg.channel.is_empty() {
-        axum::Router::new()
-    } else {
-        let channels = cfg
-            .channel
-            .iter()
-            .map(|c| caudal_channel::Channel {
-                name: c.name.clone(),
-                items: c.items.clone(),
-                r#loop: c.r#loop,
-                shuffle: c.shuffle,
-            })
-            .collect::<Vec<_>>();
-        tracing::info!(channels = channels.len(), "24/7 channels enabled");
-        let handle = caudal_channel::start(
-            registry.clone(),
-            caudal_channel::ChannelConfig { channels, buffer: cfg.buffer.to_buffer_config() },
-        );
-        caudal_channel::router(handle)
-    };
-
-    let restream_router = if cfg.restream.is_empty() {
-        axum::Router::new()
-    } else {
-        let targets = cfg
-            .restream
-            .iter()
-            .map(|r| caudal_restream::RestreamTarget { stream: r.stream.clone(), url: r.url.clone() })
-            .collect::<Vec<_>>();
-        tracing::info!(targets = targets.len(), "multistreaming enabled");
-        let handle = caudal_restream::start(registry.clone(), caudal_restream::RestreamConfig { targets });
-        caudal_restream::router(handle)
-    };
+    let reload_state = reload::ReloadState { supervisor: started.supervisor.clone(), config_path };
+    reload::spawn_sighup(reload_state.clone());
 
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
@@ -311,8 +169,9 @@ async fn run(cfg: config::Config) -> ExitCode {
         .merge(webrtc_router)
         .merge(moq_router)
         .merge(record_router)
-        .merge(channel_router)
-        .merge(restream_router)
+        .merge(started.channel_router)
+        .merge(started.restream_router)
+        .merge(reload::router(reload_state))
         .merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {

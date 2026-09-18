@@ -13,6 +13,7 @@ caudal-tls.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 bytes.workspace = true
+parking_lot.workspace = true
 futures = "0.3"
 url = "2"
 rand = "0.8"

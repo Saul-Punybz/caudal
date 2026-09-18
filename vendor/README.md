@@ -10,5 +10,6 @@ as Type 3 (rml_rtmp, which `caudal-restream` uses) got frozen timestamps.
 
 Patch: `src/chunk/reader.rs`, every change marked `Caudal patch`, plus the test
 `test_reader_type3_new_messages_reuse_the_delta`. Found 18 Sep 2026 by
-`crates/caudal-restream/tests/loopback.rs`. Drop this copy once upstream ships
-a fix.
+`crates/caudal-restream/tests/loopback.rs`. Reported upstream as
+https://github.com/ScuffleCloud/scuffle/issues/650; drop this copy once they
+ship a fix.

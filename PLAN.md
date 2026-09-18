@@ -96,7 +96,7 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [~] **M4: SRT** in (done, batch 2); out still to do.
 - [ ] **M5: WebRTC.** WHIP in, WHEP out.
 - [ ] **M6: MoQ / WebTransport.**
-- [ ] **M7: Auth + TLS.** JWT/JWKS, webhooks, ACME.
+- [x] **M7: Auth + TLS.** JWT/JWKS, webhooks, ACME (ACME untested against a real CA; Safari over h2 pending a trusted local cert).
 - [ ] **M8: Recording and VOD.** MP4 to disk, DVR window, MP4/TS/MKV file inputs.
 - [ ] **M9: RTSP** pull (retina) and server.
 - [ ] **M10: Clustering.** Origin-edge.

@@ -12,3 +12,31 @@ segment_ms = 2000  # HLS segment duration in milliseconds
 [buffer]
 window_secs = 50  # Buffer window duration in seconds
 max_mb = 256  # Maximum buffer size in megabytes
+
+# HTTPS next to HTTP, speaking HTTP/1.1 and HTTP/2. Needed for low-latency
+# HLS on Safari and for Apple's conformance. Uncomment one certificate source.
+# [tls]
+# bind = "0.0.0.0:8443"
+# cert = "/etc/caudal/fullchain.pem"   # PEM files, reloaded when they change
+# key = "/etc/caudal/privkey.pem"
+# acme_domains = ["live.example.com"]  # or: automatic Let's Encrypt
+# acme_email = "ops@example.com"
+# acme_cache_dir = "/var/lib/caudal/acme"
+# acme_staging = false
+
+# Tokens (JWT) to publish and play. Without keys, anyone who can reach the
+# server can publish and play. Publish: rtmp://host/live/<name>?token=...,
+# srt://host:9000?streamid=publish/<name>?token=...; play: ?token=... or
+# "Authorization: Bearer ...". Claims: sub = stream or "prefix*", act =
+# "publish" / "play" (or both), exp.
+# [auth]
+# secret = "at-least-32-characters-of-random-secret"  # HS256, or:
+# jwks_url = "https://auth.example.com/.well-known/jwks.json"
+# jwks_refresh_secs = 300
+# publish = true
+# play = false
+
+# Signed webhooks (standardwebhooks.com) on stream.started / stream.ended.
+# [hooks]
+# urls = ["https://example.com/caudal-events"]
+# secret = "whsec_..."

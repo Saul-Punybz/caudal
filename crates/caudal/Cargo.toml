@@ -13,6 +13,8 @@ caudal-rtmp.workspace = true
 caudal-hls.workspace = true
 caudal-srt.workspace = true
 caudal-ui.workspace = true
+caudal-tls.workspace = true
+caudal-auth.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -25,4 +27,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 [dev-dependencies]
 ureq = { version = "3", default-features = false }
 tempfile = "3"
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+rcgen = "0.14"
+serde_json.workspace = true
 tower = { version = "0.5", features = ["util"] }

@@ -31,13 +31,20 @@ pub struct Server {
 
 impl Server {
     pub fn start() -> Self {
+        Self::start_with("")
+    }
+
+    /// Starts with `extra` TOML appended (new sections only). `{dir}` in it
+    /// is replaced with the server's temp directory.
+    pub fn start_with(extra: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (http, rtmp, srt) = (free_port(), free_port(), free_udp_port());
         let cfg = dir.path().join("caudal.toml");
         std::fs::write(
             &cfg,
             format!(
-                "[server]\nhttp_bind = \"127.0.0.1:{http}\"\n\n[rtmp]\nbind = \"127.0.0.1:{rtmp}\"\napp = \"live\"\n\n[srt]\nbind = \"127.0.0.1:{srt}\"\n\n[hls]\npart_ms = 200\nsegment_ms = 2000\n"
+                "[server]\nhttp_bind = \"127.0.0.1:{http}\"\n\n[rtmp]\nbind = \"127.0.0.1:{rtmp}\"\napp = \"live\"\n\n[srt]\nbind = \"127.0.0.1:{srt}\"\n\n[hls]\npart_ms = 200\nsegment_ms = 2000\n{}"
+                , extra.replace("{dir}", &dir.path().display().to_string())
             ),
         )
         .unwrap();

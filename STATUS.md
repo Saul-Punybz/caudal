@@ -1,6 +1,6 @@
 # STATUS — Caudal
 
-**Last updated:** 18 Sep 2026 (batch 2 closed)
+**Last updated:** 18 Sep 2026 (batch 3 closed except the Safari measurement)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
@@ -104,6 +104,15 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
+
+## Batch 3 result (18 Sep 2026)
+Merged K (TLS: rustls on ring, h1+h2 via ALPN, cert hot reload, ACME), J (JWT/JWKS auth, Standard Webhooks), L (steady-state latency test). Orchestrator wired it: core `Gate` + `Registry::authorize` + `subscribe_ends`; tokens read from RTMP stream keys, SRT stream ids and HLS `?token=` / Bearer; every playlist URI carries the viewer's token forward; `[tls]`, `[auth]`, `[hooks]` config with validation; HTTPS runs next to HTTP with one shutdown signal.
+
+**Verified:** e2e **13/13** (new: publish refused without / with a wrong token, accepted with the right one; play 401 / 403 / 200 with the token on init and parts; HTTPS negotiates HTTP/2). Workspace 100/100, clippy clean, cargo-deny ok (RUSTSEC-2023-0071 ignored with reason: we never use RSA private keys; rustls-pemfile replaced).
+
+**Found and fixed on the way:** the `/play` page's `liveSyncDurationCount: 1` pinned hls.js at a 2 s target instead of 0.6 s. Steady-state now: Chromium 1.66 s, Firefox 1.10 s.
+
+**Not verified:** ACME against a real CA (needs a public domain). **Safari over HTTP/2** (needs a certificate this Mac trusts: Saul runs `mkcert -install`; then Caudal with a mkcert cert, measure WebKit native and rerun Apple's validator over HTTPS to clear -50120). The React UI does not pass play tokens yet; the admin API has no auth yet.
 
 ## Batch 3 (launched 18 Sep 2026): M7 TLS, HTTP/2, auth
 **Goal:** Caudal can run on a public server: HTTPS with HTTP/2 (Apple's last MUST, -50120, and the likely cause of Safari's ~6 s), tokens to publish and play, webhooks on stream start/end.

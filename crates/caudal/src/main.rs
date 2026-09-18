@@ -86,8 +86,65 @@ fn main() -> ExitCode {
     tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime").block_on(run(cfg))
 }
 
+/// Plugs `caudal-auth` into the core's access gate.
+struct AuthGate(caudal_auth::Authorizer);
+
+impl caudal_core::Gate for AuthGate {
+    fn check<'a>(
+        &'a self,
+        access: caudal_core::Access,
+        stream: &'a str,
+        token: Option<&'a str>,
+    ) -> caudal_core::GateFuture<'a> {
+        Box::pin(async move {
+            let action = match access {
+                caudal_core::Access::Publish => caudal_auth::Action::Publish,
+                caudal_core::Access::Play => caudal_auth::Action::Play,
+            };
+            self.0.check(action, stream, token).await.map_err(|e| match e {
+                caudal_auth::AuthError::Missing => caudal_core::Denied::Missing,
+                other => caudal_core::Denied::Refused(other.to_string()),
+            })
+        })
+    }
+}
+
+/// Sends a webhook for every stream that starts or ends.
+fn spawn_hooks(registry: &std::sync::Arc<caudal_core::Registry>, hooks: caudal_auth::Hooks) {
+    let mut started = registry.subscribe_publishes();
+    let mut ended = registry.subscribe_ends();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                s = started.recv() => match s {
+                    Ok(s) => hooks.emit(caudal_auth::HookEvent::StreamStarted { stream: s.name().to_owned() }),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => tracing::warn!(missed = n, "webhooks lagged"),
+                    Err(_) => return,
+                },
+                e = ended.recv() => match e {
+                    Ok(name) => hooks.emit(caudal_auth::HookEvent::StreamEnded { stream: name.to_string() }),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => tracing::warn!(missed = n, "webhooks lagged"),
+                    Err(_) => return,
+                },
+            }
+        }
+    });
+}
+
 async fn run(cfg: config::Config) -> ExitCode {
     let registry = caudal_core::Registry::new();
+
+    // Validated at load; unwraps below cannot fail.
+    let auth = cfg.auth.to_auth_config().expect("validated");
+    if auth.keys.is_some() {
+        tracing::info!(publish = auth.publish, play = auth.play, "token auth enabled");
+        registry.set_gate(std::sync::Arc::new(AuthGate(caudal_auth::Authorizer::new(auth))));
+    } else {
+        tracing::warn!("no [auth] keys: anyone who can reach the server can publish and play");
+    }
+    if let Some(hooks) = cfg.hooks.to_hooks_config().expect("validated") {
+        spawn_hooks(&registry, caudal_auth::Hooks::new(Some(hooks)));
+    }
 
     // RTMP ingest runs in its own task; a panic or I/O error there is logged
     // and does not bring down the HTTP side.
@@ -139,11 +196,36 @@ async fn run(cfg: config::Config) -> ExitCode {
         }
     };
     tracing::info!(bind = %cfg.server.http_bind, "listening");
+
+    // One signal, many servers: Ctrl-C / SIGTERM flips this, both drain.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown::signal().await;
+        let _ = stop_tx.send(true);
+    });
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stop| *stop).await;
+    };
+
+    let tls_task = match cfg.tls.to_tls_config().expect("validated") {
+        Some(tls) => {
+            tracing::info!(bind = %tls.bind, "https listening (HTTP/1.1 + HTTP/2)");
+            Some(tokio::spawn(caudal_tls::serve(tls, app.clone(), stopped(stop_rx.clone()))))
+        }
+        None => None,
+    };
     state.mark_ready();
 
     let result = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .with_graceful_shutdown(shutdown::signal())
+        .with_graceful_shutdown(stopped(stop_rx))
         .await;
+    if let Some(t) = tls_task {
+        match t.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(error = %e, "https server failed"),
+            Err(e) => tracing::error!(error = %e, "https task panicked"),
+        }
+    }
 
     match result {
         Ok(()) => {

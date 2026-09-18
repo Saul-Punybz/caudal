@@ -314,3 +314,112 @@ fn hls_viewers_count_players_not_the_packager() {
     std::thread::sleep(Duration::from_secs(12));
     assert_eq!(viewers(&s), 0, "the player left");
 }
+
+const SECRET: &str = "0123456789abcdef0123456789abcdef-e2e";
+
+/// A signed HS256 token for `sub` allowing `act`, valid for an hour.
+fn token(sub: &str, act: &[&str]) -> String {
+    let exp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600;
+    let claims = serde_json::json!({ "sub": sub, "act": act, "exp": exp });
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+    )
+    .unwrap()
+}
+
+#[test]
+fn publishing_needs_a_valid_token_when_auth_is_on() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start_with(&format!("\n[auth]\nsecret = \"{SECRET}\"\npublish = true\n"));
+
+    // No token: refused, nothing appears.
+    let _anon = Publisher::rtmp(&s.rtmp_url("guarded"), 10);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(s.get("/api/v1/streams/guarded").unwrap().0, 404, "no token, no stream");
+
+    // A token for another stream: refused.
+    let _other = Publisher::rtmp(&format!("{}?token={}", s.rtmp_url("guarded"), token("elsewhere", &["publish"])), 10);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(s.get("/api/v1/streams/guarded").unwrap().0, 404, "token for another stream");
+
+    // The right token: publishes.
+    let _ok = Publisher::rtmp(&format!("{}?token={}", s.rtmp_url("guarded"), token("guarded", &["publish"])), 20);
+    s.wait_until("/api/v1/streams/guarded", Duration::from_secs(15), |b| b.contains("\"h264\""));
+}
+
+#[test]
+fn playing_needs_a_token_and_every_playlist_uri_carries_it() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start_with(&format!("\n[auth]\nsecret = \"{SECRET}\"\npublish = false\nplay = true\n"));
+    let _publ = Publisher::rtmp(&s.rtmp_url("paid"), 30);
+    s.wait_until("/api/v1/streams/paid", Duration::from_secs(15), |b| b.contains("\"h264\""));
+
+    assert_eq!(s.get("/hls/paid/master.m3u8").unwrap().0, 401, "no token");
+    assert_eq!(s.get("/hls/paid/master.m3u8?token=not.a.jwt").unwrap().0, 403, "garbage token");
+    assert_eq!(
+        s.get(&format!("/hls/paid/master.m3u8?token={}", token("paid", &["publish"]))).unwrap().0,
+        403,
+        "publish-only token"
+    );
+
+    let t = token("paid", &["play"]);
+    let playlist = s
+        .wait_until(&format!("/hls/paid/index.m3u8?token={t}"), Duration::from_secs(15), |b| b.contains("#EXT-X-PART"));
+    let with_t = format!("token={t}");
+    assert!(playlist.contains(&format!("init.mp4?{with_t}")), "init URI carries the token:\n{playlist}");
+    let part = playlist
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("#EXT-X-PART:"))
+        .and_then(|l| l.split("URI=\"").nth(1))
+        .and_then(|u| u.split('"').next())
+        .expect("a part URI")
+        .to_owned();
+    assert!(part.contains(&with_t), "{part}");
+    assert_eq!(s.get(&format!("/hls/paid/{part}")).unwrap().0, 200, "part with its token");
+    let bare = part.split('?').next().unwrap();
+    assert_eq!(s.get(&format!("/hls/paid/{bare}")).unwrap().0, 401, "part without a token");
+}
+
+#[test]
+fn https_speaks_http2() {
+    if !enabled() {
+        return;
+    }
+    if !have("curl") {
+        eprintln!("SKIP: curl not on PATH");
+        return;
+    }
+    let certs = tempfile::tempdir().unwrap();
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let (cert, key) = (certs.path().join("cert.pem"), certs.path().join("key.pem"));
+    std::fs::write(&cert, ck.cert.pem()).unwrap();
+    std::fs::write(&key, ck.signing_key.serialize_pem()).unwrap();
+    let https = support::free_port();
+    let s = Server::start_with(&format!(
+        "\n[tls]\nbind = \"127.0.0.1:{https}\"\ncert = \"{}\"\nkey = \"{}\"\n",
+        cert.display(),
+        key.display()
+    ));
+    let _ = &s;
+    let url = format!("https://127.0.0.1:{https}/healthz");
+    let t0 = Instant::now();
+    let version = loop {
+        let out = std::process::Command::new("curl")
+            .args(["-sk", "--http2", "-o", "/dev/null", "-w", "%{http_version}", &url])
+            .output()
+            .unwrap();
+        let v = String::from_utf8_lossy(&out.stdout).to_string();
+        if v == "2" || t0.elapsed() > Duration::from_secs(10) {
+            break v;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(version, "2", "HTTPS must negotiate HTTP/2 via ALPN");
+}

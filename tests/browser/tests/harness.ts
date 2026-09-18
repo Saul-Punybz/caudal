@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
 import dgram from "node:dgram";
+import { execSync } from "node:child_process";
 
 export function haveFfmpeg(): boolean {
   const r = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" });
@@ -52,6 +53,7 @@ export interface CaudalServer {
   rtmpPort: number;
   srtPort: number;
   baseUrl: string;
+  httpsBaseUrl?: string;
   rtmpUrl(streamName: string): string;
   stop(): Promise<void>;
 }
@@ -66,8 +68,12 @@ function resolveBinary(): string {
  * Starts the real `caudal` binary against a temp config with free ports,
  * and waits for `GET /healthz` == 200. Throws a clear, actionable error if
  * the binary is missing (it never builds it itself).
+ *
+ * @param opts.tls If true, generates a self-signed cert for localhost and
+ *   127.0.0.1 and adds TLS binding to the config. The httpsBaseUrl will be set
+ *   on the returned CaudalServer.
  */
-export async function startCaudal(): Promise<CaudalServer> {
+export async function startCaudal(opts?: { tls?: boolean }): Promise<CaudalServer> {
   const bin = resolveBinary();
   const fs = await import("node:fs");
   if (!fs.existsSync(bin)) {
@@ -78,10 +84,45 @@ export async function startCaudal(): Promise<CaudalServer> {
     );
   }
 
-  const [httpPort, rtmpPort, srtPort, webrtcPort, moqPort] = await Promise.all([freeTcpPort(), freeTcpPort(), freeUdpPort(), freeUdpPort(), freeUdpPort()]);
+  const [httpPort, rtmpPort, srtPort, webrtcPort, moqPort, tlsPort] = await Promise.all([
+    freeTcpPort(),
+    freeTcpPort(),
+    freeUdpPort(),
+    freeUdpPort(),
+    freeUdpPort(),
+    opts?.tls ? freeTcpPort() : Promise.resolve(0),
+  ]);
 
   const dir = await mkdtemp(join(tmpdir(), "caudal-browser-"));
   const cfgPath = join(dir, "caudal.toml");
+
+  // Generate self-signed certificate if TLS is requested.
+  let tlsSection = "";
+  let httpsBaseUrl: string | undefined;
+  if (opts?.tls) {
+    const certPath = join(dir, "cert.pem");
+    const keyPath = join(dir, "key.pem");
+    try {
+      execSync(
+        `openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=127.0.0.1 -addext "subjectAltName=IP:127.0.0.1" -keyout "${keyPath}" -out "${certPath}"`,
+        { stdio: "pipe" },
+      );
+    } catch (e) {
+      throw new Error(
+        `Failed to generate self-signed certificate for TLS: ${String(e)}\n` +
+          `Command: openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=127.0.0.1 -addext "subjectAltName=IP:127.0.0.1" -keyout "${keyPath}" -out "${certPath}"`
+      );
+    }
+    tlsSection = [
+      "",
+      "[tls]",
+      `bind = "127.0.0.1:${tlsPort}"`,
+      `cert = "${certPath}"`,
+      `key = "${keyPath}"`,
+    ].join("\n");
+    httpsBaseUrl = `https://127.0.0.1:${tlsPort}`;
+  }
+
   const toml = [
     "[server]",
     `http_bind = "127.0.0.1:${httpPort}"`,
@@ -102,9 +143,15 @@ export async function startCaudal(): Promise<CaudalServer> {
     "[hls]",
     "part_ms = 200",
     "segment_ms = 2000",
+    tlsSection,
     "",
   ].join("\n");
   await writeFile(cfgPath, toml, "utf8");
+
+  if (opts?.tls) {
+    console.log(`[caudal] TLS enabled: httpsBaseUrl=${httpsBaseUrl}, cfgPath=${cfgPath}`);
+    console.log(`[caudal] Generated TOML:\n${toml}`);
+  }
 
   const child: ChildProcess = spawn(bin, ["--config", cfgPath], {
     stdio: ["ignore", "ignore", "inherit"],
@@ -119,37 +166,54 @@ export async function startCaudal(): Promise<CaudalServer> {
 
   const deadline = Date.now() + 10_000;
   let lastErr: unknown;
-  while (Date.now() < deadline) {
-    if (exited) {
-      throw new Error("caudal exited before /healthz answered — check its stderr above");
-    }
-    try {
-      const res = await fetch(`${baseUrl}/healthz`);
-      if (res.status === 200) {
-        return {
-          httpPort,
-          rtmpPort,
-          srtPort,
-          baseUrl,
-          rtmpUrl: (name: string) => `rtmp://127.0.0.1:${rtmpPort}/live/${name}`,
-          stop: async () => {
-            child.kill("SIGTERM");
-            await new Promise<void>((resolve) => {
-              if (exited) return resolve();
-              child.once("exit", () => resolve());
-              setTimeout(() => {
-                child.kill("SIGKILL");
-                resolve();
-              }, 3000);
-            });
-            await rm(dir, { recursive: true, force: true });
-          },
-        };
+  const healthzUrl = opts?.tls && httpsBaseUrl ? `${httpsBaseUrl}/healthz` : `${baseUrl}/healthz`;
+
+  // For HTTPS with self-signed certs, disable cert verification for localhost testing.
+  const oldRejectUnauth = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  if (opts?.tls) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  }
+
+  try {
+    while (Date.now() < deadline) {
+      if (exited) {
+        throw new Error("caudal exited before /healthz answered — check its stderr above");
       }
-    } catch (e) {
-      lastErr = e;
+      try {
+        const res = await fetch(healthzUrl);
+        if (res.status === 200) {
+          return {
+            httpPort,
+            rtmpPort,
+            srtPort,
+            baseUrl,
+            httpsBaseUrl,
+            rtmpUrl: (name: string) => `rtmp://127.0.0.1:${rtmpPort}/live/${name}`,
+            stop: async () => {
+              child.kill("SIGTERM");
+              await new Promise<void>((resolve) => {
+                if (exited) return resolve();
+                child.once("exit", () => resolve());
+                setTimeout(() => {
+                  child.kill("SIGKILL");
+                  resolve();
+                }, 3000);
+              });
+              await rm(dir, { recursive: true, force: true });
+            },
+          };
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+      await new Promise((r) => setTimeout(r, 100));
     }
-    await new Promise((r) => setTimeout(r, 100));
+  } finally {
+    if (oldRejectUnauth !== undefined) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = oldRejectUnauth;
+    } else {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    }
   }
   child.kill("SIGKILL");
   await rm(dir, { recursive: true, force: true });

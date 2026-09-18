@@ -34,5 +34,17 @@ export default defineConfig({
         ...devices["Desktop Safari"],
       },
     },
+    {
+      // Firefox plays through hls.js like Chromium, but on its own media
+      // stack (MSE + its own decoders), so it catches different bugs.
+      name: "firefox",
+      use: {
+        ...devices["Desktop Firefox"],
+        launchOptions: {
+          // 0 = allow autoplay (muted or not) without a user gesture.
+          firefoxUserPrefs: { "media.autoplay.default": 0 },
+        },
+      },
+    },
   ],
 });

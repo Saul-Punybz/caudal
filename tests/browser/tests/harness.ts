@@ -176,7 +176,9 @@ export function startFfmpegPublisher(rtmpUrl: string): FfmpegPublisher {
     "-c:v",
     "libx264",
     "-preset",
-    "veryfast",
+    // ultrafast: GitHub's 2-core runners encode, serve and decode on the same
+    // machine; veryfast starved the browser there (playback stalled).
+    "ultrafast",
     "-tune",
     "zerolatency",
     "-g",

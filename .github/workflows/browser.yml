@@ -23,7 +23,7 @@ jobs:
         run: npm ci
       - name: Install browsers
         working-directory: tests/browser
-        run: npx playwright install --with-deps chromium webkit
+        run: npx playwright install --with-deps chromium webkit firefox
       - name: Run browser suite (Chromium + WebKit vs. the real binary)
         working-directory: tests/browser
         env:

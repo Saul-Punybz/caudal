@@ -21,4 +21,4 @@ ui:
 
 # Browser playback test (Chromium + WebKit) against the release binary.
 browser: build
-    cd tests/browser && npm ci && npx playwright install chromium webkit && npm test
+    cd tests/browser && npm ci && npx playwright install chromium webkit firefox && npm test

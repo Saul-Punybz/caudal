@@ -29,7 +29,9 @@ export function Player({ streamName, onLatency }: Props) {
       if (cancelled || !video) return;
 
       if (HlsCtor.isSupported()) {
-        hls = new HlsCtor({ lowLatencyMode: true });
+        // Catch up to the live target at up to 1.5x instead of staying wherever
+        // playback started (see crates/caudal-hls/static/play.html).
+        hls = new HlsCtor({ lowLatencyMode: true, maxLiveSyncPlaybackRate: 1.5 });
         hls.loadSource(src);
         hls.attachMedia(video);
         hls.on(HlsCtor.Events.ERROR, (_evt, data) => {

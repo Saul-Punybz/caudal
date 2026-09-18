@@ -6,7 +6,7 @@
 // does not apply here. See STATUS.md, "Batch 2", agent E.
 //
 // One test file == one caudal binary + one ffmpeg publish, shared by the
-// single test in it, so Chromium and WebKit (run as separate Playwright
+// single test in it, so Chromium, Firefox and WebKit (run as separate Playwright
 // "projects") each get their own stream on their own ports.
 
 import { test, expect, type Page } from "@playwright/test";
@@ -204,6 +204,11 @@ test.describe("Caudal LL-HLS in a real browser", () => {
       })
       .toBe(1280);
 
+    // Warm up first: startup buffering is not a stall. Then playback must be
+    // smooth: at least 2.4 s of media over 3 s of wall time (80%).
+    await expect
+      .poll(async () => page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime), { timeout: 20_000 })
+      .toBeGreaterThan(1);
     const currentTimeStart = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
     await page.waitForTimeout(3_000);
     const currentTimeEnd = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
@@ -249,7 +254,7 @@ test.describe("Caudal LL-HLS in a real browser", () => {
 
     expect(metrics.readyState).toBeGreaterThanOrEqual(3);
     expect(metrics.videoWidth).toBe(1280);
-    expect(metrics.currentTimeDelta).toBeGreaterThanOrEqual(2);
+    expect(metrics.currentTimeDelta, "playback stalled after warm-up").toBeGreaterThanOrEqual(2.4);
     expect(metrics.fatalHlsError).toBeNull();
 
     expect(metrics.liveEdgeDistanceSec, "live-edge distance was not measurable").not.toBeNull();
@@ -257,7 +262,10 @@ test.describe("Caudal LL-HLS in a real browser", () => {
 
     expect(metrics.ingestToGlassSec, "ingest-to-glass was not measurable").not.toBeNull();
     const ingestToGlass = metrics.ingestToGlassSec as number;
-    if (browserName === "webkit") {
+    // The gap belongs to Apple's NATIVE player (macOS WebKit/Safari). On
+    // Linux, Playwright's WebKit has no native HLS and plays through hls.js,
+    // where it measured 2.1 s on GitHub, so key on the engine, not the name.
+    if (!metrics.hlsInstanceExposed) {
       // Known gap, measured 18 Sep 2026: WebKit's native player drops out of
       // low-latency mode over HTTP/1.1 and settles on the full 3x target
       // hold-back (~5.5-6 s). Hypothesis: Apple requires HTTP/2 for LL-HLS

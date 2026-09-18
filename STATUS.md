@@ -1,13 +1,20 @@
 # STATUS — Caudal
 
-**Last updated:** 18 Sep 2026 (batch 5 closed: MoQ; Safari over HTTP/2 measured)
+**Last updated:** 18 Sep 2026, evening (batch 7 closed: RTSP, transcoding, multi-rendition HLS, OMT VMX codec; batch 8: 24/7 channels merged, multistreaming and UI screens running)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## Where we are
-- **M0 done:** `crates/caudal-core`: the media model (tracks, frames on their native clock) and the live buffer (one publisher, many viewers; slow viewers skip to a keyframe; memory bounded by time and bytes). 13 tests pass, clippy clean.
-- `crates/caudal`: empty binary for now.
+## Where we are (18 Sep 2026, evening)
+| Area | State |
+|---|---|
+| Ingest | RTMP/E-RTMP, SRT, WHIP, RTSP pull (retina), 24/7 channel from files (M13) |
+| Output | LL-HLS (Apple-validated, multi-rendition, rendition reports), WHEP, MoQ, SRT push/listen, RTSP server (TCP interleaved) |
+| Processing | Transcoding ladders (ffmpeg default, rusty_h264 in-process), recording + VOD + clips |
+| Platform | TOML config, API, metrics, TLS/HTTP2/ACME, tokens + webhooks, M3 UI (Overview, Stream, Publish) |
+| Running | Multistreaming RTMP/RTMPS push (`caudal-restream`); UI screens for Channels, Restreams, Recordings |
+| Next | Batch 9: SCTE-35 (`docs/research/SCTE35.md`), admin login, health alerts. Roadmap in `PLAN.md` |
+| OMT | `vmx-codec` ported in pure Rust, byte-identical to libvmx both ways; private repo `Saul-Punybz/open-media-transport` |
 
 ## Finding, 17 Sep (evening)
 SRT and RIST **do exist in pure Rust**: `rsrt` (cesbo, verified against libsrt 1.5.6: 668 tests + interop) and `rist-core` (wavey-ai, Simple + Main profiles, interop against librist). Details in `REUSE.md`. No need to port gosrt or libRIST.
@@ -104,6 +111,19 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
+
+## Batch 8 (18 Sep 2026): M13 24/7 channels, multistreaming, UI screens
+- **Y, 24/7 channel (merged):** `crates/caudal-channel`. `[[channel]] name, items, loop, shuffle`; `GET /api/v1/channels`, `POST /api/v1/channels/{name}/skip`. MP4/MOV + TS, real-time pacing (100 ms lead), timestamps stitched across files and loops, mismatched files skipped with the reason in the API. 10 tests. **Real binary:** two 6 s MP4s from a directory; LL-HLS decoded by ffmpeg, RTSP played by ffprobe (H.264 640 + AAC), skip moved to item 2 with 204. Added `TsDemux::flush` (the last frame of every TS file was lost).
+- Gaps: files must share codec parameters (normalization via caudal-transcode later), no fragmented MP4, no MKV, no schedules.
+- **Shutdown:** once, after a clean shutdown log, the process stayed alive (tokio waits forever for blocking tasks on runtime drop). Not reproducible in 4 retries; main now calls `shutdown_timeout(5 s)`.
+- Running: Z multistreaming (`caudal-restream`), UI agent (Channels, Restreams, Recordings screens; Recordings had an API without a screen since batch 6).
+
+## Batch 7 result (18 Sep 2026)
+- **U, RTSP (merged):** retina pull (credentials split from URL, reconnect 1→30 s, permissive initial timestamp), RTSP server over TCP interleaved (H.264 FU-A, H.265 FU, AAC RFC 3640), auth 401/403, 404. 5 tests incl. ffprobe decode and pull-reconnect. **UDP transport answers 461**: ffmpeg falls back to TCP, some cameras/VLC defaults may not — backlog.
+- **V, transcoding (merged):** see PLAN M11; rusty_h264 2–3x x264 CPU, ~4.7 dB lower PSNR.
+- **W, multi-rendition HLS (merged):** Safari joins low-latency 8/8 with rendition reports.
+- **X, OMT VMX codec:** 2,463 lines, `forbid(unsafe_code)`, no deps; encoder bytes identical to libvmx and decoders cross-identical (17 conformance tests, NEON reference). 1080p UYVY one thread: 110 fps encode (C 318), 458 fps decode (C 1171). Found an upstream libvmx thread-pool shutdown hang (report upstream). Pushed to private `Saul-Punybz/open-media-transport`.
+- Verified after merges: clippy 0 warnings, deny ok, e2e 15/15 (65.9 s), channel 10/10, rtsp 5/5.
 
 ## Batch 7 (launched 18 Sep 2026): M9 RTSP, M11 transcoding + multi-rendition HLS, M12 OMT
 **Goal:** cameras in and RTSP out; an ABR ladder whose renditions group into one multivariant playlist (clears Apple -50125 and tests the Safari bimodal hypothesis); the first pure-Rust VMX codec for OMT.

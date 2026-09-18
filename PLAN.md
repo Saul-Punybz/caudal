@@ -166,3 +166,19 @@ claiming in public.
 - Scheduled/playlist channels from VOD files (keep small; ANTENA787 is the real playout).
 - NDI itself: proprietary SDK, license restricts reverse engineering, trademarked. Covered instead by OMT (M12), an MIT protocol for the same job.
 - Content protection: CENC/ClearKey first, Widevine/FairPlay only with a real customer.
+
+## Road to "finished" (Saul, 18 Sep 2026: finish Caudal with everything, all in Rust)
+
+| Batch | Work | Agent / model | State |
+|---|---|---|---|
+| 7 | RTSP pull + server (U), OMT vmx-codec (X, separate repo) | Sonnet / Opus | running |
+| 8 | M13 24/7 channel from files, `caudal-channel` (Y) | Opus | running |
+| 8 | Multistreaming RTMP/RTMPS push, `caudal-restream` (Z) | Sonnet | running |
+| 9 | SCTE-35 passthrough → `EXT-X-DATERANGE` (`scte35-splice`); channel ad-break markers | Sonnet | next |
+| 9 | Admin login (OIDC + local password) for UI and API | Opus | next |
+| 9 | Stream health alerts (no keyframes, bitrate drop, publisher gone) → webhooks | Haiku/Sonnet | next |
+| 10 | M10 origin-edge clustering (xiu as reference), failover/backup source | Opus | planned |
+| 10 | Live captions (Whisper-class, es/en) → WebVTT in LL-HLS | Opus | planned |
+| 11 | Recording schedules, geo-blocking/IP lists, DASH, MoQ ingest, MoQ on Safari 26.4+ | Sonnet | planned |
+| 12 | Helm chart, Raspberry Pi image, `caudal doctor`, hot config reload, MistServer config import | Haiku/Sonnet | planned |
+| 12 | OMT protocol + discovery (`open-media-transport`), player SDKs, watermarking (visible first) | Opus/Sonnet | planned |

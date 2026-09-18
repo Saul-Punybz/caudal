@@ -207,8 +207,11 @@ mod tests {
         let (cert, key) = (dir.path().join("c.pem"), dir.path().join("k.pem"));
         std::fs::write(&cert, &generated.cert_pem).unwrap();
         std::fs::write(&key, &generated.key_pem).unwrap();
-        let svc = start(Registry::new(), MoqConfig { bind: "127.0.0.1:0".parse().unwrap(), cert: MoqCert::Files { cert, key } })
-            .unwrap();
+        let svc = start(
+            Registry::new(),
+            MoqConfig { bind: "127.0.0.1:0".parse().unwrap(), cert: MoqCert::Files { cert, key } },
+        )
+        .unwrap();
         let (_, v) = get_json(&svc, Some("media.example.org")).await;
         assert_eq!(v["url"], format!("https://media.example.org:{}", svc.info.port));
         assert!(v["fingerprint"].is_null());

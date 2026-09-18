@@ -86,8 +86,7 @@ impl Drop for LiveGuard {
 
 async fn run(origin: moq_net::origin::Producer, stream: Arc<Stream>) -> Result<(), Error> {
     let mut sub = stream.subscribe_internal(StartAt::LiveEdge);
-    let mut broadcast =
-        origin.create_broadcast(stream.name(), moq_net::broadcast::Route::new().with_announce(true))?;
+    let mut broadcast = origin.create_broadcast(stream.name(), moq_net::broadcast::Route::new().with_announce(true))?;
     let mut catalog = moq_mux::catalog::Producer::new(&mut broadcast)?;
     let mut out = Outputs::default();
 
@@ -229,10 +228,8 @@ impl Outputs {
                 };
                 let track = broadcast.create_track(name.as_str(), hang::container::track_info())?;
                 let producer = MediaProducer::new(track, Container::Legacy);
-                self.tracks.insert(
-                    t.id,
-                    Output { info: t.clone(), name, producer, group_start: 0, cut_pending: false },
-                );
+                self.tracks
+                    .insert(t.id, Output { info: t.clone(), name, producer, group_start: 0, cut_pending: false });
                 created = true;
             }
             let name = &self.tracks[&t.id].name;

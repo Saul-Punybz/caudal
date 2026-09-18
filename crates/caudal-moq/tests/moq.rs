@@ -53,7 +53,10 @@ async fn stream_plays_over_moq_and_ends() {
     let registry = Registry::new();
     let svc = caudal_moq::start(
         registry.clone(),
-        MoqConfig { bind: "127.0.0.1:0".parse().unwrap(), cert: MoqCert::SelfSigned { hosts: vec!["localhost".into()] } },
+        MoqConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            cert: MoqCert::SelfSigned { hosts: vec!["localhost".into()] },
+        },
     )
     .expect("start");
     let info = fingerprint(&svc).await;
@@ -119,7 +122,11 @@ async fn stream_plays_over_moq_and_ends() {
     for _ in 0..3 {
         let mut g = next_group(&mut vtrack).await;
         let first = read(&mut g).await.expect("first frame");
-        assert!(nal_types(&first.payload).contains(&5), "group does not open on an IDR: {:?}", nal_types(&first.payload));
+        assert!(
+            nal_types(&first.payload).contains(&5),
+            "group does not open on an IDR: {:?}",
+            nal_types(&first.payload)
+        );
         let mut n = 1;
         while let Some(f) = read(&mut g).await {
             // B-frames reorder presentation times, but never before the IDR.

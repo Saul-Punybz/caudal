@@ -19,6 +19,7 @@ bytes.workspace = true
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
+ureq = { version = "3", default-features = false }
 
 [[example]]
 name = "demo"

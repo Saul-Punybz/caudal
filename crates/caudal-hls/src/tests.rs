@@ -449,6 +449,101 @@ async fn play_page() {
 }
 
 #[test]
+fn family_root_splits_on_the_first_plus() {
+    assert_eq!(family_root("main"), "main");
+    assert_eq!(family_root("main+480p"), "main");
+    assert_eq!(family_root("main+480p+extra"), "main");
+}
+
+#[test]
+fn render_master_formats_attrs_and_preserves_caller_order() {
+    let variants = vec![
+        (
+            "main+hi".to_string(),
+            VariantAttrs {
+                codecs: "avc1.64001f,mp4a.40.2".to_string(),
+                resolution: Some((1280, 720)),
+                frame_rate: Some(29.97),
+                peak: 2_000_000,
+                average: Some(1_500_000),
+            },
+        ),
+        (
+            "main+lo".to_string(),
+            VariantAttrs { codecs: "avc1.42001f".to_string(), resolution: None, frame_rate: None, peak: 500_000, average: None },
+        ),
+    ];
+    let m = render_master(&variants);
+    assert!(m.starts_with("#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-INDEPENDENT-SEGMENTS\n"), "{m}");
+    // Caller order is kept: sorting by bandwidth is `master()`'s job, not
+    // `render_master`'s.
+    assert!(m.find("main+hi").unwrap() < m.find("main+lo").unwrap(), "{m}");
+    assert!(
+        m.contains(
+            "#EXT-X-STREAM-INF:BANDWIDTH=2000000,AVERAGE-BANDWIDTH=1500000,CODECS=\"avc1.64001f,mp4a.40.2\",RESOLUTION=1280x720,FRAME-RATE=29.970\n../main+hi/index.m3u8\n"
+        ),
+        "{m}"
+    );
+    assert!(
+        m.contains("#EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS=\"avc1.42001f\"\n../main+lo/index.m3u8\n"),
+        "no AVERAGE-BANDWIDTH/RESOLUTION/FRAME-RATE when unmeasured or unknown: {m}"
+    );
+}
+
+#[tokio::test]
+async fn master_aggregates_the_family_and_playlists_report_each_other_never_self() {
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router(reg.clone(), CFG);
+    let root = publish(&reg, "abr", &fx, BufferConfig::default()).await;
+    let low = publish(&reg, "abr+low", &fx, BufferConfig::default()).await;
+    push_loops(&root, &fx, 0..3);
+    push_loops(&low, &fx, 0..3);
+    wait_playlist(&app, "abr", |pl| pl.contains("#EXTINF")).await;
+    wait_playlist(&app, "abr+low", |pl| pl.contains("#EXTINF")).await;
+
+    // The family root's master lists both renditions, relative URIs, tokens
+    // propagated, highest bandwidth first.
+    let master = get(&app, "/hls/abr/master.m3u8?token=tkn.val.sig").await;
+    assert_eq!(master.status, StatusCode::OK);
+    let mtext = master.text();
+    assert!(mtext.contains("../abr/index.m3u8?token=tkn.val.sig"), "{mtext}");
+    assert!(mtext.contains("../abr+low/index.m3u8?token=tkn.val.sig"), "{mtext}");
+    let infs = tag_values(&mtext, "#EXT-X-STREAM-INF:");
+    assert_eq!(infs.len(), 2, "{mtext}");
+    let bandwidths: Vec<u64> = infs.iter().map(|l| attr(l, "BANDWIDTH").unwrap().parse().unwrap()).collect();
+    assert!(bandwidths[0] >= bandwidths[1], "highest bandwidth first: {mtext}");
+    assert!(infs.iter().all(|l| attr(l, "AVERAGE-BANDWIDTH").is_some()), "measured over completed segments: {mtext}");
+    assert!(infs.iter().all(|l| attr(l, "CODECS").is_some_and(|c| c.contains("avc1."))), "{mtext}");
+
+    // A master request for a rendition name itself stays single-variant.
+    let single = get(&app, "/hls/abr+low/master.m3u8").await;
+    assert_eq!(single.status, StatusCode::OK);
+    let stext = single.text();
+    assert_eq!(tag_values(&stext, "#EXT-X-STREAM-INF:").len(), 1, "{stext}");
+    assert!(stext.contains("../abr+low/index.m3u8"), "{stext}");
+    assert!(!stext.contains("../abr/index.m3u8"), "not aggregated when the name is itself a rendition: {stext}");
+
+    // Each rendition's media playlist reports the other, and only the
+    // other: never a report about itself (Apple -50099).
+    let root_pl = get(&app, "/hls/abr/index.m3u8?token=tkn.val.sig").await.text();
+    let root_reports = tag_values(&root_pl, "#EXT-X-RENDITION-REPORT:");
+    assert_eq!(root_reports.len(), 1, "{root_pl}");
+    assert!(root_reports[0].contains("URI=\"../abr+low/index.m3u8?token=tkn.val.sig\""), "{root_pl}");
+    assert!(attr(root_reports[0], "LAST-MSN").is_some() && attr(root_reports[0], "LAST-PART").is_some(), "{root_pl}");
+    assert!(!root_pl.contains("URI=\"../abr/index.m3u8"), "a media playlist never reports on itself:\n{root_pl}");
+
+    let low_pl = get(&app, "/hls/abr+low/index.m3u8").await.text();
+    let low_reports = tag_values(&low_pl, "#EXT-X-RENDITION-REPORT:");
+    assert_eq!(low_reports.len(), 1, "{low_pl}");
+    assert!(low_reports[0].contains("URI=\"../abr/index.m3u8\""), "{low_pl}");
+    assert!(!low_pl.contains("URI=\"../abr+low/index.m3u8"), "a media playlist never reports on itself:\n{low_pl}");
+
+    drop(root);
+    drop(low);
+}
+
+#[test]
 fn codec_strings() {
     use bytes::Bytes;
     use caudal_core::{Codec, TrackId, TrackInfo};

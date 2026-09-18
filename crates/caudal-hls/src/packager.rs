@@ -148,6 +148,18 @@ pub(crate) struct Packager {
     /// `CODECS` and `RESOLUTION` for the multivariant playlist.
     codecs: Vec<String>,
     resolution: Option<(u32, u32)>,
+    frame_rate: Option<f64>,
+}
+
+/// Everything one rendition contributes to a multivariant playlist's
+/// `#EXT-X-STREAM-INF` line. `None` from [`Packager::variant_attrs`] until
+/// the tracks are known.
+pub(crate) struct VariantAttrs {
+    pub codecs: String,
+    pub resolution: Option<(u32, u32)>,
+    pub frame_rate: Option<f64>,
+    pub peak: u64,
+    pub average: Option<u64>,
 }
 
 impl Packager {
@@ -173,6 +185,7 @@ impl Packager {
             ended: false,
             codecs: Vec::new(),
             resolution: None,
+            frame_rate: None,
         }
     }
 
@@ -228,6 +241,7 @@ impl Packager {
         self.codecs = mp4.iter().filter_map(|t| codec_string(&t.info)).collect();
         self.resolution =
             mp4.iter().find_map(|t| t.info.video.map(|v| (v.width, v.height))).filter(|&(w, h)| w > 0 && h > 0);
+        self.frame_rate = mp4.iter().find_map(|t| t.info.video.and_then(|v| v.fps)).filter(|fps| *fps > 0.0);
         let mut lanes = mp4.iter().map(|t| Lane::new(t.track_id, &t.info));
         self.primary = lanes.next();
         self.secondary = lanes.next();
@@ -548,30 +562,39 @@ impl Packager {
 }
 
 impl Packager {
-    /// Multivariant playlist with this stream's single variant. Players enter
-    /// here: a low-latency media playlist on its own must carry rendition
-    /// reports but may not report on itself (Apple -50125 / -50099), so the
-    /// only conformant single-rendition shape is multivariant + media.
-    pub fn multivariant(&self) -> Option<String> {
+    /// Everything one variant contributes to a multivariant playlist:
+    /// `CODECS`, `RESOLUTION`, `FRAME-RATE` and measured `BANDWIDTH` /
+    /// `AVERAGE-BANDWIDTH`. `None` until the tracks are known (players enter
+    /// through the multivariant playlist, so callers wait on this).
+    pub fn variant_attrs(&self) -> Option<VariantAttrs> {
         if self.codecs.is_empty() {
             return None;
         }
-        // Peak bits per second over the completed segments, with a floor so a
-        // fresh stream still advertises something sane.
-        let peak = self
+        let (peak, average) = self.bitrates();
+        Some(VariantAttrs {
+            codecs: self.codecs.join(","),
+            resolution: self.resolution,
+            frame_rate: self.frame_rate,
+            peak,
+            average,
+        })
+    }
+
+    /// Peak and average bits per second over the completed segments in the
+    /// window. Peak has a floor so a fresh stream still advertises something
+    /// sane; average is `None` until at least one segment has completed.
+    fn bitrates(&self) -> (u64, Option<u64>) {
+        let full: Vec<(f64, f64)> = self
             .segments
             .iter()
-            .filter_map(|s| s.full.as_ref().map(|b| (b.len() as f64 * 8.0 / s.duration().max(0.001)) as u64))
-            .max()
-            .unwrap_or(0)
-            .max(64_000);
-        let mut o = String::from("#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-INDEPENDENT-SEGMENTS\n");
-        let _ = write!(o, "#EXT-X-STREAM-INF:BANDWIDTH={peak},CODECS=\"{}\"", self.codecs.join(","));
-        if let Some((w, h)) = self.resolution {
-            let _ = write!(o, ",RESOLUTION={w}x{h}");
-        }
-        o.push_str("\nindex.m3u8\n");
-        Some(o)
+            .filter_map(|s| s.full.as_ref().map(|b| (b.len() as f64 * 8.0, s.duration().max(0.001))))
+            .collect();
+        let peak = full.iter().map(|&(bits, dur)| (bits / dur) as u64).max().unwrap_or(0).max(64_000);
+        let average = (!full.is_empty()).then(|| {
+            let (bits, dur) = full.iter().fold((0.0, 0.0), |(b, d), &(bi, du)| (b + bi, d + du));
+            (bits / dur.max(0.001)) as u64
+        });
+        (peak, average)
     }
 }
 

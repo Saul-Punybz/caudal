@@ -9,6 +9,7 @@
 mod packager;
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Weak;
@@ -25,7 +26,7 @@ use caudal_core::{Event, Registry, StartAt, Stream, Subscriber};
 use tokio::runtime::Handle;
 use tokio::sync::{broadcast, watch};
 
-use packager::{Lookup, Packager};
+use packager::{Lookup, Packager, VariantAttrs};
 
 #[derive(Debug, Clone, Copy)]
 pub struct HlsConfig {
@@ -273,14 +274,8 @@ async fn hls_file(
         entry.seen(viewer_key(&req));
     }
     match file.as_str() {
-        "index.m3u8" => playlist(&entry, query, token).await,
-        "master.m3u8" => {
-            let wait = entry.block_timeout();
-            match entry.wait(wait, |p| p.multivariant()).await {
-                Some(m) => respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&m, token)),
-                None => error(StatusCode::NOT_FOUND),
-            }
-        }
+        "index.m3u8" => playlist(&hls, &name, &entry, query, token).await,
+        "master.m3u8" => master(&hls, &entry, &name, token).await,
         "init.mp4" => {
             let wait = entry.block_timeout();
             match entry.wait(wait, |p| p.init.clone()).await {
@@ -348,7 +343,7 @@ fn parse_directives(query: &str) -> Result<Directives, ()> {
     Ok(d)
 }
 
-async fn playlist(entry: &Entry, query: &str, token: Option<&str>) -> Response {
+async fn playlist(hls: &Arc<Hls>, name: &str, entry: &Entry, query: &str, token: Option<&str>) -> Response {
     let Ok(d) = parse_directives(query) else { return error(StatusCode::BAD_REQUEST) };
     if let Some(msn) = d.msn {
         // RFC 8216bis §6.2.5.2: too far past the live edge is a client bug.
@@ -370,9 +365,99 @@ async fn playlist(entry: &Entry, query: &str, token: Option<&str>) -> Response {
         })
         .await;
     match body {
-        Some(b) => respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&b, token)),
+        Some(mut b) => {
+            // Never on a stream that has ended: its siblings, if any, are the
+            // ones still worth switching to.
+            if !entry.pkg().ended {
+                b.push_str(&rendition_reports(hls, name));
+            }
+            respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&b, token))
+        }
         None => error(StatusCode::SERVICE_UNAVAILABLE),
     }
+}
+
+/// `main+480p` belongs to family `main`; `main` belongs to family `main`.
+fn family_root(name: &str) -> &str {
+    name.split_once('+').map_or(name, |(root, _)| root)
+}
+
+/// `#EXT-X-RENDITION-REPORT` for every OTHER live rendition sharing `name`'s
+/// family (`<root>` and `<root>+*`), never for `name` itself (Apple -50099).
+/// Skips a sibling with no parts yet: there is nothing truthful to report.
+fn rendition_reports(hls: &Hls, name: &str) -> String {
+    let root = family_root(name);
+    let prefix = format!("{root}+");
+    let siblings: Vec<(String, Arc<Entry>)> = hls
+        .streams()
+        .iter()
+        .filter(|(n, _)| n.as_str() != name && (n.as_str() == root || n.starts_with(&prefix)))
+        .map(|(n, e)| (n.clone(), e.clone()))
+        .collect();
+    let mut out = String::new();
+    for (n, e) in siblings {
+        let pkg = e.pkg();
+        if pkg.ended {
+            continue;
+        }
+        if let Some((msn, part)) = pkg.last_part() {
+            let _ = writeln!(out, "#EXT-X-RENDITION-REPORT:URI=\"../{n}/index.m3u8\",LAST-MSN={msn},LAST-PART={part}");
+        }
+    }
+    out
+}
+
+/// `GET /hls/{name}/master.m3u8`. When `name` has no `+`, it is a family
+/// root: the master lists it plus every live, ready `{name}+*` rendition,
+/// highest `BANDWIDTH` first. When `name` already names one rendition
+/// (contains `+`), the master keeps working as a single-variant playlist for
+/// just that stream, as it always has.
+async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) -> Response {
+    let wait = entry.block_timeout();
+    let Some(root_attrs) = entry.wait(wait, |p| p.variant_attrs()).await else {
+        return error(StatusCode::NOT_FOUND);
+    };
+    let mut variants = vec![(name.to_owned(), root_attrs)];
+    if !name.contains('+') {
+        let prefix = format!("{name}+");
+        let siblings: Vec<(String, Arc<Entry>)> = hls
+            .streams()
+            .iter()
+            .filter(|(n, _)| n.starts_with(&prefix))
+            .map(|(n, e)| (n.clone(), e.clone()))
+            .collect();
+        for (n, e) in siblings {
+            if let Some(attrs) = e.pkg().variant_attrs() {
+                variants.push((n, attrs));
+            }
+        }
+    }
+    variants.sort_by_key(|(_, a)| std::cmp::Reverse(a.peak));
+    respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&render_master(&variants), token))
+}
+
+/// One `#EXT-X-STREAM-INF` + relative `URI` per variant, in the order given
+/// (callers sort). The URI is relative to `/hls/{requested-name}/master.m3u8`,
+/// so `../{name}/index.m3u8` reaches `/hls/{name}/index.m3u8` for every
+/// variant, itself included, keeping tokens and hosts out of it.
+fn render_master(variants: &[(String, VariantAttrs)]) -> String {
+    let mut o = String::from("#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+    for (name, a) in variants {
+        let _ = write!(o, "#EXT-X-STREAM-INF:BANDWIDTH={}", a.peak);
+        if let Some(avg) = a.average {
+            let _ = write!(o, ",AVERAGE-BANDWIDTH={avg}");
+        }
+        let _ = write!(o, ",CODECS=\"{}\"", a.codecs);
+        if let Some((w, h)) = a.resolution {
+            let _ = write!(o, ",RESOLUTION={w}x{h}");
+        }
+        if let Some(fps) = a.frame_rate {
+            let _ = write!(o, ",FRAME-RATE={fps:.3}");
+        }
+        o.push('\n');
+        let _ = writeln!(o, "../{name}/index.m3u8");
+    }
+    o
 }
 
 /// `?token=` wins over `Authorization: Bearer`, so a player that can only

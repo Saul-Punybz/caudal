@@ -23,6 +23,8 @@ object_store = { version = "0.14", default-features = false, features = ["fs", "
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
 url = "2"
+parking_lot.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

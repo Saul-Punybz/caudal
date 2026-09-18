@@ -93,7 +93,7 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [x] **M1: Server shell.** `caudal` binary, TOML config, HTTP API, `/metrics`, graceful shutdown.
 - [x] **M2: RTMP ingest.** OBS or ffmpeg publishing into the ring.
 - [x] **M3: LL-HLS / CMAF output.** (browser playback still to confirm) First playable path: OBS → Caudal → browser.
-- [ ] **M4: SRT** in and out.
+- [~] **M4: SRT** in (done, batch 2); out still to do.
 - [ ] **M5: WebRTC.** WHIP in, WHEP out.
 - [ ] **M6: MoQ / WebTransport.**
 - [ ] **M7: Auth + TLS.** JWT/JWKS, webhooks, ACME.

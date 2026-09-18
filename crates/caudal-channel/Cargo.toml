@@ -1,0 +1,25 @@
+[package]
+name = "caudal-channel"
+description = "24/7 linear channels from media files for Caudal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+caudal-ts.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+mp4-atom = "0.15"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

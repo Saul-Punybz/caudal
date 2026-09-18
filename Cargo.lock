@@ -570,6 +570,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "caudal-channel"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-core",
+ "caudal-ts",
+ "mp4-atom",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "caudal-cmaf"
 version = "0.1.0"
 dependencies = [

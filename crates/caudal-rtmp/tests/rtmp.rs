@@ -80,6 +80,11 @@ async fn wait_for<T>(timeout: Duration, mut f: impl FnMut() -> Option<T>) -> Opt
     }
 }
 
+/// Polls `child.try_wait()` until it exits or `timeout` elapses.
+async fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+    wait_for(timeout, || child.try_wait().ok().flatten()).await
+}
+
 fn spawn_ffmpeg(args: &[&str]) -> std::process::Child {
     Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-re"])
@@ -221,13 +226,134 @@ async fn wrong_app_is_rejected() {
         &url,
     ]);
 
-    // Give ffmpeg every chance to publish before asserting nothing showed up.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let status = wait_for_exit(&mut ffmpeg, Duration::from_secs(3))
+        .await
+        .expect("ffmpeg should be disconnected and exit within 3s of publishing to the wrong app");
+    assert!(!status.success(), "ffmpeg should exit non-zero when its publish is rejected");
     assert!(server.registry.get("test").is_none(), "publish to the wrong app must not create a stream");
     assert!(server.registry.list().is_empty(), "publish to the wrong app must not create any stream");
+}
 
-    let _ = ffmpeg.kill();
-    let _ = ffmpeg.wait();
+#[tokio::test(flavor = "multi_thread")]
+async fn busy_name_second_publisher_is_rejected() {
+    if !have_ffmpeg() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+
+    let server = TestServer::start("live").await;
+    let url = server.rtmp_url("live", "same");
+
+    let mut first = spawn_ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=15",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine",
+        "-c:v",
+        "libx264",
+        "-g",
+        "30",
+        "-c:a",
+        "aac",
+        "-t",
+        "8",
+        "-f",
+        "flv",
+        &url,
+    ]);
+
+    let stream = wait_for(Duration::from_secs(10), || server.registry.get("same"))
+        .await
+        .expect("first publisher's stream never appeared in the registry");
+
+    wait_for(Duration::from_secs(5), || (stream.stats().frames_in > 0).then_some(()))
+        .await
+        .expect("first publisher never produced any frames");
+
+    // Give the first publisher a head start before the second races in.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut second = spawn_ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=15",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine",
+        "-c:v",
+        "libx264",
+        "-g",
+        "30",
+        "-c:a",
+        "aac",
+        "-t",
+        "4",
+        "-f",
+        "flv",
+        &url,
+    ]);
+
+    let status = wait_for_exit(&mut second, Duration::from_secs(3))
+        .await
+        .expect("the second (busy-name) publisher should be disconnected and exit within 3s");
+    assert!(!status.success(), "the busy second publisher should exit non-zero when rejected");
+
+    // The first publisher must be unaffected: frames_in keeps rising for 2 more seconds.
+    let before = stream.stats().frames_in;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let after = stream.stats().frames_in;
+    assert!(
+        after > before,
+        "first publisher's frames_in should keep rising after the second was rejected ({before} -> {after})"
+    );
+
+    let _ = first.kill();
+    let _ = first.wait();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_stream_name_is_rejected() {
+    if !have_ffmpeg() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+
+    let server = TestServer::start("live").await;
+    let url = server.rtmp_url("live", "..bad");
+
+    let mut ffmpeg = spawn_ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=15",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine",
+        "-c:v",
+        "libx264",
+        "-g",
+        "30",
+        "-c:a",
+        "aac",
+        "-t",
+        "2",
+        "-f",
+        "flv",
+        &url,
+    ]);
+
+    let status = wait_for_exit(&mut ffmpeg, Duration::from_secs(3))
+        .await
+        .expect("ffmpeg should be disconnected and exit within 3s of an invalid stream name publish");
+    assert!(!status.success(), "ffmpeg should exit non-zero when the stream name is rejected");
+    assert!(server.registry.list().is_empty(), "an invalid stream name must not create a stream");
 }
 
 #[tokio::test(flavor = "multi_thread")]

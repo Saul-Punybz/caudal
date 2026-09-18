@@ -98,3 +98,31 @@ AV1 transcoding in Rust via `rav1e`, and everything else via an ffmpeg
 - `jwks-client`: unmaintained.
 - `librist-sys` (C bindings): replaced by a pure-Rust RIST port.
 - Rewriting in Go: MediaMTX (MIT, ★20K) already exists there; see PLAN.md.
+
+## Backlog tiers: existing Rust code per feature
+
+Surveyed 17 Sep 2026 by three agents, then every star count, date and
+license re-checked by hand with `gh api` and crates.io. Tiers match
+`PLAN.md` → Backlog. Pure Rust unless stated.
+
+### Tier C (later)
+
+| Feature | Repo / crate | Version | License | Stars | Last push | Decision |
+|---|---|---|---|---|---|---|
+| HDR10 static metadata (HEVC SEI) | quietvoid/hevc_parser (`hevc_parser`) | 0.6.12 | MIT | 32 | Aug 2026 | depend |
+| Dolby Vision RPU | quietvoid/dovi_tool (`dolby_vision` lib crate) | 3.4.0 | MIT | 1,017 | Sep 2026 | depend |
+| HDR10+ | quietvoid/hdr10plus_tool (`hdr10plus` lib crate) | 2.1.5 | MIT | 458 | Apr 2026 | depend |
+| Playlist / linear channels | ffplayout/ffplayout | — | **GPL-3.0** | 589 | Sep 2026 | reference only, never link |
+| VOD MP4 demux | kixelated/mp4-atom | 0.15.0 | MIT OR Apache-2.0 | 30 | Sep 2026 | depend (already chosen) |
+| Audio demux/decode | pdeljanov/Symphonia | 0.6.1 | **MPL-2.0** | — | Aug 2026 | depend unmodified only if needed; file-level copyleft |
+| NDI | grafton-ndi and other bindings | 1.0.0 | Apache-2.0 bindings over **proprietary Vizrt SDK** | 34 | Jun 2026 | skip; SDK cannot ship with an OSS binary |
+| NDI alternative | cool-japan/oximedia (`oximedia-videoip`) | 0.2.1 | **no license file** | 257 | Sep 2026 | skip until licensed and proven; single author, created Feb 2026 |
+| PSSH boxes (DRM ids) | emarsden/pssh-box-rs (`pssh-box`) | 0.2.5 | MIT | 16 | Jul 2026 | depend |
+| CENC/CBCS packaging | vbasky/sheathe | 0.6.1 | **no license file** | 16 | Sep 2026 | reference only; write our `senc`/`tenc` writer on mp4-atom |
+| AES-128 HLS segments | `aes` + `cbc` crates | — | MIT/Apache | — | — | write ourselves (small) |
+| Widevine / FairPlay packager | none legitimate in Rust | — | — | — | — | skip; both need vendor licensing |
+| DASH MPD generation | emarsden/dash-mpd-rs (`dash-mpd`) | 0.20.4 | MIT | 111 | Sep 2026 | depend (has a write path) |
+| WebVTT/TTML → HLS | fishloa/rust-broadcast, subtitle-rs | 0.1.x / 2.7.1 | Apache-2.0 | 1 / 3 | 2026 | write ourselves; thin glue over WebVTT segments |
+| Audio-only HLS (AAC/Opus) | compose mp4-atom + our packager | — | — | — | — | no extra crate needed |
+| RTMP push out (YouTube/Twitch) | KallDrexx/rust-media-libs (`rml_rtmp`) client side; xiu's RTMP client as reference | 0.8.0 | MIT | 242 | Apr 2023 (stale) | depend for primitives, write the push wrapper; check scuffle-rtmp client mode first |
+| HLS pull input | sile/hls_m3u8 + aschey/stream-download-rs | 0.7.0 / 0.24.4 | Apache-2.0 | 66 / 114 | 2026 | depend; write the live-edge polling loop |

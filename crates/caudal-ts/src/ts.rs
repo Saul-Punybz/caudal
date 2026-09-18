@@ -53,7 +53,7 @@ impl Read for SharedQueue {
 /// The codecs this ingest understands. Any other `StreamType` in the PMT is
 /// ignored (its PID's PES packets are dropped, never handed to the caller).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EsKind {
+pub enum EsKind {
     H264,
     H265,
     Aac,
@@ -70,7 +70,7 @@ fn es_kind(stream_type: StreamType) -> Option<EsKind> {
 
 /// One reassembled PES packet: raw elementary-stream payload plus its
 /// wire-clock (33-bit, 90 kHz) timestamps, not yet unwrapped or rebased.
-pub(crate) struct EsUnit {
+pub struct EsUnit {
     pub kind: EsKind,
     pub pts: Option<u64>,
     pub dts: Option<u64>,
@@ -108,15 +108,21 @@ impl Partial {
 }
 
 /// Feeds TS packets in and emits completed elementary-stream access units.
-pub(crate) struct TsDemux {
+pub struct TsDemux {
     queue: SharedQueue,
     reader: TsPacketReader<SharedQueue>,
     es_pids: HashMap<Pid, EsKind>,
     partial: HashMap<Pid, Partial>,
 }
 
+impl Default for TsDemux {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TsDemux {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let queue = SharedQueue::new();
         let reader = TsPacketReader::new(queue.clone());
         Self { queue, reader, es_pids: HashMap::new(), partial: HashMap::new() }
@@ -124,7 +130,7 @@ impl TsDemux {
 
     /// Buffers newly received bytes: a live-mode SRT message is some whole
     /// number of 188-byte TS packets.
-    pub(crate) fn feed(&mut self, data: &[u8]) {
+    pub fn feed(&mut self, data: &[u8]) {
         self.queue.push(data);
     }
 
@@ -132,7 +138,7 @@ impl TsDemux {
     /// elementary-stream access units it completed to `out`. Never panics
     /// on malformed input: a packet `mpeg2ts` can't parse is logged and
     /// skipped (see `NOTES.md` for the resync caveat this implies).
-    pub(crate) fn drain(&mut self, out: &mut Vec<EsUnit>) {
+    pub fn drain(&mut self, out: &mut Vec<EsUnit>) {
         while self.queue.len() >= TS_PACKET_SIZE {
             match self.reader.read_ts_packet() {
                 Ok(Some(packet)) => {

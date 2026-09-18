@@ -22,7 +22,7 @@ const AUDIO_TRACK: TrackId = TrackId(1);
 const TS_WRAP: i64 = 1 << 33;
 const TS_HALF: i64 = 1 << 32;
 
-pub(crate) enum DemuxEvent {
+pub enum DemuxEvent {
     VideoInit(TrackInfo),
     VideoFrame(Frame),
     AudioInit(TrackInfo),
@@ -74,7 +74,7 @@ struct AudioState {
     asc: Option<Vec<u8>>,
 }
 
-pub(crate) struct Demuxer {
+pub struct Demuxer {
     zero_point: Option<i64>,
     video_clock: TsClock,
     audio_clock: TsClock,
@@ -82,8 +82,14 @@ pub(crate) struct Demuxer {
     audio: Option<AudioState>,
 }
 
+impl Default for Demuxer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Demuxer {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             zero_point: None,
             video_clock: TsClock::default(),
@@ -93,7 +99,7 @@ impl Demuxer {
         }
     }
 
-    pub(crate) fn consume(&mut self, unit: EsUnit, out: &mut Vec<DemuxEvent>) {
+    pub fn consume(&mut self, unit: EsUnit, out: &mut Vec<DemuxEvent>) {
         match unit.kind {
             EsKind::H264 | EsKind::H265 => self.consume_video(unit, out),
             EsKind::Aac => self.consume_audio(unit, out),

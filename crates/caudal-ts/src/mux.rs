@@ -143,7 +143,7 @@ fn adaptation_field_size(has_pcr: bool) -> usize {
 const AUD_H264: [u8; 6] = [0, 0, 0, 1, 0x09, 0xF0];
 const AUD_H265: [u8; 7] = [0, 0, 0, 1, 0x46, 0x01, 0x50];
 
-pub(crate) struct TsMux {
+pub struct TsMux {
     writer: TsPacketWriter<Vec<u8>>,
     cc: HashMap<u16, ContinuityCounter>,
     video: Option<VideoTrack>,
@@ -154,8 +154,14 @@ pub(crate) struct TsMux {
     warned_opus: bool,
 }
 
+impl Default for TsMux {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TsMux {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             writer: TsPacketWriter::new(Vec::new()),
             cc: HashMap::new(),
@@ -170,7 +176,7 @@ impl TsMux {
 
     /// Takes every TS byte muxed so far, leaving the muxer's own state
     /// (continuity counters, PSI/PCR timers, track config) untouched.
-    pub(crate) fn take_output(&mut self) -> Vec<u8> {
+    pub fn take_output(&mut self) -> Vec<u8> {
         let old = std::mem::replace(&mut self.writer, TsPacketWriter::new(Vec::new()));
         old.into_stream()
     }
@@ -178,7 +184,7 @@ impl TsMux {
     /// Refreshes the known tracks. Safe to call repeatedly with the same
     /// tracks (e.g. on every `Event::TracksChanged`); harmless beyond an
     /// extra PAT/PMT re-emission.
-    pub(crate) fn set_tracks(&mut self, tracks: &[TrackInfo]) {
+    pub fn set_tracks(&mut self, tracks: &[TrackInfo]) {
         let mut video = None;
         let mut audio = None;
         for t in tracks {
@@ -202,7 +208,7 @@ impl TsMux {
 
     /// Muxes one frame. A frame on a track this muxer doesn't recognize
     /// (Opus, or a video codec whose init hasn't parsed yet) is dropped.
-    pub(crate) fn push_frame(&mut self, info: &TrackInfo, frame: &Frame) {
+    pub fn push_frame(&mut self, info: &TrackInfo, frame: &Frame) {
         self.maybe_write_psi(frame.keyframe && info.kind() == TrackKind::Video);
         let pcr = if self.is_pcr_track(info.kind()) { self.due_pcr(to_90k(frame.dts, info.timescale)) } else { None };
         match info.kind() {

@@ -185,6 +185,33 @@ async fn run(cfg: config::Config) -> ExitCode {
         }
     });
 
+    let rtsp_cfg = caudal_rtsp::RtspConfig {
+        bind: cfg.rtsp.bind,
+        pulls: cfg
+            .rtsp
+            .pull
+            .iter()
+            .map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect(),
+        buffer: cfg.buffer.to_buffer_config(),
+    };
+    if rtsp_cfg.bind.is_some() || !rtsp_cfg.pulls.is_empty() {
+        let rtsp_handle = tokio::spawn(caudal_rtsp::serve(rtsp_cfg, registry.clone()));
+        tokio::spawn(async move {
+            match rtsp_handle.await {
+                Ok(Ok(())) => tracing::info!("rtsp stopped"),
+                Ok(Err(e)) => tracing::error!(error = %e, "rtsp failed"),
+                Err(e) => tracing::error!(error = %e, "rtsp task panicked"),
+            }
+        });
+    }
+
+    if let Some(tc) = cfg.transcode.to_transcode_config(cfg.buffer.to_buffer_config()).expect("validated") {
+        if let Err(e) = caudal_transcode::start(registry.clone(), tc) {
+            tracing::error!(error = %e, "transcoding disabled");
+        }
+    }
+
     let hls_router = caudal_hls::router(
         registry.clone(),
         caudal_hls::HlsConfig { part_ms: cfg.hls.part_ms, segment_ms: cfg.hls.segment_ms },

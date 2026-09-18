@@ -15,11 +15,9 @@ use caudal_core::{BufferConfig, Registry};
 use rsrt::{SrtListener, SrtOptions};
 
 mod connection;
-mod demux;
-mod mux;
+use caudal_ts::{demux, mux, ts};
 mod play;
 mod push;
-mod ts;
 
 #[derive(Debug, Clone)]
 pub struct SrtConfig {

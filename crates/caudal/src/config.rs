@@ -148,6 +148,110 @@ pub struct Config {
     pub webrtc: WebRtcSection,
     pub moq: MoqSection,
     pub record: RecordSection,
+    pub rtsp: RtspSection,
+    pub transcode: TranscodeSection,
+}
+
+/// RTSP: pull cameras in (`[[rtsp.pull]]`), serve streams out (`bind`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct RtspSection {
+    /// e.g. "0.0.0.0:8554"; absent = no RTSP server.
+    pub bind: Option<SocketAddr>,
+    pub pull: Vec<RtspPullEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtspPullEntry {
+    pub stream: String,
+    pub url: String,
+}
+
+/// Transcoding ladders: `[[transcode.ladder]]` with `streams` and
+/// `[[transcode.ladder.rendition]]` entries.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct TranscodeSection {
+    /// "ffmpeg" (default) or "rusty_h264".
+    pub engine: String,
+    pub ffmpeg: std::path::PathBuf,
+    pub ladder: Vec<LadderEntry>,
+}
+
+impl Default for TranscodeSection {
+    fn default() -> Self {
+        Self { engine: "ffmpeg".into(), ffmpeg: "ffmpeg".into(), ladder: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LadderEntry {
+    pub streams: Vec<String>,
+    pub rendition: Vec<RenditionEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RenditionEntry {
+    pub label: String,
+    pub height: u32,
+    pub video_kbps: u32,
+    #[serde(default = "default_audio_kbps")]
+    pub audio_kbps: u32,
+}
+
+fn default_audio_kbps() -> u32 {
+    128
+}
+
+impl TranscodeSection {
+    pub fn to_transcode_config(
+        &self,
+        buffer: BufferConfig,
+    ) -> Result<Option<caudal_transcode::TranscodeConfig>, String> {
+        if self.ladder.is_empty() {
+            return Ok(None);
+        }
+        let engine = match self.engine.as_str() {
+            "ffmpeg" => caudal_transcode::Engine::Ffmpeg,
+            "rusty_h264" => caudal_transcode::Engine::RustyH264,
+            other => return Err(format!("[transcode] unknown engine `{other}` (ffmpeg or rusty_h264)")),
+        };
+        for l in &self.ladder {
+            for r in &l.rendition {
+                if !caudal_core::media::valid_stream_name(&format!("x+{}", r.label)) {
+                    return Err(format!(
+                        "[transcode] rendition label `{}` is not a valid stream-name fragment",
+                        r.label
+                    ));
+                }
+            }
+        }
+        Ok(Some(caudal_transcode::TranscodeConfig {
+            ladders: self
+                .ladder
+                .iter()
+                .map(|l| caudal_transcode::Ladder {
+                    streams: l.streams.clone(),
+                    renditions: l
+                        .rendition
+                        .iter()
+                        .map(|r| caudal_transcode::Rendition {
+                            label: r.label.clone(),
+                            height: r.height,
+                            video_kbps: r.video_kbps,
+                            audio_kbps: r.audio_kbps,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            engine,
+            ffmpeg: self.ffmpeg.clone(),
+            buffer,
+        }))
+    }
 }
 
 fn default_record_dir() -> std::path::PathBuf {
@@ -388,6 +492,7 @@ impl Config {
         self.auth.to_auth_config()?;
         self.hooks.to_hooks_config()?;
         self.moq.to_moq_config()?;
+        self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         Ok(())
     }
 }

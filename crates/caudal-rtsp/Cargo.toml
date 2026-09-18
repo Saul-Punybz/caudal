@@ -1,0 +1,13 @@
+[package]
+name = "caudal-rtsp"
+description = "RTSP for Caudal: pull IP cameras in, serve streams out"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true

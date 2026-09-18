@@ -105,6 +105,25 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
 
+## Batch 7 (launched 18 Sep 2026): M9 RTSP, M11 transcoding + multi-rendition HLS, M12 OMT
+**Goal:** cameras in and RTSP out; an ABR ladder whose renditions group into one multivariant playlist (clears Apple -50125 and tests the Safari bimodal hypothesis); the first pure-Rust VMX codec for OMT.
+
+Refactor first (orchestrator): the MPEG-TS mux/demux moved from `caudal-srt` into a shared crate `caudal-ts` (`ts::TsDemux`, `demux::Demuxer`, `mux::TsMux`), so the transcoder can pipe TS to and from ffmpeg. SRT tests unchanged and green.
+
+| Agent | Model | Owns | Done when |
+|---|---|---|---|
+| U · RTSP | Sonnet | `crates/caudal-rtsp/**` | pulls via `retina` (reconnect forever) publish cameras; RTSP server (`rtsp-types` + `sdp-types` + webrtc-rs `rtp`) serves any live stream over TCP interleaved with `Access::Play`; ffmpeg/ffprobe `rtsp://` tests |
+| V · transcode | **Opus** | `crates/caudal-transcode/**` | ladder renditions published as `<name>+<label>`; `Ffmpeg` engine pipes TS stdin/stdout via `caudal-ts` (process group, killed on drop, restarted on crash); `RustyH264` engine trialed and benchmarked vs ffmpeg/x264 on this Mac; AAC out for every rendition (so WHIP/Opus sources become Safari-audible) |
+| W · multi-rendition HLS | Sonnet | `crates/caudal-hls/**` | `master.m3u8` of `<name>` lists `<name>` and live `<name>+*` (BANDWIDTH/RESOLUTION/CODECS), each media playlist carries `EXT-X-RENDITION-REPORT` for its siblings, tokens propagate; Apple validator shows no -50125 |
+| X · OMT | **Opus** | new repo `~/Downloads/_Projects/open-media-transport/` | crate `vmx-codec`: pure-Rust port of libvmx (MIT) decoder + encoder, scalar first, bit-exact against the C reference in tests (C built only in dev/test), MIT notices kept, MIT OR Apache-2.0 |
+| Orchestrator | Opus | refactor, config, main, e2e | `[rtsp]`, `[[rtsp.pull]]`, `[transcode]` config (done), merges, e2e |
+
+**Fixed names:** `caudal_rtsp::{serve, RtspConfig { bind, pulls, buffer }, RtspPull { stream, url }}`; `caudal_transcode::{start, TranscodeConfig { ladders, engine, ffmpeg, buffer }, Ladder { streams, renditions }, Rendition { label, height, video_kbps, audio_kbps }, Engine::{Ffmpeg, RustyH264}}`; rendition stream name `<name>+<label>`; config `[rtsp] bind`, `[[rtsp.pull]] stream, url`, `[transcode] engine, ffmpeg`, `[[transcode.ladder]] streams`, `[[transcode.ladder.rendition]] label, height, video_kbps, audio_kbps`.
+
+**Coordination (heat):** every agent builds with `CARGO_BUILD_JOBS=2`; heavy tests one at a time; processes spawned by tests live in their own process group and are killed on drop; no `--release`.
+
+**Budget:** U ≈ $3.5, V ≈ $6, W ≈ $2.5, X ≈ $7, orchestrator ≈ $8, a third held back ⇒ **≈ $40 API-price equivalent** (token equivalence on the $100 membership, not a charge). **Out of scope:** clustering (M10), OMT protocol/discovery (next OMT batch), GitHub repo for OMT (orchestrator creates it private after review).
+
 ## Batch 6 result (18 Sep 2026)
 All three agents stalled once on a service watchdog (600 s without progress); R's WIP was saved and resumed, S restarted from scratch. Merged R (recording: CMAF segments + VOD playlist, crash-safe temp+rename, restart recovery, retention, ordered object_store upload with retries; clips as progressive MP4 streamed from segment byte ranges with edit lists; StartAt::Oldest), S (SRT out: `play/<name>` pull and `[[srt.push]]` with reconnect; MPEG-TS mux on `mpeg2ts` — moq-mux's exporter needs a hang broadcast; H.264 + AAC verified, H.265 untested, Opus not muxed; fixed a trailing-PES bug), T (WebKit over HTTPS in the browser suite; Safari bimodal finding).
 **Verified:** workspace **158/158**, e2e **15/15** (new: record → VOD → clip), cargo-deny ok, clippy clean, no leftover processes.

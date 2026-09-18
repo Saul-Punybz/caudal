@@ -29,6 +29,9 @@ caudal-webrtc = { path = "crates/caudal-webrtc", version = "0.1.0" }
 caudal-moq = { path = "crates/caudal-moq", version = "0.1.0" }
 caudal-cmaf = { path = "crates/caudal-cmaf", version = "0.1.0" }
 caudal-record = { path = "crates/caudal-record", version = "0.1.0" }
+caudal-ts = { path = "crates/caudal-ts", version = "0.1.0" }
+caudal-rtsp = { path = "crates/caudal-rtsp", version = "0.1.0" }
+caudal-transcode = { path = "crates/caudal-transcode", version = "0.1.0" }
 
 [profile.release]
 lto = "fat"

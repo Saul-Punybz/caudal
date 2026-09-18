@@ -522,8 +522,10 @@ dependencies = [
  "caudal-moq",
  "caudal-record",
  "caudal-rtmp",
+ "caudal-rtsp",
  "caudal-srt",
  "caudal-tls",
+ "caudal-transcode",
  "caudal-ui",
  "caudal-webrtc",
  "clap",
@@ -662,6 +664,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "caudal-rtsp"
+version = "0.1.0"
+dependencies = [
+ "caudal-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "caudal-srt"
 version = "0.1.0"
 dependencies = [
@@ -669,6 +680,7 @@ dependencies = [
  "bytes",
  "caudal-core",
  "caudal-hls",
+ "caudal-ts",
  "mp4-atom",
  "mpeg2ts",
  "parking_lot",
@@ -696,6 +708,30 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "caudal-transcode"
+version = "0.1.0"
+dependencies = [
+ "caudal-core",
+ "caudal-ts",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "caudal-ts"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "caudal-core",
+ "mp4-atom",
+ "mpeg2ts",
+ "parking_lot",
+ "scuffle-h264",
+ "scuffle-h265",
  "tracing",
 ]
 

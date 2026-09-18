@@ -51,7 +51,10 @@ async fn status_json(router: &Router) -> serde_json::Value {
     let req = Request::builder().uri("/api/v1/restreams").body(Body::empty()).unwrap();
     let res = router.clone().oneshot(req).await.unwrap();
     let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    assert!(!body.windows(SECRET_KEY.len()).any(|w| w == SECRET_KEY.as_bytes()), "stream key leaked into the status API");
+    assert!(
+        !body.windows(SECRET_KEY.len()).any(|w| w == SECRET_KEY.as_bytes()),
+        "stream key leaked into the status API"
+    );
     serde_json::from_slice(&body).unwrap()
 }
 
@@ -112,11 +115,12 @@ async fn restreams_into_a_real_rtmp_ingest() {
         });
     }
     wait_for(Duration::from_secs(2), || std::net::TcpStream::connect(("127.0.0.1", dst_port)).ok().map(drop)).await;
-    
+
     // The source: a plain Registry, published directly (no real RTMP
     // ingest needed on this side).
     let src_registry = Registry::new();
-    let target = RestreamTarget { stream: "src".to_owned(), url: format!("rtmp://127.0.0.1:{dst_port}/live/{SECRET_KEY}") };
+    let target =
+        RestreamTarget { stream: "src".to_owned(), url: format!("rtmp://127.0.0.1:{dst_port}/live/{SECRET_KEY}") };
     let handle: RestreamHandle = caudal_restream::start(src_registry.clone(), RestreamConfig { targets: vec![target] });
     let router = caudal_restream::router(handle);
 
@@ -171,8 +175,14 @@ async fn restreams_into_a_real_rtmp_ingest() {
 
     let expected_video: Vec<i64> = (0..6).map(|n| n * 3600).collect();
     let expected_audio: Vec<i64> = (0..6).map(|n| n * 2205).collect();
-    assert!(video_ts.len() >= 5 && expected_video.ends_with(&video_ts), "video timestamps did not round-trip: {video_ts:?}");
-    assert!(audio_ts.len() >= 5 && expected_audio.ends_with(&audio_ts), "audio timestamps did not round-trip: {audio_ts:?}");
+    assert!(
+        video_ts.len() >= 5 && expected_video.ends_with(&video_ts),
+        "video timestamps did not round-trip: {video_ts:?}"
+    );
+    assert!(
+        audio_ts.len() >= 5 && expected_audio.ends_with(&audio_ts),
+        "audio timestamps did not round-trip: {audio_ts:?}"
+    );
 
     let live_status = status_json(&router).await;
     assert_eq!(live_status[0]["state"], "live");
@@ -196,7 +206,11 @@ async fn wait_for_status_state(router: &Router, state: &str, timeout: Duration) 
 // the client side uses, so the test can kill one specific connection on
 // demand and bring the target back without rebinding the port. ---
 
-async fn handle_results(session: &mut ServerSession, socket: &mut TcpStream, results: Vec<ServerSessionResult>) -> bool {
+async fn handle_results(
+    session: &mut ServerSession,
+    socket: &mut TcpStream,
+    results: Vec<ServerSessionResult>,
+) -> bool {
     let mut queue: VecDeque<ServerSessionResult> = results.into();
     while let Some(r) = queue.pop_front() {
         match r {

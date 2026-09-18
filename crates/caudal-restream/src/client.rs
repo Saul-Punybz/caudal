@@ -226,13 +226,19 @@ impl RtmpClient {
     /// Sends one `VIDEODATA` message. Returns the number of bytes written
     /// to the socket (chunk framing included), for the byte counter.
     pub(crate) async fn publish_video(&mut self, data: Bytes, timestamp_ms: u32) -> Result<u64, String> {
-        let r = self.session.publish_video_data(data, RtmpTimestamp::new(timestamp_ms), false).map_err(|e| e.to_string())?;
+        let r = self
+            .session
+            .publish_video_data(data, RtmpTimestamp::new(timestamp_ms), false)
+            .map_err(|e| e.to_string())?;
         self.write_one(r).await
     }
 
     /// Sends one `AUDIODATA` message.
     pub(crate) async fn publish_audio(&mut self, data: Bytes, timestamp_ms: u32) -> Result<u64, String> {
-        let r = self.session.publish_audio_data(data, RtmpTimestamp::new(timestamp_ms), false).map_err(|e| e.to_string())?;
+        let r = self
+            .session
+            .publish_audio_data(data, RtmpTimestamp::new(timestamp_ms), false)
+            .map_err(|e| e.to_string())?;
         self.write_one(r).await
     }
 

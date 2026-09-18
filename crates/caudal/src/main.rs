@@ -290,6 +290,19 @@ async fn run(cfg: config::Config) -> ExitCode {
         caudal_channel::router(handle)
     };
 
+    let restream_router = if cfg.restream.is_empty() {
+        axum::Router::new()
+    } else {
+        let targets = cfg
+            .restream
+            .iter()
+            .map(|r| caudal_restream::RestreamTarget { stream: r.stream.clone(), url: r.url.clone() })
+            .collect::<Vec<_>>();
+        tracing::info!(targets = targets.len(), "multistreaming enabled");
+        let handle = caudal_restream::start(registry.clone(), caudal_restream::RestreamConfig { targets });
+        caudal_restream::router(handle)
+    };
+
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
         .merge(hls_router)
@@ -297,6 +310,7 @@ async fn run(cfg: config::Config) -> ExitCode {
         .merge(moq_router)
         .merge(record_router)
         .merge(channel_router)
+        .merge(restream_router)
         .merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {

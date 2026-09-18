@@ -68,3 +68,13 @@ max_mb = 256  # Maximum buffer size in megabytes
 # items = ["/media/intro.mp4", "/media/shows"]
 # loop = true      # default true; false ends the stream after the last item
 # shuffle = false  # default false; reshuffles on every pass
+
+# Multistreaming: push a stream to one or more RTMP/RTMPS ingests while it is
+# live, reconnecting with backoff. The stream key is never logged and shows as
+# **** in GET /api/v1/restreams. H.264 and AAC; H.265, AV1 and Opus as Enhanced RTMP.
+# [[restream]]
+# stream = "main"
+# url = "rtmps://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"
+# [[restream]]
+# stream = "main"
+# url = "rtmp://live.twitch.tv/app/live_xxxxxxxx"

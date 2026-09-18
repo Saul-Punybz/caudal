@@ -20,6 +20,7 @@ caudal-moq.workspace = true
 caudal-record.workspace = true
 caudal-rtsp.workspace = true
 caudal-channel.workspace = true
+caudal-restream.workspace = true
 caudal-transcode.workspace = true
 axum.workspace = true
 serde.workspace = true

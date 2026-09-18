@@ -9,7 +9,6 @@
 //! Every test that needs `ffmpeg` or `srt-live-transmit` checks for them
 //! first and prints "SKIP" instead of failing when either is missing.
 
-use std::net::TcpListener as StdTcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,8 +20,10 @@ fn have(bin: &str) -> bool {
     Command::new("which").arg(bin).output().is_ok_and(|o| o.status.success())
 }
 
+/// SRT runs over UDP, so the probe must be a UDP bind: a TCP probe can
+/// hand two parallel tests the same UDP port.
 fn free_port() -> u16 {
-    StdTcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
 /// Starts `caudal_srt::serve` on a free UDP port with a fresh registry.

@@ -14,7 +14,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::client::RtmpClient;
 use crate::status::TargetStatus;
 use crate::url::parse_target_url;
-use crate::{flv, RestreamTarget};
+use crate::{RestreamTarget, flv};
 
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
@@ -95,7 +95,7 @@ async fn run_while_live(target: &RestreamTarget, stream: &Arc<Stream>, status: &
 /// Converts a track-timescale timestamp to RTMP milliseconds. Wrapping to
 /// `u32` matches `RtmpTimestamp`'s own wraparound semantics.
 fn to_rtmp_ms(info: &TrackInfo, ts: i64) -> u32 {
-    (info.to_micros(ts) / 1000) as i64 as u32
+    (info.to_micros(ts) / 1000) as u32
 }
 
 /// Subscribes to `stream` (not counted as a viewer: this is an outbound

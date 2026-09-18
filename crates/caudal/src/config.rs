@@ -152,6 +152,19 @@ pub struct Config {
     pub transcode: TranscodeSection,
     /// 24/7 channels from files: `[[channel]]` entries.
     pub channel: Vec<ChannelEntry>,
+    /// Multistreaming: `[[restream]]` entries, each pushing one stream to an
+    /// RTMP/RTMPS ingest (YouTube, Twitch, Facebook, another server).
+    pub restream: Vec<RestreamEntry>,
+}
+
+/// One restream target: push `stream` to `url` (`rtmp://` or `rtmps://`,
+/// `host[:port]/app/key`) while it is live. The key never reaches logs or
+/// the API.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RestreamEntry {
+    pub stream: String,
+    pub url: String,
 }
 
 /// One 24/7 channel: a playlist of files (or directories) published as a

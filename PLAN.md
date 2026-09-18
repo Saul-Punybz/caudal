@@ -50,9 +50,11 @@ gaps (RTSP server, SRT maturity) the MIT Go code is ported, not linked.
 ## UI
 
 MistServer's UI is one ~21K-line jQuery file. Caudal ships React + Vite +
-TypeScript + Tailwind + shadcn/ui, with uPlot charts, live updates over
-WebSocket/SSE and an OpenAPI-generated client, embedded in the binary with
-`rust-embed`. Same screens (overview, streams, protocols, push, triggers,
+TypeScript + Tailwind built to **Material Design 3** (m3.material.io), with
+color tokens generated from the brand palette (Orange `#F54F1B`, Space Cadet
+`#1E223D`, Gargoyle Gas `#E6D5B7`) by Google's material-color-utilities. See
+`ui/DESIGN.md`. uPlot charts, live updates over WebSocket/SSE, an
+OpenAPI-generated client, embedded in the binary with `rust-embed`. Same screens (overview, streams, protocols, push, triggers,
 logs, stats, keys, embed, preview), redesigned.
 
 ## Libraries (reuse before writing)

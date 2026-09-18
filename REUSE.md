@@ -54,7 +54,7 @@ No usable Rust version exists for these. All three Go sources are MIT, so portin
 | Piece | Project | License |
 |---|---|---|
 | Framework | React + Vite + TypeScript | MIT |
-| Components | shadcn/ui (github.com/shadcn-ui/ui) + Tailwind | MIT |
+| Design system | Material Design 3 spec; tokens from `@material/material-color-utilities` 0.4.0 (Apache-2.0); components in React + Tailwind to the M3 spec. `@material/web` rejected: maintenance mode | Apache-2.0 / MIT |
 | Live charts | uPlot (github.com/leeoniya/uPlot) | MIT |
 | HLS player | hls.js (github.com/video-dev/hls.js) | Apache-2.0 |
 | MoQ player | `@moq/watch` (from moq-dev/moq) | MIT OR Apache-2.0 |

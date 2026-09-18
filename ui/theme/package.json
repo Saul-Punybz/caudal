@@ -1,0 +1,12 @@
+{
+  "name": "caudal-theme",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild generate.mjs --bundle --platform=node --format=esm --outfile=.gen.mjs --log-level=warning && node .gen.mjs"
+  },
+  "devDependencies": {
+    "@material/material-color-utilities": "0.4.0",
+    "esbuild": "^0.25.12"
+  }
+}

@@ -33,6 +33,7 @@ caudal-ts = { path = "crates/caudal-ts", version = "0.1.0" }
 caudal-rtsp = { path = "crates/caudal-rtsp", version = "0.1.0" }
 caudal-transcode = { path = "crates/caudal-transcode", version = "0.1.0" }
 caudal-channel = { path = "crates/caudal-channel", version = "0.1.0" }
+caudal-restream = { path = "crates/caudal-restream", version = "0.1.0" }
 
 [profile.release]
 lto = "fat"

@@ -1,9 +1,12 @@
 //! RTSP in and out. Entry point fixed by the orchestrator.
 //!
-//! - Pull ([`pull`]): each [`RtspPull`] connects to a camera
+//! - Pull ([`start_pulls`]): each [`RtspPull`] connects to a camera
 //!   (`rtsp://user:pass@cam/...`) over TCP interleaved with `retina` and
 //!   publishes it as `stream` (AVCC video, avcC/hvcC init, raw AAC audio),
-//!   reconnecting forever with backoff.
+//!   reconnecting forever with backoff. Runs as its own subsystem,
+//!   independent of [`serve`], so a `[[rtsp.pull]]` reload
+//!   ([`PullHandle::reload`]) never touches the RTSP server or any
+//!   already-connected client.
 //! - Serve ([`server`]): when `bind` is set, `rtsp://host:port/<stream>`
 //!   (optional `?token=`) plays any live stream: OPTIONS, DESCRIBE (SDP
 //!   built in [`sdp`]), SETUP, PLAY, TEARDOWN, GET_PARAMETER, with
@@ -27,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use caudal_core::{BufferConfig, Registry};
+use parking_lot::Mutex;
 
 /// RFC 2326 §12.37's usual default for `RtspConfig::session_timeout`.
 pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -35,6 +39,62 @@ pub const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct RtspPull {
     pub stream: String,
     pub url: String,
+}
+
+struct PullEntry {
+    pull: RtspPull,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// A handle to the running `[[rtsp.pull]]` tasks. Cheap to clone.
+#[derive(Clone)]
+pub struct PullHandle {
+    entries: Arc<Mutex<Vec<PullEntry>>>,
+}
+
+fn spawn_pull(registry: Arc<Registry>, buffer: BufferConfig, pull: RtspPull) -> PullEntry {
+    let task_pull = pull.clone();
+    let task = tokio::spawn(async move { pull::run(task_pull, registry, buffer).await });
+    PullEntry { pull, task }
+}
+
+/// Starts every configured camera pull, reconnecting forever, and returns
+/// immediately. Must be called inside a tokio runtime: each pull is its own
+/// task, so one camera never affects any other, the RTSP server, or any
+/// other ingest/output subsystem.
+pub fn start_pulls(registry: Arc<Registry>, buffer: BufferConfig, pulls: Vec<RtspPull>) -> PullHandle {
+    let entries = pulls.into_iter().map(|p| spawn_pull(registry.clone(), buffer, p)).collect();
+    PullHandle { entries: Arc::new(Mutex::new(entries)) }
+}
+
+impl PullHandle {
+    /// Applies a new pull list: a pull whose `stream` and `url` are both
+    /// unchanged keeps its task (and its live camera connection)
+    /// untouched; removed pulls are stopped (their stream ends), changed
+    /// or new ones (re)started.
+    pub fn reload(&self, registry: &Arc<Registry>, buffer: BufferConfig, pulls: Vec<RtspPull>) {
+        let mut entries = self.entries.lock();
+        let mut remaining = std::mem::take(&mut *entries);
+        let mut next = Vec::with_capacity(pulls.len());
+        for p in pulls {
+            if let Some(pos) = remaining.iter().position(|e| e.pull == p) {
+                next.push(remaining.remove(pos));
+            } else {
+                next.push(spawn_pull(registry.clone(), buffer, p));
+            }
+        }
+        for gone in remaining {
+            gone.task.abort();
+        }
+        *entries = next;
+    }
+
+    /// Stops every pull task; their streams end.
+    pub fn stop(&self) {
+        for e in self.entries.lock().drain(..) {
+            e.task.abort();
+        }
+    }
 }
 
 /// RTSPS: a second bind speaking the same RTSP control protocol over TLS
@@ -50,7 +110,6 @@ pub struct RtspTlsConfig {
 pub struct RtspConfig {
     /// RTSP server address; `None` disables serving.
     pub bind: Option<SocketAddr>,
-    pub pulls: Vec<RtspPull>,
     pub buffer: BufferConfig,
     /// RTSPS alongside `bind`; `None` disables it.
     pub tls: Option<RtspTlsConfig>,
@@ -64,17 +123,58 @@ pub struct RtspConfig {
     pub session_timeout: Duration,
 }
 
-/// Runs pulls and the server until dropped. Pulls never return (they
-/// reconnect forever); if `bind` is `None` this simply waits on them.
+/// Runs the RTSP server until dropped; `[[rtsp.pull]]` cameras run
+/// separately, see [`start_pulls`]. If `bind` is `None` this never returns
+/// (nothing to serve), so callers only spawn it when `bind.is_some()`.
 pub async fn serve(cfg: RtspConfig, registry: Arc<Registry>) -> std::io::Result<()> {
-    for p in cfg.pulls {
-        let registry = registry.clone();
-        let buffer = cfg.buffer;
-        tokio::spawn(async move { pull::run(p, registry, buffer).await });
-    }
-
     match cfg.bind {
         Some(bind) => server::serve(bind, cfg.tls, cfg.udp_port_range, cfg.session_timeout, registry).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    fn pull(stream: &str, url: &str) -> RtspPull {
+        RtspPull { stream: stream.into(), url: url.into() }
+    }
+
+    fn task_ids(handle: &PullHandle) -> Vec<tokio::task::Id> {
+        handle.entries.lock().iter().map(|e| e.task.id()).collect()
+    }
+
+    #[tokio::test]
+    async fn unchanged_pull_keeps_its_task() {
+        let registry = Registry::new();
+        let handle = start_pulls(registry.clone(), BufferConfig::default(), vec![pull("cam1", "rtsp://x/1")]);
+        let before = task_ids(&handle);
+        handle.reload(&registry, BufferConfig::default(), vec![pull("cam1", "rtsp://x/1")]);
+        assert_eq!(task_ids(&handle), before, "unchanged pull must not be restarted");
+    }
+
+    #[tokio::test]
+    async fn changed_removed_and_added_pulls() {
+        let registry = Registry::new();
+        let handle = start_pulls(
+            registry.clone(),
+            BufferConfig::default(),
+            vec![pull("cam1", "rtsp://x/1"), pull("cam2", "rtsp://x/2")],
+        );
+        let before = task_ids(&handle);
+
+        handle.reload(
+            &registry,
+            BufferConfig::default(),
+            vec![pull("cam1", "rtsp://x/CHANGED"), pull("cam3", "rtsp://x/3")],
+        );
+
+        let after = handle.entries.lock();
+        assert_eq!(after.len(), 2);
+        assert!(after.iter().any(|e| e.pull.stream == "cam3"));
+        assert!(!after.iter().any(|e| e.pull.stream == "cam2"), "removed pull is gone");
+        let cam1_task = after.iter().find(|e| e.pull.stream == "cam1").unwrap().task.id();
+        assert!(!before.contains(&cam1_task), "changed pull got a new task");
     }
 }

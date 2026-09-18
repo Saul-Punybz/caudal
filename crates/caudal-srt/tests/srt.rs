@@ -62,7 +62,6 @@ impl TestServer {
                 latency_ms: 120,
                 passphrase: passphrase.map(str::to_owned),
                 buffer: BufferConfig::default(),
-                pushes: pushes.clone(),
             };
             let reg = registry.clone();
             let handle = tokio::spawn(async move {
@@ -71,6 +70,9 @@ impl TestServer {
             // Let the listener bind before the pipeline tries to connect.
             tokio::time::sleep(Duration::from_millis(300)).await;
             if !handle.is_finished() {
+                if !pushes.is_empty() {
+                    caudal_srt::start_pushes(registry.clone(), pushes.clone());
+                }
                 return Self { registry, port, handle };
             }
         }

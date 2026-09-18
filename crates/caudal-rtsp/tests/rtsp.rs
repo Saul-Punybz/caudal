@@ -116,7 +116,6 @@ impl Source {
 
         let cfg = RtspConfig {
             bind: Some(format!("127.0.0.1:{port}").parse().unwrap()),
-            pulls: Vec::new(),
             buffer: BufferConfig::default(),
             tls,
             udp_port_range,
@@ -312,18 +311,8 @@ async fn pull_republishes_camera_and_reconnects() {
     let source = Source::start("test", port, None).await;
 
     let dest = Registry::new();
-    let pull_cfg = RtspConfig {
-        bind: None,
-        pulls: vec![RtspPull { stream: "cam".to_owned(), url: format!("rtsp://127.0.0.1:{port}/test") }],
-        buffer: BufferConfig::default(),
-        tls: None,
-        udp_port_range: (0, 0),
-        session_timeout: caudal_rtsp::DEFAULT_SESSION_TIMEOUT,
-    };
-    let dest2 = dest.clone();
-    let pull_handle = tokio::spawn(async move {
-        let _ = caudal_rtsp::serve(pull_cfg, dest2).await;
-    });
+    let pulls = vec![RtspPull { stream: "cam".to_owned(), url: format!("rtsp://127.0.0.1:{port}/test") }];
+    let pull_handle = caudal_rtsp::start_pulls(dest.clone(), BufferConfig::default(), pulls);
 
     let stream = wait_for(Duration::from_secs(15), || dest.get("cam")).await.expect("'cam' never appeared");
     let tracks = wait_for(Duration::from_secs(10), || {
@@ -373,7 +362,7 @@ async fn pull_republishes_camera_and_reconnects() {
     .await;
     assert!(reconnected.is_ok(), "pull never reconnected after the source restarted");
 
-    pull_handle.abort();
+    pull_handle.stop();
     source2.kill();
 }
 

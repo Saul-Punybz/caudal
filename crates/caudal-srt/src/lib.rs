@@ -6,12 +6,19 @@
 //! `NOTES.md` for the demux reuse decision and the AVCC/hvcC/ADTS
 //! conversion rules. One task per accepted connection: a malformed stream
 //! or a rejected caller only ever affects its own connection.
+//!
+//! [`serve`] (the listener) and [`start_pushes`] (caller-mode `[[srt.push]]`
+//! targets) run as two independent subsystems so a config reload can
+//! restart either without the other: e.g. a changed `[[srt.push]]` list is
+//! applied with [`PushHandle::reload`], never touching the listener or any
+//! already-accepted connection.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use caudal_core::{BufferConfig, Registry};
+use parking_lot::Mutex;
 use rsrt::{SrtListener, SrtOptions};
 
 mod connection;
@@ -27,8 +34,6 @@ pub struct SrtConfig {
     /// When set, callers must use this passphrase (AES).
     pub passphrase: Option<String>,
     pub buffer: BufferConfig,
-    /// Streams to push out to remote SRT listeners (caller mode).
-    pub pushes: Vec<SrtPush>,
 }
 
 /// Push `stream` to `url` (`srt://host:port?streamid=...&passphrase=...`),
@@ -39,11 +44,61 @@ pub struct SrtPush {
     pub url: String,
 }
 
+struct PushEntry {
+    push: SrtPush,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// A handle to the running `[[srt.push]]` tasks. Cheap to clone.
+#[derive(Clone)]
+pub struct PushHandle {
+    entries: Arc<Mutex<Vec<PushEntry>>>,
+}
+
+fn spawn_push(registry: Arc<Registry>, push: SrtPush) -> PushEntry {
+    let task_push = push.clone();
+    let task = tokio::spawn(async move {
+        push::run(task_push, registry).await;
+    });
+    PushEntry { push, task }
+}
+
+/// Starts every configured push (current and future publishes of its
+/// source stream) and returns immediately. Must be called inside a tokio
+/// runtime: each push is its own task, so a stuck or slow target never
+/// affects any other, the listener, or any accepted connection.
+pub fn start_pushes(registry: Arc<Registry>, pushes: Vec<SrtPush>) -> PushHandle {
+    let entries = pushes.into_iter().map(|p| spawn_push(registry.clone(), p)).collect();
+    PushHandle { entries: Arc::new(Mutex::new(entries)) }
+}
+
+impl PushHandle {
+    /// Applies a new push list: a push whose `stream` and `url` are both
+    /// unchanged keeps its task (and in-flight connection) untouched;
+    /// removed pushes are stopped, changed or new ones (re)started.
+    pub fn reload(&self, registry: &Arc<Registry>, pushes: Vec<SrtPush>) {
+        let mut entries = self.entries.lock();
+        let mut remaining = std::mem::take(&mut *entries);
+        let mut next = Vec::with_capacity(pushes.len());
+        for p in pushes {
+            if let Some(pos) = remaining.iter().position(|e| e.push == p) {
+                next.push(remaining.remove(pos));
+            } else {
+                next.push(spawn_push(registry.clone(), p));
+            }
+        }
+        for gone in remaining {
+            gone.task.abort();
+        }
+        *entries = next;
+    }
+}
+
 /// Listens until the future is dropped or the socket fails. A caller's
 /// stream id selects the stream and direction: `publish/<name>` or
 /// `#!::r=<name>,m=publish` to send into Caudal; `play/<name>` or
 /// `#!::r=<name>,m=request` to receive a stream as MPEG-TS (batch 6).
-/// Also runs the configured `pushes`.
+/// `[[srt.push]]` targets run separately: see [`start_pushes`].
 pub async fn serve(cfg: SrtConfig, registry: Arc<Registry>) -> std::io::Result<()> {
     // A live publisher sends media continuously, so 3 s without any means it
     // is gone. A caller killed outright never sends SRT's shutdown, and the
@@ -64,13 +119,6 @@ pub async fn serve(cfg: SrtConfig, registry: Arc<Registry>) -> std::io::Result<(
         .map_err(|err| std::io::Error::other(format!("srt bind failed: {err}")))?;
     tracing::info!(bind = %cfg.bind, "srt listening");
 
-    for push in cfg.pushes.clone() {
-        let registry = registry.clone();
-        tokio::spawn(async move {
-            push::run(push, registry).await;
-        });
-    }
-
     loop {
         let (socket, peer) =
             listener.accept().await.map_err(|err| std::io::Error::other(format!("srt accept failed: {err}")))?;
@@ -81,5 +129,49 @@ pub async fn serve(cfg: SrtConfig, registry: Arc<Registry>) -> std::io::Result<(
         tokio::spawn(async move {
             connection::handle(socket, peer, registry, buffer).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    fn push(stream: &str, url: &str) -> SrtPush {
+        SrtPush { stream: stream.into(), url: url.into() }
+    }
+
+    fn task_ids(handle: &PushHandle) -> Vec<tokio::task::Id> {
+        handle.entries.lock().iter().map(|e| e.task.id()).collect()
+    }
+
+    #[tokio::test]
+    async fn unchanged_push_keeps_its_task() {
+        let registry = Registry::new();
+        let handle = start_pushes(registry.clone(), vec![push("a", "srt://x:1?streamid=publish/a")]);
+        let before = task_ids(&handle);
+        handle.reload(&registry, vec![push("a", "srt://x:1?streamid=publish/a")]);
+        assert_eq!(task_ids(&handle), before, "unchanged push must not be restarted");
+    }
+
+    #[tokio::test]
+    async fn changed_removed_and_added_pushes() {
+        let registry = Registry::new();
+        let handle = start_pushes(
+            registry.clone(),
+            vec![push("a", "srt://x:1?streamid=publish/a"), push("b", "srt://x:1?streamid=publish/b")],
+        );
+        let before = task_ids(&handle);
+
+        handle.reload(
+            &registry,
+            vec![push("a", "srt://x:1?streamid=publish/CHANGED"), push("c", "srt://x:1?streamid=publish/c")],
+        );
+
+        let after = handle.entries.lock();
+        assert_eq!(after.len(), 2);
+        assert!(after.iter().any(|e| e.push.stream == "c"));
+        assert!(!after.iter().any(|e| e.push.stream == "b"), "removed push is gone");
+        let a_task = after.iter().find(|e| e.push.stream == "a").unwrap().task.id();
+        assert!(!before.contains(&a_task), "changed push got a new task");
     }
 }

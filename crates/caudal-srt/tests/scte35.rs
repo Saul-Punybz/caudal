@@ -91,7 +91,6 @@ async fn a_cue_over_srt_reaches_the_stream_and_comes_back_out() {
         latency_ms: 120,
         passphrase: None,
         buffer: BufferConfig::default(),
-        pushes: Vec::new(),
     };
     let server = tokio::spawn(serve(cfg, registry.clone()));
     tokio::time::sleep(Duration::from_millis(300)).await;

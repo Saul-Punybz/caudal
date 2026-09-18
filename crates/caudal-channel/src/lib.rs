@@ -57,7 +57,7 @@ pub struct ChannelConfig {
     pub buffer: BufferConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel {
     /// Stream name the channel publishes as.
     pub name: String,
@@ -105,6 +105,12 @@ pub(crate) struct Shared {
     pub(crate) skip: watch::Sender<u64>,
 }
 
+struct Entry {
+    cfg: Channel,
+    shared: Arc<Shared>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 /// Running channels. Cheap to clone. Dropping it does not stop them; they
 /// run as long as the runtime does (see [`ChannelHandle::stop`]).
 #[derive(Clone)]
@@ -114,21 +120,38 @@ pub struct ChannelHandle {
 
 struct Inner {
     registry: Arc<Registry>,
-    channels: Vec<Arc<Shared>>,
-    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    buffer: BufferConfig,
+    entries: Mutex<Vec<Entry>>,
+}
+
+fn spawn_channel(registry: &Arc<Registry>, buffer: BufferConfig, ch: Channel) -> Entry {
+    let shared = Arc::new(Shared {
+        status: Mutex::new(ChannelStatus {
+            name: ch.name.clone(),
+            state: ChannelState::Idle,
+            index: 0,
+            items: 0,
+            now_playing: None,
+            error: None,
+        }),
+        skip: watch::channel(0).0,
+    });
+    let cfg = ch.clone();
+    let task = tokio::spawn(player::run(ch, buffer, registry.clone(), shared.clone()));
+    Entry { cfg, shared, task }
 }
 
 impl ChannelHandle {
     /// Every channel's status, in configuration order.
     pub fn status(&self) -> Vec<ChannelStatus> {
-        self.inner.channels.iter().map(|c| c.status.lock().clone()).collect()
+        self.inner.entries.lock().iter().map(|e| e.shared.status.lock().clone()).collect()
     }
 
     /// Jumps channel `name` to its next item at once. False if unknown.
     pub fn skip(&self, name: &str) -> bool {
         match self.find(name) {
-            Some(c) => {
-                c.skip.send_modify(|v| *v = v.wrapping_add(1));
+            Some(shared) => {
+                shared.skip.send_modify(|v| *v = v.wrapping_add(1));
                 true
             }
             None => false,
@@ -137,13 +160,38 @@ impl ChannelHandle {
 
     /// Stops every channel task; their streams end.
     pub fn stop(&self) {
-        for t in self.inner.tasks.lock().drain(..) {
-            t.abort();
+        for e in self.inner.entries.lock().drain(..) {
+            e.task.abort();
         }
     }
 
-    pub(crate) fn find(&self, name: &str) -> Option<&Arc<Shared>> {
-        self.inner.channels.iter().find(|c| c.status.lock().name == name)
+    /// Applies a new channel list: a channel whose name, items, `loop` and
+    /// `shuffle` are all unchanged is left running untouched (its status
+    /// and playback position survive the reload); a channel that changed,
+    /// or one that's new, is (re)started; a channel dropped from the list
+    /// is stopped, ending its stream. Never touches any other channel.
+    pub fn reload(&self, cfg: ChannelConfig) {
+        let mut entries = self.inner.entries.lock();
+        let mut remaining = std::mem::take(&mut *entries);
+        let mut next = Vec::with_capacity(cfg.channels.len());
+        for ch in cfg.channels {
+            if let Some(pos) = remaining.iter().position(|e| e.cfg == ch) {
+                next.push(remaining.remove(pos));
+                continue;
+            }
+            if let Some(pos) = remaining.iter().position(|e| e.cfg.name == ch.name) {
+                remaining.remove(pos).task.abort();
+            }
+            next.push(spawn_channel(&self.inner.registry, self.inner.buffer, ch));
+        }
+        for gone in remaining {
+            gone.task.abort();
+        }
+        *entries = next;
+    }
+
+    pub(crate) fn find(&self, name: &str) -> Option<Arc<Shared>> {
+        self.inner.entries.lock().iter().find(|e| e.cfg.name == name).map(|e| e.shared.clone())
     }
 
     pub(crate) fn registry(&self) -> &Arc<Registry> {
@@ -153,27 +201,58 @@ impl ChannelHandle {
 
 /// Spawns one task per channel on the current tokio runtime.
 pub fn start(registry: Arc<Registry>, cfg: ChannelConfig) -> ChannelHandle {
-    let mut channels = Vec::new();
-    let mut tasks = Vec::new();
-    for ch in cfg.channels {
-        let shared = Arc::new(Shared {
-            status: Mutex::new(ChannelStatus {
-                name: ch.name.clone(),
-                state: ChannelState::Idle,
-                index: 0,
-                items: 0,
-                now_playing: None,
-                error: None,
-            }),
-            skip: watch::channel(0).0,
-        });
-        channels.push(shared.clone());
-        tasks.push(tokio::spawn(player::run(ch, cfg.buffer, registry.clone(), shared)));
-    }
-    ChannelHandle { inner: Arc::new(Inner { registry, channels, tasks: Mutex::new(tasks) }) }
+    let entries = cfg.channels.into_iter().map(|ch| spawn_channel(&registry, cfg.buffer, ch)).collect();
+    ChannelHandle { inner: Arc::new(Inner { registry, buffer: cfg.buffer, entries: Mutex::new(entries) }) }
 }
 
 /// The channel API routes, with their state already applied.
 pub fn router(handle: ChannelHandle) -> axum::Router {
     http::router(handle)
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    fn ch(name: &str, r#loop: bool) -> Channel {
+        Channel { name: name.into(), items: Vec::new(), r#loop, shuffle: false }
+    }
+
+    fn task_ids(handle: &ChannelHandle) -> Vec<tokio::task::Id> {
+        handle.inner.entries.lock().iter().map(|e| e.task.id()).collect()
+    }
+
+    #[tokio::test]
+    async fn unchanged_channel_keeps_its_task() {
+        let registry = Registry::new();
+        let handle =
+            start(registry, ChannelConfig { channels: vec![ch("a", true)], buffer: BufferConfig::default() });
+        let before = task_ids(&handle);
+        handle.reload(ChannelConfig { channels: vec![ch("a", true)], buffer: BufferConfig::default() });
+        assert_eq!(task_ids(&handle), before, "unchanged channel must not be restarted");
+    }
+
+    #[tokio::test]
+    async fn changed_removed_and_added_channels() {
+        let registry = Registry::new();
+        let handle = start(
+            registry,
+            ChannelConfig { channels: vec![ch("a", true), ch("b", true)], buffer: BufferConfig::default() },
+        );
+        let before = task_ids(&handle);
+
+        // `a`'s `loop` flag changes (restart), `b` is dropped (stop), `c`
+        // is new (start).
+        handle.reload(ChannelConfig {
+            channels: vec![ch("a", false), ch("c", true)],
+            buffer: BufferConfig::default(),
+        });
+
+        let names: Vec<String> = handle.status().iter().map(|s| s.name.clone()).collect();
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"c".to_string()));
+        assert!(!names.contains(&"b".to_string()), "removed channel is gone");
+        let a_task = handle.inner.entries.lock().iter().find(|e| e.cfg.name == "a").unwrap().task.id();
+        assert!(!before.contains(&a_task), "changed channel got a new task");
+    }
 }

@@ -1,9 +1,9 @@
 //! Stream names to live streams, with one publisher per name.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::broadcast;
 
 use crate::gate::{Access, Denied, Gate};
@@ -22,7 +22,11 @@ pub struct Registry {
     streams: Mutex<HashMap<Arc<str>, Arc<Stream>>>,
     published: broadcast::Sender<Arc<Stream>>,
     ended: broadcast::Sender<Arc<str>>,
-    gate: OnceLock<Arc<dyn Gate>>,
+    // `dyn Gate` can't live behind `arc-swap` (it needs `T: Sized`), so a
+    // short-held read/write lock stands in; `authorize` is called per
+    // publish/play request, never per frame, so this is not the hot path
+    // rule 3 in the reload brief means to keep lock-free.
+    gate: RwLock<Option<Arc<dyn Gate>>>,
 }
 
 impl Default for Registry {
@@ -31,7 +35,7 @@ impl Default for Registry {
             streams: Mutex::default(),
             published: broadcast::channel(64).0,
             ended: broadcast::channel(64).0,
-            gate: OnceLock::new(),
+            gate: RwLock::new(None),
         }
     }
 }
@@ -52,18 +56,25 @@ impl Registry {
         self.ended.subscribe()
     }
 
-    /// Installs the access policy. Once, at startup; without one, every
-    /// publish and play is allowed.
+    /// Installs (or replaces, e.g. on a config reload) the access policy.
+    /// Without one, every publish and play is allowed. A live snapshot
+    /// swap: in-flight `authorize` calls finish against whichever gate they
+    /// loaded, never torn mid-check.
     pub fn set_gate(&self, gate: Arc<dyn Gate>) {
-        if self.gate.set(gate).is_err() {
-            tracing::warn!("registry gate already set; keeping the first one");
-        }
+        *self.gate.write() = Some(gate);
+    }
+
+    /// Removes the access policy: every publish and play becomes allowed
+    /// again (used when a reload drops `[auth]`'s keys).
+    pub fn clear_gate(&self) {
+        *self.gate.write() = None;
     }
 
     /// Asks the installed gate. Ingest calls this before `publish`, outputs
     /// before serving a viewer.
     pub async fn authorize(&self, access: Access, stream: &str, token: Option<&str>) -> Result<(), Denied> {
-        match self.gate.get() {
+        let gate = self.gate.read().clone();
+        match gate {
             Some(g) => g.check(access, stream, token).await,
             None => Ok(()),
         }

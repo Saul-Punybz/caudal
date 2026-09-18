@@ -2,6 +2,11 @@
 //! mediastreamvalidator). Pattern borrowed from cesbo/rsrt's test support:
 //! every external tool is optional and its absence is reported, never hidden
 //! behind a green test.
+//!
+//! Shared by every `tests/*.rs` integration binary, each compiled (and
+//! dead-code-checked) on its own: a helper only one of them calls is not
+//! dead code overall, just unused in whichever binary skips it.
+#![allow(dead_code)]
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -29,6 +34,9 @@ pub struct Server {
     /// The WebRTC UDP port (ICE); WHIP/WHEP signaling goes over `http`.
     #[allow(dead_code)]
     pub webrtc: u16,
+    /// The config file path it was started with; rewrite it and call
+    /// [`Server::reload_via_api`] or [`Server::sighup`] to test hot reload.
+    pub cfg_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -59,9 +67,35 @@ impl Server {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn caudal");
-        let s = Self { child, http, rtmp, srt, webrtc, _dir: dir };
+        let s = Self { child, http, rtmp, srt, webrtc, cfg_path: cfg, _dir: dir };
         s.wait_for("/healthz", Duration::from_secs(10));
         s
+    }
+
+    /// Overwrites the config file at [`Server::cfg_path`] with `text`; does
+    /// not itself trigger a reload (see [`Server::reload_via_api`] /
+    /// [`Server::sighup`]).
+    pub fn write_config(&self, text: &str) {
+        std::fs::write(&self.cfg_path, text).unwrap();
+    }
+
+    /// `POST /api/v1/config/reload`: `(status, body)`. Reads the body on a
+    /// 400 too (`http_status_as_error(false)`): that's where the
+    /// rejection's error message lives.
+    pub fn reload_via_api(&self) -> (u16, String) {
+        let res =
+            ureq::post(self.url("/api/v1/config/reload")).config().http_status_as_error(false).build().send_empty();
+        match res {
+            Ok(mut r) => (r.status().as_u16(), r.body_mut().read_to_string().unwrap_or_default()),
+            Err(e) => panic!("POST /api/v1/config/reload: {e}"),
+        }
+    }
+
+    /// Sends SIGHUP to the running process, the other way to trigger a
+    /// reload (`kill -HUP <pid>`).
+    pub fn sighup(&self) {
+        let status = Command::new("kill").args(["-HUP", &self.child.id().to_string()]).status().unwrap();
+        assert!(status.success(), "kill -HUP failed");
     }
 
     pub fn url(&self, path: &str) -> String {

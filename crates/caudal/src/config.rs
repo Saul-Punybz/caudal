@@ -245,6 +245,18 @@ impl RtspSection {
         };
         Ok(Some(caudal_rtsp::RtspTlsConfig { bind, cert, key }))
     }
+
+    /// `[[rtsp.pull]]` as the runtime type `caudal-rtsp` takes.
+    pub fn pull_targets(&self) -> Vec<caudal_rtsp::RtspPull> {
+        self.pull.iter().map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
+}
+
+impl SrtSection {
+    /// `[[srt.push]]` as the runtime type `caudal-srt` takes.
+    pub fn push_targets(&self) -> Vec<caudal_srt::SrtPush> {
+        self.push.iter().map(|p| caudal_srt::SrtPush { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
 }
 
 /// Transcoding ladders: `[[transcode.ladder]]` with `streams` and
@@ -716,6 +728,41 @@ impl Config {
         }
         self.health.to_health_config()?;
         Ok(())
+    }
+
+    /// `[[restream]]` as the runtime type `caudal-restream` takes.
+    pub fn restream_targets(&self) -> Vec<caudal_restream::RestreamTarget> {
+        self.restream
+            .iter()
+            .map(|r| caudal_restream::RestreamTarget { stream: r.stream.clone(), url: r.url.clone() })
+            .collect()
+    }
+
+    /// `[[channel]]` as the runtime type `caudal-channel` takes.
+    pub fn channels(&self) -> Vec<caudal_channel::Channel> {
+        self.channel
+            .iter()
+            .map(|c| caudal_channel::Channel {
+                name: c.name.clone(),
+                items: c.items.clone(),
+                r#loop: c.r#loop,
+                shuffle: c.shuffle,
+            })
+            .collect()
+    }
+
+    /// The transcode config `caudal-transcode` takes, even with no ladders
+    /// configured (an idle subscriber, so a later reload can add ladders
+    /// without a restart).
+    pub fn transcode_runtime_config(&self, buffer: BufferConfig) -> caudal_transcode::TranscodeConfig {
+        self.transcode.to_transcode_config(buffer).expect("validated").unwrap_or_else(|| {
+            caudal_transcode::TranscodeConfig {
+                ladders: Vec::new(),
+                engine: caudal_transcode::Engine::Ffmpeg,
+                ffmpeg: self.transcode.ffmpeg.clone(),
+                buffer,
+            }
+        })
     }
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { WebRtcError, startWhip, type WebRtcSession } from '../webrtc';
+import { CopyRow } from '../components/CopyRow';
 
 type Status =
   | { kind: 'idle' }
@@ -196,6 +197,8 @@ export function Publish() {
         </Field>
       </div>
 
+      <ObsHelper streamName={streamName} token={token} />
+
       <div className="flex flex-wrap items-center gap-3">
         {!live ? (
           <button
@@ -231,6 +234,44 @@ export function Publish() {
         )}
       </div>
     </main>
+  );
+}
+
+/** OBS 30+ can publish over WHIP natively (Settings → Stream → Service:
+ * WHIP), which just wants the same server URL and bearer token this page
+ * already negotiates with. Shown as plain copy rows rather than a whole
+ * second form, since the values are exactly the "Stream name"/"Token"
+ * fields above. */
+function ObsHelper({ streamName, token }: { streamName: string; token: string }) {
+  const name = streamName.trim();
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const whipUrl = name ? `${origin}/whip/${encodeURIComponent(name)}` : '';
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-surface-container-low p-4">
+      <div className="flex items-center gap-2 text-sm font-semibold">
+        <span className="ms text-lg" aria-hidden="true">
+          videocam
+        </span>
+        Copy for OBS (WHIP output, OBS 30+)
+      </div>
+      <p className="m-0 text-xs text-on-surface-variant">
+        In OBS: Settings → Stream → Service: <span className="font-semibold">WHIP</span>. Paste the server URL and, if this
+        stream needs one, the bearer token below.
+      </p>
+      <CopyRow
+        icon="dns"
+        label="Server"
+        url={whipUrl || 'set a stream name above first'}
+        disabled={!whipUrl}
+      />
+      <CopyRow
+        icon="key"
+        label="Bearer Token"
+        url={token.trim() || 'no token set for this stream'}
+        disabled={!token.trim()}
+      />
+    </div>
   );
 }
 

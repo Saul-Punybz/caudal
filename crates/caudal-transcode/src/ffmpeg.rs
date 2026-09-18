@@ -500,8 +500,7 @@ async fn read_outputs(
                     }
                     DemuxEvent::AudioFrame(mut f) => {
                         let rate = out.audio_rate().unwrap_or(48_000);
-                        let off =
-                            (i128::from(zero) * i128::from(rate) / 90_000) as i64 + clock.back_offset(rate);
+                        let off = (i128::from(zero) * i128::from(rate) / 90_000) as i64 + clock.back_offset(rate);
                         f.track = AUDIO_OUT;
                         f.dts += off;
                         f.pts += off;

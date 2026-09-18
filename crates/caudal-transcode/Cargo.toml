@@ -12,9 +12,11 @@ caudal-core.workspace = true
 caudal-ts.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
 bytes.workspace = true
 mp4-atom = "0.15.0"
+# Pure safe Rust: no global allocator, no nasm-built asm (see src/rusty.rs).
+rusty_h264 = { version = "=0.16.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

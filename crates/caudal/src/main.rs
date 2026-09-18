@@ -93,11 +93,7 @@ fn main() -> ExitCode {
 
     init_logging();
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime")
-        .block_on(run(cfg))
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime").block_on(run(cfg))
 }
 
 async fn run(cfg: config::Config) -> ExitCode {
@@ -105,7 +101,11 @@ async fn run(cfg: config::Config) -> ExitCode {
 
     // RTMP ingest runs in its own task; a panic or I/O error there is logged
     // and does not bring down the HTTP side.
-    let rtmp_cfg = caudal_rtmp::RtmpConfig { bind: cfg.rtmp.bind, app: cfg.rtmp.app.clone(), buffer: cfg.buffer.to_buffer_config() };
+    let rtmp_cfg = caudal_rtmp::RtmpConfig {
+        bind: cfg.rtmp.bind,
+        app: cfg.rtmp.app.clone(),
+        buffer: cfg.buffer.to_buffer_config(),
+    };
     tracing::info!(bind = %rtmp_cfg.bind, app = %rtmp_cfg.app, "starting rtmp listener");
     let rtmp_handle = tokio::spawn(caudal_rtmp::serve(rtmp_cfg, registry.clone()));
     tokio::spawn(async move {
@@ -121,7 +121,10 @@ async fn run(cfg: config::Config) -> ExitCode {
     // empty router rather than taking the whole server down.
     let hls_cfg = caudal_hls::HlsConfig { part_ms: cfg.hls.part_ms, segment_ms: cfg.hls.segment_ms };
     let hls_registry = registry.clone();
-    let hls_router = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| caudal_hls::router(hls_registry, hls_cfg))).unwrap_or_else(|payload| {
+    let hls_router = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        caudal_hls::router(hls_registry, hls_cfg)
+    }))
+    .unwrap_or_else(|payload| {
         tracing::error!(error = %panic_message(&*payload), "caudal_hls::router panicked (not yet implemented?)");
         axum::Router::new()
     });
@@ -152,4 +155,3 @@ async fn run(cfg: config::Config) -> ExitCode {
         }
     }
 }
-

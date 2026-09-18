@@ -111,11 +111,16 @@ pub struct Publisher {
 
 impl Publisher {
     pub fn rtmp(url: &str, secs: u32) -> Self {
-        let child = Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-re"])
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-hide_banner", "-loglevel", "error", "-re"])
             .args(["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30"])
-            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
-            .args(["-vf", "drawtext=text='%{localtime\\:%H\\\\\\:%M\\\\\\:%S.%3N}':fontsize=48:x=20:y=20:fontcolor=white:box=1:boxcolor=black"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"]);
+        // The burned-in clock needs ffmpeg built with freetype; Homebrew's
+        // default build has no drawtext. The test does not depend on it.
+        if ffmpeg_has_filter("drawtext") {
+            cmd.args(["-vf", "drawtext=text='%{localtime\\:%H\\\\\\:%M\\\\\\:%S.%3N}':fontsize=48:x=20:y=20:fontcolor=white:box=1:boxcolor=black"]);
+        }
+        let child = cmd
             .args(["-t", &secs.to_string()])
             .args(["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "60", "-b:v", "2M"])
             .args(["-c:a", "aac", "-b:a", "128k"])
@@ -133,6 +138,13 @@ impl Drop for Publisher {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+pub fn ffmpeg_has_filter(name: &str) -> bool {
+    Command::new("ffmpeg")
+        .args(["-hide_banner", "-filters"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.split_whitespace().nth(1) == Some(name)))
 }
 
 /// Runs Apple's mediastreamvalidator when available. Returns `None` when the

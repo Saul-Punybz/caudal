@@ -177,7 +177,8 @@ mod tests {
     #[tokio::test]
     async fn unknown_stream_is_404() {
         let (app, _state) = app();
-        let res = app.oneshot(Request::builder().uri("/api/v1/streams/nope").body(Body::empty()).unwrap()).await.unwrap();
+        let res =
+            app.oneshot(Request::builder().uri("/api/v1/streams/nope").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
@@ -199,7 +200,8 @@ mod tests {
             }])
             .unwrap();
 
-        let res = app.oneshot(Request::builder().uri("/api/v1/streams/test").body(Body::empty()).unwrap()).await.unwrap();
+        let res =
+            app.oneshot(Request::builder().uri("/api/v1/streams/test").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();

@@ -448,3 +448,42 @@ fn whip_publish_plays_as_ll_hls() {
     assert_eq!(code, 200);
     assert!(master.contains("avc1.") && master.contains("opus"), "{master}");
 }
+
+/// Record a publish, replay it as VOD, cut a clip. Red until batch 6 R lands.
+#[test]
+fn recording_becomes_vod_and_clips_download() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start_with("\n[record]\nenabled = true\ndir = \"{dir}/rec\"\nsegment_secs = 2\n");
+    {
+        let _publ = Publisher::rtmp(&s.rtmp_url("recme"), 10);
+        s.wait_until("/api/v1/streams/recme", Duration::from_secs(15), |b| b.contains("\"h264\""));
+        std::thread::sleep(Duration::from_secs(9));
+    }
+    // The publish ended; the recording closes with ENDLIST.
+    let list = s.wait_until("/api/v1/recordings", Duration::from_secs(15), |b| {
+        b.contains("\"recme\"") && b.contains("\"ended_at\":\"")
+    });
+    let id = list.split("\"id\":\"").nth(1).and_then(|t| t.split('"').next()).expect("a recording id").to_owned();
+    let vod =
+        s.wait_until(&format!("/vod/recme/{id}/index.m3u8"), Duration::from_secs(10), |b| b.contains("#EXT-X-ENDLIST"));
+    assert!(vod.contains("#EXT-X-PLAYLIST-TYPE:VOD") && vod.contains("#EXT-X-MAP"), "{vod}");
+    assert!(vod.matches("#EXTINF").count() >= 3, "8+ s at 2 s segments:\n{vod}");
+
+    // Clip [2 s, 5 s) as a progressive MP4.
+    let resp = ureq::post(s.url("/api/v1/clips"))
+        .header("Content-Type", "application/json")
+        .send(format!("{{\"stream\":\"recme\",\"id\":\"{id}\",\"from_ms\":2000,\"to_ms\":5000}}"))
+        .expect("clip request");
+    assert_eq!(resp.status().as_u16(), 200);
+    let mp4 = resp.into_body().read_to_vec().unwrap();
+    assert_eq!(&mp4[4..8], b"ftyp");
+    assert!(
+        mp4.windows(4).any(|w| w == b"moov") && mp4.windows(4).any(|w| w == b"stco" || w == b"co64"),
+        "progressive MP4 with sample tables"
+    );
+
+    // No path traversal through the VOD route.
+    assert!(matches!(s.get("/vod/recme/..%2F..%2Fetc/passwd").unwrap().0, 400 | 404));
+}

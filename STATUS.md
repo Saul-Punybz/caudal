@@ -109,6 +109,7 @@ Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver a
 - **Merged:** F (rejected RTMP publishers are disconnected), E (Playwright: Chromium plays at 2.4 s ingest-to-glass; WebKit plays but at ~6 s, tracked as a known gap until HTTP/2), I (React + Material 3 UI embedded in the binary; release binary 3.0 MB).
 - **Fixed by orchestrator:** viewer counts (the HLS packager counted as a viewer; HLS players were not counted at all), UI icon size and headline weight.
 - **SRT (G), finished by the orchestrator:** G's tests leaked `srt-live-transmit` processes, which busy-loop at 100% CPU once their input ends; five of them overheated the laptop, so G was stopped. Fixed with a process-group Drop guard (`crates/caudal-srt/tests/srt.rs`, `Pipeline`), plus a 3 s `data_idle_timeout` so a killed caller ends its stream in time. **Rule for every test that spawns srt-live-transmit: own process group, killed in Drop, never wait for it to exit by itself.**
+- **Browsers (18 Sep 2026, after adding hls.js live catch-up `maxLiveSyncPlaybackRate: 1.5`):** local Mac: Chromium 2.16 s, Firefox 2.33 s, Safari native 5.61 s (known gap). GitHub Linux: Chromium 2.18 s, Firefox 2.28 s, WebKit-with-hls.js 1.81 s. All numbers are ingest-to-glass shortly after startup; steady-state not yet measured.
 - **Closed with:** e2e **10/10**, workspace tests 63/63, clippy clean, cargo-deny ok, zero leaked processes. Browser: Chromium 2.4 s ingest-to-glass; WebKit ~6 s (known gap, HTTP/2).
 
 ## Batch 2 (launched 18 Sep 2026)

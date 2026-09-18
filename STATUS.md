@@ -117,7 +117,7 @@ Merged P (MoQ output: moq-native server + one origin, no relay needed; each stre
 
 **Verified:** caudal-moq 13/13 (native client over WebTransport with the fingerprint pinned: catalog avc1 + mp4a, groups open on IDR, 1 viewer counted, broadcast ends with the source); UI 39/39; **MoQ plays in Chromium through the UI: 97 frames decoded in 3 s, AAC audio bytes received**; cargo-deny ok; clippy clean.
 
-**Not verified:** MoQ in Firefox; AAC actually audible (bytes arrive; WebCodecs support varies by browser); MoQ ingest (out of scope).
+**MoQ in Firefox: verified** (18 Sep 2026): 90 frames decoded in 3 s, AAC audio bytes arriving, same as Chromium. **Not verified:** AAC actually audible (bytes arrive; WebCodecs support varies by browser); MoQ ingest (out of scope).
 
 ## Batch 5 (launched 18 Sep 2026): M6 MoQ output
 **Goal:** every live stream is also a Media over QUIC broadcast; a browser plays it over WebTransport with the `@moq/watch` player, no mkcert needed.

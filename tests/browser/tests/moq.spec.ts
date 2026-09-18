@@ -25,10 +25,10 @@ interface MoqFingerprint {
 
 test.describe("MoQ playback in a real browser", () => {
   test.skip(!haveFfmpeg(), "ffmpeg is not installed");
-  // WebKit (Safari) has no WebTransport implementation; Firefox's is behind
-  // a preference in some builds and untested here. MoQ is Chromium-only in
-  // this suite, matching the UI's own `window.WebTransport` gate.
-  test.skip(({ browserName }) => browserName !== "chromium", "MoQ needs WebTransport; only tested on Chromium here");
+  // Runs on Chromium and Firefox, which both have WebTransport (with
+  // serverCertificateHashes) and WebCodecs; verified 18 Sep 2026. WebKit /
+  // Safari has no WebTransport yet, matching the UI's `window.WebTransport` gate.
+  test.skip(({ browserName }) => browserName === "webkit", "MoQ needs WebTransport, which WebKit lacks");
 
   let server: CaudalServer;
   let publisher: FfmpegPublisher;
@@ -67,7 +67,7 @@ test.describe("MoQ playback in a real browser", () => {
     await server?.stop();
   });
 
-  test("plays over Media over QUIC from the stream page", async ({ page }) => {
+  test("plays over Media over QUIC from the stream page", async ({ page, browserName }) => {
     test.skip(
       moq === null,
       "GET /moq/fingerprint isn't available in this worktree yet — crates/caudal-moq (agent P) " +
@@ -106,7 +106,7 @@ test.describe("MoQ playback in a real browser", () => {
     const f0 = await frameCount();
     await page.waitForTimeout(3_000);
     const f1 = await frameCount();
-    console.log(`[chromium] MoQ decoded ${f1 - f0} video frames in 3 s`);
+    console.log(`[${browserName}] MoQ decoded ${f1 - f0} video frames in 3 s`);
     // 30fps source; a generous floor (10fps) so this isn't flaky on a slow
     // CI runner while still catching a real stall (0 or near-0 frames).
     expect(f1 - f0, "MoQ video playback stalled").toBeGreaterThanOrEqual(30);
@@ -122,11 +122,11 @@ test.describe("MoQ playback in a real browser", () => {
     });
     console.log(
       audioBytes > 0
-        ? `[chromium] MoQ audio decoding: ${audioBytes} bytes received`
-        : "[chromium] MoQ audio absent or not decoding (source is AAC; see moq.spec.ts comment)",
+        ? `[${browserName}] MoQ audio decoding: ${audioBytes} bytes received`
+        : `[${browserName}] MoQ audio absent or not decoding (source is AAC; see moq.spec.ts comment)`,
     );
 
     const jitter = await page.getByText(/ms jitter buffer/).first().textContent().catch(() => null);
-    console.log(`[chromium] UI jitter-buffer readout: ${jitter ?? "n/a"}`);
+    console.log(`[${browserName}] UI jitter-buffer readout: ${jitter ?? "n/a"}`);
   });
 });

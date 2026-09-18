@@ -224,7 +224,7 @@ repo re-checked by hand with crates.io and `gh api`.
 
 | Need | Crate / repo | License | Verdict |
 |---|---|---|---|
-| SCTE-35 parse/build | `scte35-splice` 2.1.0 (fishloa/rust-broadcast), needs rustc 1.95 | MIT OR Apache-2.0 | **use** for SCTE-35 passthrough → `EXT-X-DATERANGE` |
+| SCTE-35 parse/build | `scte35-splice` 2.1.0 (fishloa/rust-broadcast), needs rustc 1.95 | MIT OR Apache-2.0 | **used** (batch 9) in `crates/caudal-scte35`, pinned `=2.1.0` with `broadcast-common =9.3.0` (serde feature off); its types stay inside that crate. Raises the MSRV of anything linking it to 1.95 |
 | SCTE-35 (alternatives) | `scte35-reader` 0.16, `scte35` 0.2 | MIT/Apache, MIT | fallbacks |
 | RTMP push client (multistreaming) | `rtmp-rs` 0.6.0 (torresjeff), `RtmpPublisher`, RTMPS, E-RTMP | MIT | **evaluate first**; 8 stars, young; scuffle-rtmp is server-only |
 | RTMP push client, **chosen** (batch 8) | `rml_rtmp` =0.8.0 (KallDrexx), `ClientSession` | MIT | **used** in `caudal-restream`: sans-I/O, so our tokio + rustls transport wraps it; stale since 2023 but the client path is small and covered by `tests/loopback.rs` against `caudal-rtmp`. `rtmp-rs` was not benchmarked against it; revisit if `rml_rtmp` blocks E-RTMP features. |

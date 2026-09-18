@@ -23,7 +23,7 @@ MistServer's recurring bugs come from its design, not from typos:
 
 ## What Caudal adds that MistServer doesn't have
 
-1. **Media over QUIC (MoQ) + WebTransport**: requested in #292 and #288 and never open-sourced upstream. Built on `moq-lite` / `hang`.
+1. **Media over QUIC (MoQ) + WebTransport**: requested in #292 and #288 and never open-sourced upstream. Built on `moq-net` / `hang`.
 2. **Built-in ACME**: automatic Let's Encrypt certificates via `rustls-acme`. Upstream only proxies the HTTP-01 challenge to certbot.
 3. **Origin-edge clustering / load balancing**: requested in #190, open since 2023.
 4. **JWKS / OIDC auth** for publish, play and webhooks: #207, #275.

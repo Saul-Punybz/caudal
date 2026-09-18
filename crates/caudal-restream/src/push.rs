@@ -154,8 +154,8 @@ async fn push_frames(client: &mut RtmpClient, stream: &Arc<Stream>, status: &Arc
                     Event::End => return sent_any,
                 }
             }
-            pumped = client.pump() => {
-                if let Err(err) = pumped {
+            read = client.read_some() => {
+                if let Err(err) = async { client.process(read?).await }.await {
                     status.set_retrying(err);
                     return sent_any;
                 }

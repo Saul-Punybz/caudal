@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -40,3 +41,8 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# scuffle-rtmp 0.2.3 (latest) froze timestamps on Type 3 chunks that start a
+# new message. Patched copy with a regression test; see vendor/README.md.
+[patch.crates-io]
+scuffle-rtmp = { path = "vendor/scuffle-rtmp" }

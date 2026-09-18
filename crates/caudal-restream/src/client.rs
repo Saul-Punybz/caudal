@@ -201,15 +201,23 @@ impl RtmpClient {
         }
     }
 
-    /// Reads and processes whatever the peer has to say right now (pings,
-    /// acks, status changes). Returns `Err` when the connection is gone.
-    /// Meant to run concurrently with `publish_video`/`publish_audio` in a
-    /// `tokio::select!`, one read per call.
-    pub(crate) async fn pump(&mut self) -> Result<(), String> {
+    /// Waits for bytes from the peer (pings, acks, status changes) and
+    /// returns how many arrived; `Err` when the connection is gone. Only
+    /// reads, so it is cancel-safe inside `tokio::select!`. The caller then
+    /// passes the count to [`Self::process`] outside the `select!`, because
+    /// that step writes replies, and a write cancelled halfway would
+    /// corrupt the RTMP chunk stream.
+    pub(crate) async fn read_some(&mut self) -> Result<usize, String> {
         let n = self.io.read(&mut self.read_buf).await.map_err(io_err)?;
         if n == 0 {
             return Err("connection closed".to_owned());
         }
+        Ok(n)
+    }
+
+    /// Feeds the `n` bytes that [`Self::read_some`] read to the session and
+    /// writes any replies.
+    pub(crate) async fn process(&mut self, n: usize) -> Result<(), String> {
         let results = self.session.handle_input(&self.read_buf[..n]).map_err(|e| e.to_string())?;
         self.emit(results).await?;
         Ok(())

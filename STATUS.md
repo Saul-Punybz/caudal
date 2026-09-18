@@ -105,6 +105,12 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt`.
 
+## Batch 2 progress (18 Sep 2026)
+- **Merged:** F (rejected RTMP publishers are disconnected), E (Playwright: Chromium plays at 2.4 s ingest-to-glass; WebKit plays but at ~6 s, tracked as a known gap until HTTP/2), I (React + Material 3 UI embedded in the binary; release binary 3.0 MB).
+- **Fixed by orchestrator:** viewer counts (the HLS packager counted as a viewer; HLS players were not counted at all), UI icon size and headline weight.
+- **Stopped:** G (SRT). Its tests leaked `srt-live-transmit` processes that spin at 100% CPU after their input ends; five of them overheated the laptop. Work saved on branch `wip/batch2-srt` (not merged). To finish: spawn each ffmpeg | srt-live-transmit pipeline in its own process group, kill the group in a Drop guard (panics included), check `pgrep -f srt-live-transmit` is empty after every run. The orchestrator's e2e harness already does this (`Publisher::srt`).
+- **E2E:** 9/10; `srt_publish_plays_as_ll_hls` is red until G is finished.
+
 ## Batch 2 (launched 18 Sep 2026)
 **Goal:** a real browser plays Caudal, proven by a test; SRT is a second way in; the web UI shows live streams from the real API; rejected RTMP publishers get disconnected.
 

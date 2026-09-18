@@ -229,3 +229,11 @@ repo re-checked by hand with crates.io and `gh api`.
 | RTMP push client (multistreaming) | `rtmp-rs` 0.6.0 (torresjeff), `RtmpPublisher`, RTMPS, E-RTMP | MIT | **evaluate first**; 8 stars, young; scuffle-rtmp is server-only |
 | Origin-edge clustering | `xiu` (harlanc) | MIT | reference design only (last push Mar 2026) |
 | Forensic watermarking | `iwanders/spread_spectrum_watermarking` | BSD-3-Clause | not on crates.io, image demo from 2022; reference only |
+
+### Deeper check (18 Sep 2026, same day)
+
+- **`scte35-splice` 2.1.0**: parser **and builder**, `#![forbid(unsafe_code)]`, 102 tests incl. spec vectors, deps only serde/thiserror/libm. Risk: one author (fishloa, 1,057 of 1,057 commits), repo created Jun 2026, 1 star, renamed from `dvb-scte35` and at v2 within three months. Decision: use it pinned (`=2.1.0`) behind our own small `scte35` module so it can be swapped; `scte35-reader` (dholroyd, author of `mpeg2ts-reader`/`h264-reader`, parse-only) is the fallback. `mp4-emsg` 0.4.0 (MIT/Apache) carries the same cues in CMAF/DASH `emsg` boxes.
+- **RTMP push**: `rtmp-rs` 0.6.0 (MIT) first; fallback `rml_rtmp` 0.8.0 (MIT, 287K downloads, sans-IO client, last release 2023).
+- **Clustering**: better than xiu for us is **`moq-relay` 0.14.18** (MIT/Apache, same moq-dev family we already pin, released 17 Sep 2026): it has `cluster.rs`/`nodes.rs` for relay-to-relay fan-out. Plan for M10: origins publish over MoQ to a relay cluster, edges subscribe on demand; xiu's RTMP push/pull stays a reference for non-MoQ relays (we already have SRT push/pull, RTSP pull and RTMP push for that).
+- **Watermarking**: no video watermarking crate exists in Rust (crates.io search). The Rust repo Gemini named works on still images (BSD-3, 2022). The industry approach to forensic watermarking needs no per-frame DCT in the server: **A/B segment watermarking** — encode two variants that differ invisibly (transcode ladder), then build each viewer's playlist from a per-token A/B sequence. That is a packager feature Caudal can do in Rust; the pixel embedding can be an ffmpeg filter step in `caudal-transcode`. Visible watermark (ffmpeg overlay) first.
+- **DASH**: `dash-mpd` 0.20.5 (MIT, active) for the MPD.

@@ -126,7 +126,7 @@ Release binary with `[tls]` and a mkcert certificate for localhost; ffmpeg RTMP 
 - `curl --http2` without `-k`: **HTTP/2, 200** (the mkcert CA is trusted).
 - Apple `mediastreamvalidator` over HTTPS: multivariant + LIVE, 0 parse errors, avc1 + aac, **-50120 gone**. Only -50125 remains (needs a second rendition, M11).
 - **Safari's native player (Playwright WebKit on macOS, 30 s): steady ingest-to-glass 0.52 s** (was 5.4–6 s over HTTP/1.1). Confirms the hypothesis: Apple's player only stays in low-latency mode over HTTP/2.
-- Follow-up: run the browser suite's WebKit project over HTTPS (self-signed rcgen cert + `ignoreHTTPSErrors`) so CI measures this too and the known-gap branch can go.
+- Browser suite now runs WebKit over HTTPS (batch 6 T, self-signed openssl cert, `ignoreHTTPSErrors` on the webkit project). **Finding: Safari's native player over HTTP/2 is bimodal.** In 6 runs it joined either in low-latency mode (0.41–0.85 s) or in normal mode (4.07–4.36 s) and stayed there. Tests guard < 5 s and annotate the normal-mode joins. **Suspected cause: the missing EXT-X-RENDITION-REPORT (-50125)**; to test, add a second rendition (M11) or a dummy second variant and rerun 10 times.
 
 ## Batch 5 result (18 Sep 2026): M6 MoQ
 Merged P (MoQ output: moq-native server + one origin, no relay needed; each stream a `hang` broadcast via moq-mux, H.264/H.265 + AAC/Opus; self-signed P-256 cert, 13-day validity, rotated every 6 days live; `/moq/fingerprint`; viewer counts from moq-net stats; `?jwt=` auth per path) and Q (UI: 3-way LL-HLS / WebRTC / MoQ toggle with `@moq/watch` 0.5.4 rendering to canvas, lazy chunk ≈ 123 KB gzip; Outputs rows; Playwright test).

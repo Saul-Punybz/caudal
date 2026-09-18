@@ -188,9 +188,12 @@ test.describe("Caudal LL-HLS in a real browser", () => {
     // Linux WebKit (Playwright) uses hls.js instead and has no native player, so
     // hlsInstanceExposed=true and these code paths share the same assertion.
     if (!metrics.hlsInstanceExposed) {
-      // Native HLS over HTTPS/HTTP/2: startup may include buffering, assert < 5 s.
-      // Steady-state (measured in steady.spec.ts) should be < 3 s.
-      expect(ingestToGlass, "Native HLS startup latency regressed beyond 5 s").toBeLessThan(5);
+      // Native HLS over HTTPS/HTTP/2 is bimodal (0.4-0.85 s or 4.1-4.4 s, see
+      // steady.spec.ts). Guard the upper mode; annotate the lower one's miss.
+      if (ingestToGlass >= 3) {
+        test.info().annotations.push({ type: "known-gap", description: `native HLS joined in normal mode: ${ingestToGlass.toFixed(2)} s` });
+      }
+      expect(ingestToGlass, "Native HLS latency regressed beyond both known modes").toBeLessThan(5);
     } else {
       // hls.js engine (Chromium, Firefox, Linux WebKit): assert < 3 s for startup.
       expect(ingestToGlass).toBeLessThan(3);

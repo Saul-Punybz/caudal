@@ -1,6 +1,6 @@
 # STATUS — Caudal
 
-**Last updated:** 18 Sep 2026
+**Last updated:** 18 Sep 2026 (batch 1 closed)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
@@ -32,11 +32,11 @@ OBS publishes RTMP to one `caudal` binary and a browser plays it as LL-HLS with 
 | # | Piece | State | Size |
 |---|---|---|---|
 | 1 | Live buffer, media model (`caudal-core`) | DONE | — |
-| 2 | RTMP ingest → `Publisher` (`caudal-rtmp`) | TODO | 1 batch |
-| 3 | LL-HLS packager + `/play/{name}` page (`caudal-hls`) | TODO | 1 batch |
-| 4 | Server shell: TOML config, `/api/v1/streams`, `/metrics`, `/healthz`, graceful shutdown (`caudal`) | TODO | 1 batch |
-| 5 | Wiring in `main.rs`, CI, `FROM scratch` Dockerfile | TODO | orchestrator + ½ batch |
-| 6 | Open with OBS, watch in Safari/Chrome, measure latency | TODO | close of batch 1 |
+| 2 | RTMP ingest → `Publisher` (`caudal-rtmp`) | DONE | — |
+| 3 | LL-HLS packager + `/play/{name}` page (`caudal-hls`) | DONE (browser playback unconfirmed, see below) | — |
+| 4 | Server shell: TOML config, `/api/v1/streams`, `/metrics`, `/healthz`, graceful shutdown (`caudal`) | DONE | — |
+| 5 | Wiring in `main.rs`, CI, `FROM scratch` Dockerfile | DONE (CI not yet run on GitHub; Docker not built: daemon off) | — |
+| 6 | Watch in a browser, measure latency | PARTIAL | batch 2 |
 
 ## Not built in batch 1
 SRT, RIST, WebRTC, MoQ, auth/JWT, ACME, React UI, recording, clustering, transcoding, MistServer import, `hang` integration. Each has its milestone in `PLAN.md`.
@@ -77,7 +77,30 @@ Names below are fixed. Agents consume them; they do not invent new ones.
 2. **Contract:** the fixed names checked in code: agent A's config parser rejects unknown keys; routes exist.
 3. **End-to-end:** `crates/caudal/tests/e2e.rs` + `tests/support/mod.rs`, written 18 Sep before batch 1. Drives the real binary with ffmpeg over RTMP, asserts the API, the LL-HLS playlist tags, blocking reload, fMP4 parts, the `/play` page, and runs Apple's `mediastreamvalidator` when installed. Run: `CAUDAL_E2E=1 cargo test -p caudal --test e2e -- --test-threads=1`. **Red today (5/5 fail: binary has no `/healthz`)**; batch 1 is done only when it is green and step 6 (a person with OBS) confirms it.
 
+## Batch 1 result (closed 18 Sep 2026)
+Merged A (shell), B (RTMP, on scuffle-rtmp 0.2.3 + scuffle-flv), C (LL-HLS on mp4-atom 0.15), D (CI/Docker/deny).
+
+**Verified**
+- `cargo test --workspace`: 47 passed, 0 failed. `cargo clippy -D warnings`: clean. `cargo deny check`: advisories, bans, licenses, sources ok.
+- E2E harness: **5/5 green**, stable over 4 consecutive runs (`CAUDAL_E2E=1 cargo test -p caudal --test e2e -- --test-threads=1`).
+- Release binary: **2.2 MB**. RSS with one live 720p stream: **13.6 MB**.
+- Live run of the release binary with ffmpeg publishing 1280x720 H.264 + AAC over RTMP: API lists the stream and tracks; ffprobe reads the LL-HLS playlist; a 10 s live decode with ffmpeg has zero errors.
+- Server-side latency (ingest → newest part published): median 0.11 s, max 0.20 s over 10 samples. Plus PART-HOLD-BACK 0.6 s.
+
+**Not verified (said aloud)**
+- **Playback in a real browser.** Chrome under automation keeps the tab `hidden` and throttles timers, so hls.js never attaches (same for agent C). Needs a person to open `http://127.0.0.1:8080/play/demo` once, or a headless-Chrome check in CI (batch 2).
+- **Glass-to-glass latency.** Estimated ~1–1.5 s from the numbers above; not measured end to end.
+- **Apple mediastreamvalidator.** Not installed on this Mac; the macOS CI job will run it.
+- **CI on GitHub** has not run yet (repo is private; first push to trigger it is this commit). **Docker image** not built (Docker daemon off).
+
+**Known issues from the agents' notes**
+- Wrong RTMP app / busy stream name: no stream is created, but the connection is not closed; scuffle-rtmp's error type has no custom variant (`crates/caudal-rtmp/NOTES.md`).
+- No integration test for two publishers racing for one name.
+- `fps` is null in the API for RTMP sources (only filled from onMetaData when present).
+
 ## Next
+Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt`.
+
 **Batch 1 launched 18 Sep 2026** from commit 00f35c0: A (Sonnet), B (Sonnet), C (Opus), D (Haiku), each in its own worktree. Orchestrator merges branch by branch, running the e2e harness between merges. Step 6 is automated (ffmpeg publishes, Chrome opens `/play`, screenshot with the latency number); OBS is optional.
 
 ## Decisions

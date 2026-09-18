@@ -88,9 +88,9 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 > before writing our own packagers. If it holds, M3 and M6 shrink to integration
 > work and `caudal-core` becomes the DVR/failover layer around a hang broadcast.
 
-- [ ] **M1: Server shell.** `caudal` binary, TOML config, HTTP API, `/metrics`, graceful shutdown.
-- [ ] **M2: RTMP ingest.** OBS or ffmpeg publishing into the ring.
-- [ ] **M3: LL-HLS / CMAF output.** First playable path: OBS → Caudal → browser.
+- [x] **M1: Server shell.** `caudal` binary, TOML config, HTTP API, `/metrics`, graceful shutdown.
+- [x] **M2: RTMP ingest.** OBS or ffmpeg publishing into the ring.
+- [x] **M3: LL-HLS / CMAF output.** (browser playback still to confirm) First playable path: OBS → Caudal → browser.
 - [ ] **M4: SRT** in and out.
 - [ ] **M5: WebRTC.** WHIP in, WHEP out.
 - [ ] **M6: MoQ / WebTransport.**

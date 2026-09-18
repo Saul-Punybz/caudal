@@ -91,7 +91,7 @@ Merged A (shell), B (RTMP, on scuffle-rtmp 0.2.3 + scuffle-flv), C (LL-HLS on mp
 - **Playback in a real browser.** Chrome under automation keeps the tab `hidden` and throttles timers, so hls.js never attaches (same for agent C). Needs a person to open `http://127.0.0.1:8080/play/demo` once, or a headless-Chrome check in CI (batch 2).
 - **Glass-to-glass latency.** Estimated ~1–1.5 s from the numbers above; not measured end to end.
 - **Apple mediastreamvalidator.** Not installed on this Mac; the macOS CI job will run it.
-- **CI on GitHub** has not run yet (repo is private; first push to trigger it is this commit). **Docker image** not built (Docker daemon off).
+- **CI on GitHub: green** (18 Sep 2026): test, deny, validate-hls (macOS), static builds for x86_64 and aarch64 musl. The first run caught a race in the e2e blocking-reload check on slow runners; the check now asks one segment ahead and verifies the answer. **Docker image** not built (Docker daemon off).
 
 **Known issues from the agents' notes**
 - Wrong RTMP app / busy stream name: no stream is created, but the connection is not closed; scuffle-rtmp's error type has no custom variant (`crates/caudal-rtmp/NOTES.md`).

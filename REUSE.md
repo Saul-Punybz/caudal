@@ -219,3 +219,13 @@ repo re-checked by hand with crates.io and `gh api`.
 - `moq-dev/moq` `moq-transcode` / `moq-video`: per-rung ABR over hang broadcasts with NVENC / VideoToolbox / Media Foundation / openh264. Only reusable as-is if Caudal's internal model becomes `hang`; otherwise reference `rs/moq-transcode/src/{ladder,rung,pipeline}.rs`.
 - Avoid: `fdk-aac` (restrictive libfdk license), `opus`/`audiopus` (C bindings).
 - **Plan:** `ffmpeg-sidecar` for H.264/AAC ladders, VideoToolbox on Macs, `rav1e` for AV1.
+
+## Checked 18 Sep 2026 (Gemini suggestions for batch 8+)
+
+| Need | Crate / repo | License | Verdict |
+|---|---|---|---|
+| SCTE-35 parse/build | `scte35-splice` 2.1.0 (fishloa/rust-broadcast), needs rustc 1.95 | MIT OR Apache-2.0 | **use** for SCTE-35 passthrough → `EXT-X-DATERANGE` |
+| SCTE-35 (alternatives) | `scte35-reader` 0.16, `scte35` 0.2 | MIT/Apache, MIT | fallbacks |
+| RTMP push client (multistreaming) | `rtmp-rs` 0.6.0 (torresjeff), `RtmpPublisher`, RTMPS, E-RTMP | MIT | **evaluate first**; 8 stars, young; scuffle-rtmp is server-only |
+| Origin-edge clustering | `xiu` (harlanc) | MIT | reference design only (last push Mar 2026) |
+| Forensic watermarking | `iwanders/spread_spectrum_watermarking` | BSD-3-Clause | not on crates.io, image demo from 2022; reference only |

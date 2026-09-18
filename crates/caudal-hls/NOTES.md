@@ -26,8 +26,17 @@
 
 ## Known gaps
 - Only one video (H.264/H.265) + one audio (AAC or Opus) track. AV1 is ignored.
-- No `EXT-X-SKIP`/delta playlists, no `EXT-X-RENDITION-REPORT` (single rendition).
+- No `EXT-X-SKIP`/delta playlists.
 - Republishing a name restarts msn at 0.
+
+## Adaptive bitrate / multi-rendition (batch 7, agent W, 18 Sep 2026)
+- No new state: a rendition is just a stream whose name is `<root>+<label>` (the transcoder, agent V, publishes those); `caudal-hls` only ever reasons about names it already has an `Entry` for in `Hls::streams`.
+- `family_root(name)`: split on the first `+`. `master.m3u8` for a name with no `+` is a family root and aggregates; a name that already has a `+` (a rendition's own master) stays single-variant, unaggregated, exactly as before ABR existed — so a player that goes straight to `main+480p/master.m3u8` never sees `main` or `main+720p`.
+- `Packager::variant_attrs()` replaces the old single-shape `multivariant()`: it returns the `CODECS`/`RESOLUTION`/`FRAME-RATE`/peak+average `BANDWIDTH` for one rendition, or `None` before tracks are known. `master()` in lib.rs waits on the *requested* entry's `variant_attrs()` (same blocking semantics as before) and then takes one *snapshot* of whichever `<root>+*` siblings are live and ready right now — it does not wait for siblings, so a rendition that has not announced tracks yet is simply missing from that response, not blocking the response.
+- Average bandwidth is the mean bits/sec over every *completed* segment in the window (not just the open one); `None` until at least one segment has completed, so `AVERAGE-BANDWIDTH` never appears on a brand-new stream.
+- `#EXT-X-RENDITION-REPORT` is appended (not built into `Packager::playlist()`) by `rendition_reports()` in lib.rs, once per *other* live member of the same family that has produced at least one part — never for `name` itself (Apple -50099) and never for an ended sibling (nothing to switch to). A stream with no siblings gets no reports at all, same shape as before ABR.
+- URIs are always `../{name}/index.m3u8`, including a variant's own entry in its family's master: since the master lives at `/hls/{requested-name}/master.m3u8`, `../` cancels that directory and `{name}/` re-enters it, so the same relative form resolves correctly whether `{name}` is the root, a sibling, or the request target itself. `with_token` already walks every `URI="..."` attribute and bare URI line generically, so both the new master's plain URI lines and the rendition-report `URI="..."` attribute get the token for free — no changes needed there.
+- Verified against Apple's `mediastreamvalidator` (`crates/caudal-hls/tests/multi_rendition.rs`, real TCP socket, two renditions of one family): **-50125 (missing rendition report) is gone** once a second rendition exists. -50120 (no HTTP/2) remains, as expected over plain HTTP (M7 territory, unrelated to ABR). New, not investigated further (out of this batch's scope): occasionally -50100 "stale playlist" on a short-lived synthetic feed — likely the validator's plain (non-blocking) reload cadence outrunning a fixture that loops a 4 s clip in real time, not a shape defect (the same master/media playlists pass the in-process token/ordering/never-self-report assertions in `src/tests.rs`).
 
 ## Opus (batch 4, agent N, 18 Sep 2026)
 - `Packager::set_tracks` now also accepts an audio track with `Codec::Opus` whose `init` parses as a valid `OpusHead` (magic, length, mapping family 0). `codec_string` reports it as `CODECS="opus"` (RFC 6381 / common practice: no profile suffix, unlike `mp4a.40.x`).

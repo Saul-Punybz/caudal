@@ -26,6 +26,7 @@ caudal-ui = { path = "crates/caudal-ui", version = "0.1.0" }
 caudal-tls = { path = "crates/caudal-tls", version = "0.1.0" }
 caudal-auth = { path = "crates/caudal-auth", version = "0.1.0" }
 caudal-webrtc = { path = "crates/caudal-webrtc", version = "0.1.0" }
+caudal-moq = { path = "crates/caudal-moq", version = "0.1.0" }
 
 [profile.release]
 lto = "fat"

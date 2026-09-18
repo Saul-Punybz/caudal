@@ -194,8 +194,27 @@ async fn run(cfg: config::Config) -> ExitCode {
         },
     );
 
+    // MoQ failing to start (e.g. its UDP port is taken) disables MoQ only.
+    let moq_router = match cfg.moq.to_moq_config().expect("validated") {
+        Some(moq) => {
+            let bind = moq.bind;
+            match caudal_moq::start(registry.clone(), moq) {
+                Ok(svc) => {
+                    tracing::info!(%bind, "moq listening (QUIC / WebTransport)");
+                    svc.router()
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, %bind, "moq output disabled");
+                    axum::Router::new()
+                }
+            }
+        }
+        None => axum::Router::new(),
+    };
+
     // The UI router is a catch-all fallback, so it goes last.
-    let app = api::router(state.clone()).merge(hls_router).merge(webrtc_router).merge(caudal_ui::router());
+    let app =
+        api::router(state.clone()).merge(hls_router).merge(webrtc_router).merge(moq_router).merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {
         Ok(l) => l,

@@ -78,7 +78,7 @@ export async function startCaudal(): Promise<CaudalServer> {
     );
   }
 
-  const [httpPort, rtmpPort, srtPort, webrtcPort] = await Promise.all([freeTcpPort(), freeTcpPort(), freeUdpPort(), freeUdpPort()]);
+  const [httpPort, rtmpPort, srtPort, webrtcPort, moqPort] = await Promise.all([freeTcpPort(), freeTcpPort(), freeUdpPort(), freeUdpPort(), freeUdpPort()]);
 
   const dir = await mkdtemp(join(tmpdir(), "caudal-browser-"));
   const cfgPath = join(dir, "caudal.toml");
@@ -95,6 +95,9 @@ export async function startCaudal(): Promise<CaudalServer> {
     "",
     "[webrtc]",
     `udp_bind = "127.0.0.1:${webrtcPort}"`,
+    "",
+    "[moq]",
+    `bind = "127.0.0.1:${moqPort}"`,
     "",
     "[hls]",
     "part_ms = 200",

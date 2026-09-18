@@ -105,6 +105,21 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
 
+## Batch 5 (launched 18 Sep 2026): M6 MoQ output
+**Goal:** every live stream is also a Media over QUIC broadcast; a browser plays it over WebTransport with the `@moq/watch` player, no mkcert needed.
+
+| Agent | Model | Owns | Done when |
+|---|---|---|---|
+| P · MoQ | **Opus** | `crates/caudal-moq/**` | `start(registry, MoqConfig)` binds QUIC, embeds moq-relay (or moq-native server + origin), publishes each registry stream as a `hang` broadcast named `<stream>` via `moq-mux` `Producer` (avcC → catalog `description`, Opus/AAC audio); self-signed ECDSA cert < 14 days, rotated; `GET /moq/fingerprint`; Rust test subscribes with a moq-native client and receives a keyframe |
+| Q · player | Sonnet | `ui/app/**`, `crates/caudal-ui/dist/**`, `tests/browser/tests/moq.spec.ts` | "MoQ" in the player's protocol toggle using `@moq/watch` (fingerprint from `/moq/fingerprint`); Playwright test plays a stream in Chromium over WebTransport |
+| Orchestrator | Opus | wiring (done), e2e, merge | `/moq/fingerprint` e2e, merge, cool-down between heavy runs |
+
+**Fixed names:** `caudal_moq::{start, MoqConfig { bind, cert }, MoqCert::{Files{cert,key}, SelfSigned{hosts}}, MoqService::router}`; route `GET /moq/fingerprint` → `{"url": "https://host:port", "fingerprint": "<sha-256 hex>" | null}`; broadcast name = stream name; config `[moq] enabled = true`, `bind = "0.0.0.0:4443"`, `cert`, `key`, `hosts`.
+
+**Pins:** moq-net 0.2.22, hang 0.20.13, moq-mux 0.9.16, moq-native 0.19.19, moq-relay 0.14.18 (all 17 Sep 2026), `@moq/watch` 0.5.4 — exact `=` versions.
+
+**Out of scope:** MoQ ingest (publishing into Caudal over MoQ), clustering (M10). **Budget:** P ≈ $5, Q ≈ $3.5, orchestrator ≈ $6, a third held back ⇒ **≈ $20**. **Machine rule:** one heavy run at a time; no release builds while tests run.
+
 ## Batch 4 result (18 Sep 2026): M5 WebRTC
 Merged M (str0m engine: WHIP ingest, WHEP playback, one UDP socket, ICE-lite, PLI, token gate, CORS; pure-Rust crypto backend), N (Opus in LL-HLS: `Opus`/`dOps`, TOC durations, `CODECS="opus"`), O (UI: LL-HLS/WebRTC toggle, WHEP player with buffer readout, `/publish` webcam page over WHIP, play tokens in the UI).
 

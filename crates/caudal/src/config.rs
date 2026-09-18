@@ -137,6 +137,51 @@ pub struct Config {
     pub auth: AuthSection,
     pub hooks: HooksSection,
     pub webrtc: WebRtcSection,
+    pub moq: MoqSection,
+}
+
+fn default_moq_bind() -> SocketAddr {
+    "0.0.0.0:4443".parse().unwrap()
+}
+
+/// Media over QUIC output over WebTransport. Without `cert`/`key` it uses a
+/// short-lived self-signed certificate that browsers accept by fingerprint.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct MoqSection {
+    pub enabled: bool,
+    #[serde(default = "default_moq_bind")]
+    pub bind: SocketAddr,
+    pub cert: Option<std::path::PathBuf>,
+    pub key: Option<std::path::PathBuf>,
+    /// Hostnames for the self-signed certificate (default: localhost).
+    pub hosts: Vec<String>,
+}
+
+impl Default for MoqSection {
+    fn default() -> Self {
+        Self { enabled: true, bind: default_moq_bind(), cert: None, key: None, hosts: Vec::new() }
+    }
+}
+
+impl MoqSection {
+    pub fn to_moq_config(&self) -> Result<Option<caudal_moq::MoqConfig>, String> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let cert = match (&self.cert, &self.key) {
+            (Some(c), Some(k)) => caudal_moq::MoqCert::Files { cert: c.clone(), key: k.clone() },
+            (None, None) => caudal_moq::MoqCert::SelfSigned {
+                hosts: if self.hosts.is_empty() {
+                    vec!["localhost".into(), "127.0.0.1".into()]
+                } else {
+                    self.hosts.clone()
+                },
+            },
+            _ => return Err("[moq] needs both `cert` and `key`, or neither".into()),
+        };
+        Ok(Some(caudal_moq::MoqConfig { bind: self.bind, cert }))
+    }
 }
 
 fn default_webrtc_udp() -> SocketAddr {
@@ -280,6 +325,7 @@ impl Config {
         self.tls.to_tls_config()?;
         self.auth.to_auth_config()?;
         self.hooks.to_hooks_config()?;
+        self.moq.to_moq_config()?;
         Ok(())
     }
 }

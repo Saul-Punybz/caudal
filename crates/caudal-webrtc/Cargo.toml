@@ -12,3 +12,13 @@ caudal-core.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+str0m = { version = "0.23.1", default-features = false, features = ["rust-crypto"] }
+scuffle-h264 = "0.2.2"
+bytes.workspace = true
+mp4-atom = "0.15"
+if-addrs = "0.15"
+getrandom = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "process"] }
+ureq = { version = "3", default-features = false }

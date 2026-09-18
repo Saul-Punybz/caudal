@@ -106,13 +106,30 @@ async fn run(cfg: config::Config) -> ExitCode {
         }
     });
 
+    let srt_cfg = caudal_srt::SrtConfig {
+        bind: cfg.srt.bind,
+        latency_ms: cfg.srt.latency_ms,
+        passphrase: cfg.srt.passphrase.clone(),
+        buffer: cfg.buffer.to_buffer_config(),
+    };
+    tracing::info!(bind = %srt_cfg.bind, "starting srt listener");
+    let srt_handle = tokio::spawn(caudal_srt::serve(srt_cfg, registry.clone()));
+    tokio::spawn(async move {
+        match srt_handle.await {
+            Ok(Ok(())) => tracing::info!("srt listener stopped"),
+            Ok(Err(e)) => tracing::error!(error = %e, "srt listener failed"),
+            Err(join_err) => tracing::error!(error = %join_err, "srt task panicked"),
+        }
+    });
+
     let hls_router = caudal_hls::router(
         registry.clone(),
         caudal_hls::HlsConfig { part_ms: cfg.hls.part_ms, segment_ms: cfg.hls.segment_ms },
     );
 
     let state = api::AppState::new(registry.clone());
-    let app = api::router(state.clone()).merge(hls_router);
+    // The UI router is a catch-all fallback, so it goes last.
+    let app = api::router(state.clone()).merge(hls_router).merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {
         Ok(l) => l,

@@ -21,6 +21,8 @@ serde_json = "1"
 caudal-core = { path = "crates/caudal-core", version = "0.1.0" }
 caudal-rtmp = { path = "crates/caudal-rtmp", version = "0.1.0" }
 caudal-hls = { path = "crates/caudal-hls", version = "0.1.0" }
+caudal-srt = { path = "crates/caudal-srt", version = "0.1.0" }
+caudal-ui = { path = "crates/caudal-ui", version = "0.1.0" }
 
 [profile.release]
 lto = "fat"

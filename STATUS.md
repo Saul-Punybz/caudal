@@ -105,6 +105,21 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt`.
 
+## Batch 2 (launched 18 Sep 2026)
+**Goal:** a real browser plays Caudal, proven by a test; SRT is a second way in; the web UI shows live streams from the real API; rejected RTMP publishers get disconnected.
+
+| Agent | Model | Owns | Done when |
+|---|---|---|---|
+| E · browser | Sonnet | `tests/browser/**`, `.github/workflows/browser.yml` | Playwright (Chromium + WebKit) opens `/play/e2e` against the real binary with ffmpeg publishing; video `readyState ≥ 3`, `currentTime` advances, hls.js latency and ingest-to-glass (`Date.now() - playingDate`) reported and under 3 s |
+| F · RTMP reject | Sonnet | `crates/caudal-rtmp/**` | wrong app and busy name close the TCP connection within 1 s; race test for two publishers on one name |
+| G · SRT | Sonnet | `crates/caudal-srt/**` | `srt-live-transmit` → `srt://…?streamid=publish/test` appears in `/api/v1/streams` with H.264 + AAC and plays as LL-HLS; AES passphrase works; wrong passphrase rejected. TS demux: moq-mux's TS container if usable without a hang broadcast, else `mpeg2ts` |
+| I · UI | Sonnet | `ui/app/**`, `crates/caudal-ui/dist/**` | React + Vite + TS + Tailwind with `ui/theme/tokens.css`; Overview and Stream detail per the mockups, fed by `/api/v1/streams` (polling 1 s); `/play` embedded; `npm run build` writes into `crates/caudal-ui/dist/` |
+| Orchestrator | Opus | root `Cargo.toml`, `crates/caudal/**` (config, main, e2e), `crates/caudal-core/**`, `ci.yml`, `justfile`, STATUS | merges, adds SRT to e2e, wires `just ui` |
+
+**Fixed names (in code at commit below):** `caudal_srt::serve(SrtConfig { bind, latency_ms, passphrase, buffer }, registry)`; config `[srt] bind = "0.0.0.0:9000"`, `latency_ms = 120`, `passphrase` (optional); stream id `publish/<name>` or `#!::r=<name>,m=publish`; `caudal_ui::router()` merged last as the fallback, serving `crates/caudal-ui/dist/` at `/`.
+
+**Budget, said aloud:** E ≈ $2.5, F ≈ $1.5, G ≈ $4, I ≈ $4 → ≈ $12 in agents + ≈ $8 orchestrator ≈ $20, plus a third held back ⇒ **≈ $30 API-price equivalent** (token equivalence on the $100 membership, not a charge). **Out of scope:** WebRTC, MoQ, auth, TLS, recording, clustering, `moq-mux` beyond the TS demux question.
+
 **Batch 1 launched 18 Sep 2026** from commit 00f35c0: A (Sonnet), B (Sonnet), C (Opus), D (Haiku), each in its own worktree. Orchestrator merges branch by branch, running the e2e harness between merges. Step 6 is automated (ffmpeg publishes, Chrome opens `/play`, screenshot with the latency number); OBS is optional.
 
 ## Decisions

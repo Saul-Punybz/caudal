@@ -1,0 +1,12 @@
+[package]
+name = "caudal-ui"
+description = "The Caudal web UI, embedded in the binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum.workspace = true
+rust-embed = { version = "8", features = ["mime-guess"] }

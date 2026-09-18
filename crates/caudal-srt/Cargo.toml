@@ -1,0 +1,13 @@
+[package]
+name = "caudal-srt"
+description = "SRT ingest (MPEG-TS over SRT) for Caudal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true

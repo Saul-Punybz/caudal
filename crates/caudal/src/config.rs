@@ -20,6 +20,14 @@ fn default_rtmp_app() -> String {
     "live".to_string()
 }
 
+fn default_srt_bind() -> SocketAddr {
+    "0.0.0.0:9000".parse().unwrap()
+}
+
+fn default_srt_latency_ms() -> u32 {
+    120
+}
+
 fn default_part_ms() -> u32 {
     200
 }
@@ -64,6 +72,23 @@ impl Default for RtmpSection {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct SrtSection {
+    #[serde(default = "default_srt_bind")]
+    pub bind: SocketAddr,
+    #[serde(default = "default_srt_latency_ms")]
+    pub latency_ms: u32,
+    /// AES passphrase callers must use; none means unencrypted.
+    pub passphrase: Option<String>,
+}
+
+impl Default for SrtSection {
+    fn default() -> Self {
+        Self { bind: default_srt_bind(), latency_ms: default_srt_latency_ms(), passphrase: None }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct HlsSection {
@@ -105,6 +130,7 @@ impl BufferSection {
 pub struct Config {
     pub server: ServerSection,
     pub rtmp: RtmpSection,
+    pub srt: SrtSection,
     pub hls: HlsSection,
     pub buffer: BufferSection,
 }

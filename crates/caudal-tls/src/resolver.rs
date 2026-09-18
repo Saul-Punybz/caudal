@@ -1,6 +1,7 @@
 //! `CertSource::Files`: a certificate resolver backed by PEM files on disk,
 //! reloaded when either file's mtime changes.
 
+use rustls::pki_types::pem::PemObject;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -93,7 +94,9 @@ fn load_certified_key(cert_path: &Path, key_path: &Path) -> io::Result<Certified
     let key_bytes = std::fs::read(key_path)
         .map_err(|e| io::Error::new(e.kind(), format!("reading {}: {e}", key_path.display())))?;
 
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_bytes.as_slice())
+    // PEM parsing from rustls-pki-types; rustls-pemfile is unmaintained
+    // (RUSTSEC-2025-0134) and was folded into pki-types by the rustls team.
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_bytes)
         .collect::<Result<_, _>>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parsing {}: {e}", cert_path.display())))?;
     if certs.is_empty() {
@@ -103,11 +106,12 @@ fn load_certified_key(cert_path: &Path, key_path: &Path) -> io::Result<Certified
         ));
     }
 
-    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_bytes.as_slice())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parsing {}: {e}", key_path.display())))?
-        .ok_or_else(|| {
+    let key: PrivateKeyDer<'static> = PrivateKeyDer::from_pem_slice(&key_bytes).map_err(|e| match e {
+        rustls::pki_types::pem::Error::NoItemsFound => {
             io::Error::new(io::ErrorKind::InvalidData, format!("{} contains no private key", key_path.display()))
-        })?;
+        }
+        e => io::Error::new(io::ErrorKind::InvalidData, format!("parsing {}: {e}", key_path.display())),
+    })?;
 
     let provider = rustls::crypto::ring::default_provider();
     CertifiedKey::from_der(certs, key, &provider).map_err(|e| {

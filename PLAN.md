@@ -64,7 +64,7 @@ Picked from a crates.io survey on 17 Sep 2026. All MIT or Apache-2.0 except wher
 | Area | Crate | Note |
 |---|---|---|
 | RTMP | `scuffle-rtmp` + `scuffle-flv` + `scuffle-transmuxer` (fallback `rml_rtmp`) | shortest path to fMP4 |
-| SRT | `srt-tokio` 0.4 | pure Rust but says "not production ready". Risk: fall back to libsrt over FFI behind a feature flag |
+| SRT | `srt-tokio` 0.4 | pure Rust but says "not production ready". Risk: finish it upstream or port gosrt, in Rust |
 | WebRTC / WHIP / WHEP | `str0m` 0.23 | sans-I/O |
 | MP4 / CMAF | `mp4-atom` 0.15 | |
 | MPEG-TS | `mpeg2ts` 0.6 | |
@@ -74,7 +74,7 @@ Picked from a crates.io survey on 17 Sep 2026. All MIT or Apache-2.0 except wher
 | HTTP / TLS / ACME | `axum`, `rustls`, `rustls-acme` | |
 | Metrics | `metrics` + `metrics-exporter-prometheus` | |
 | RTSP client | `retina` | no Rust RTSP **server** exists; we write it |
-| RIST | `librist-sys` (BSD-2, C) | no pure-Rust RIST exists; feature flag |
+| RIST | written in Rust (ported from libRIST) | no pure-Rust RIST exists |
 
 Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/Apache).
 
@@ -100,4 +100,4 @@ not being ported.
 
 - Measured, not claimed: every "faster / smaller" claim comes with a benchmark against MistServer on the same machine.
 - Every parser gets a fuzz target before it touches the network.
-- `unsafe` only inside FFI crates, never in `caudal-core`.
+- 100% Rust: no C or Go linked. `unsafe` needs a written justification and never appears in `caudal-core`.

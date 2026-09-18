@@ -60,13 +60,30 @@ No usable Rust version exists for these. All three Go sources are MIT, so portin
 | MoQ player | `@moq/watch` (from moq-dev/moq) | MIT OR Apache-2.0 |
 | WebRTC player | the browser's native WebRTC (WHEP) | — |
 
-## What nobody has built: we write it
+## What doesn't exist in Rust: we write it in Rust
 
-- LL-HLS packager (on top of `mp4-atom` + `m3u8-rs`)
-- RTSP server (ported from gortsplib)
-- JWKS fetch-and-cache (small, on top of `jsonwebtoken`)
-- MistServer config import
-- The live buffer: **already written** (`caudal-core`). We keep it and align its vocabulary with MoQ's track/group model so MoQ output is direct.
+Decision (17 Sep 2026): everything in Rust. No C or Go linked. The Go and C
+sources above are read as specifications only.
+
+| # | Piece | Why we write it | Size |
+|---|---|---|---|
+| 1 | **LL-HLS packager** (parts, blocking reload, preload hints) | no Rust crate does the server side | large |
+| 2 | **RTSP server** | Rust only has clients (`retina`); port from gortsplib | large |
+| 3 | **RIST** | no pure-Rust implementation; port from libRIST (C, BSD-2) | large |
+| 4 | **Production-grade SRT** | `srt-tokio` exists but is not production ready and stale since 2024; finish it upstream or port from gosrt | medium–large |
+| 5 | **Clustering for RTMP/HLS/SRT/WebRTC** | `moq-relay` only clusters MoQ; glue on chitchat + hashring | medium |
+| 6 | **MistServer config import** | nobody has it | small |
+| 7 | **JWKS cache** | existing crates are stale | small |
+| 8 | **ACME cert shared with QUIC** | rustls-acme only covers HTTP | small |
+| 9 | **LL-HLS tags in m3u8-rs** | missing; contribute upstream | small |
+| 10 | **Opus header parsing, AV1 gaps** | only a 2020 crate / young crate | small |
+| — | The live buffer | **already written** (`caudal-core`) | done |
+
+**The one honest exception: transcoding.** There is no production-grade
+pure-Rust H.264/HEVC/AAC encoder. `rav1e` (AV1, BSD-2) is the only serious
+Rust encoder; `openh264` is C bindings; `less-avc` is intra-only. So:
+AV1 transcoding in Rust via `rav1e`, and everything else via an ffmpeg
+**external process**, never linked. Caudal itself stays 100% Rust.
 
 ## Checked and rejected
 
@@ -75,4 +92,5 @@ No usable Rust version exists for these. All three Go sources are MIT, so portin
 - `moq-lite` by name: renamed to `moq-net`.
 - `foca`: MPL-2.0; `chitchat` does the same job under MIT.
 - `jwks-client`: unmaintained.
+- `librist-sys` (C bindings): replaced by a pure-Rust RIST port.
 - Rewriting in Go: MediaMTX (MIT, ★20K) already exists there; see PLAN.md.

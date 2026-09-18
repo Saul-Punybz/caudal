@@ -1,6 +1,6 @@
 # STATUS — Caudal
 
-**Last updated:** 18 Sep 2026 (batch 1 closed)
+**Last updated:** 18 Sep 2026 (batch 1 closed; UI design set)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
@@ -98,6 +98,9 @@ Merged A (shell), B (RTMP, on scuffle-rtmp 0.2.3 + scuffle-flv), C (LL-HLS on mp
 - Wrong RTMP app / busy stream name: no stream is created, but the connection is not closed; scuffle-rtmp's error type has no custom variant (`crates/caudal-rtmp/NOTES.md`).
 - No integration test for two publishers racing for one name.
 - `fps` is null in the API for RTMP sources (only filled from onMetaData when present).
+
+## UI design (18 Sep 2026)
+Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D`, Gargoyle Gas `#E6D5B7`). Rules in `ui/DESIGN.md`; generated tokens in `ui/theme/` (all text pairs WCAG AA). Mockup canvas: https://claude.ai/artifact/4Lr5fgqvk5Dj58HhfXzMjq (Overview dark/light, Stream detail, Palette); source copies in `ui/mockups/`. The React app itself is not built yet.
 
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt`.

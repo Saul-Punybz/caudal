@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Caudal · Stream detail</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wdth,wght@8..144,25..151,100..1000&amp;family=Roboto+Mono:wght@400;500&amp;family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&amp;display=swap">
+<style>
+body{margin:0;font-family:"Roboto Flex",system-ui,sans-serif}
+.t-dark{--md-primary:#ffb5a0;--md-primary-container:#ff5723;--md-on-primary-container:#470d00;--md-secondary:#c1c4e7;--md-secondary-container:#434764;--md-on-secondary-container:#b3b6d9;--md-tertiary-container:#50452f;--md-on-tertiary-container:#f2e0c2;--md-error:#ffb4ab;--md-surface:#101221;--md-on-surface:#e1e1f6;--md-on-surface-variant:#c3c5e0;--md-surface-container-lowest:#0b0d1b;--md-surface-container-low:#191b29;--md-surface-container:#1d1f2e;--md-surface-container-high:#272938;--md-surface-container-highest:#323444;--md-outline:#8d8fa9;--md-outline-variant:#43455c}
+.ms{font-family:"Material Symbols Rounded";font-weight:400;font-style:normal;font-size:24px;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;direction:ltr;-webkit-font-smoothing:antialiased;font-variation-settings:"FILL" 0,"wght" 400,"GRAD" 0,"opsz" 24}
+.ms.fill{font-variation-settings:"FILL" 1,"wght" 400,"GRAD" 0,"opsz" 24}
+.num{font-family:"Roboto Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.display{font-variation-settings:"wdth" 40,"opsz" 96;font-weight:800;letter-spacing:-0.01em}
+button{font-family:inherit;cursor:pointer}
+button:focus-visible,a:focus-visible{outline:3px solid var(--md-primary);outline-offset:2px}
+.tab:hover{background:color-mix(in srgb,var(--md-on-surface) 8%,transparent)}
+.icon-btn:hover{background:color-mix(in srgb,var(--md-on-surface) 8%,transparent)}
+a{color:var(--md-primary)}a:hover{color:var(--md-on-surface)}
+</style>
+</helmet>
+<div class="t-dark" style="width: 1440px; height: 900px; box-sizing: border-box; padding: 20px 24px 24px; display: flex; flex-direction: column; gap: 16px; background: var(--md-surface); color: var(--md-on-surface); overflow: hidden;">
+
+<header style="display: flex; align-items: center; gap: 12px; height: 56px;">
+<a href="Main.dc.html" aria-label="Back to overview" class="icon-btn" style="width: 48px; height: 48px; border-radius: 24px; display: flex; align-items: center; justify-content: center; color: var(--md-on-surface);"><span class="ms" aria-hidden="true">arrow_back</span></a>
+<div style="display: flex; flex-direction: column;">
+<span style="font-size: 13px; color: var(--md-on-surface-variant);">Streams / live</span>
+<h1 class="display" style="margin: 0; font-size: 40px; line-height: 1;">main</h1>
+</div>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 14px; background: var(--md-primary-container); color: var(--md-on-primary-container); font-size: 13px; font-weight: 700; letter-spacing: 0.06em; margin-left: 8px;"><span class="ms fill" aria-hidden="true" style="font-size: 16px;">radio_button_checked</span>LIVE <span class="num" style="font-weight: 500; letter-spacing: 0;">00:42:18</span></span>
+<div style="flex-grow: 1;"></div>
+<button type="button" style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 20px 0 16px; border-radius: 20px; border: 1px solid var(--md-outline); background: transparent; color: var(--md-primary); font-size: 14px; font-weight: 600;"><span class="ms" aria-hidden="true" style="font-size: 18px;">fiber_manual_record</span>Record</button>
+<button type="button" style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 20px 0 16px; border-radius: 20px; border: 0; background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-size: 14px; font-weight: 600;"><span class="ms" aria-hidden="true" style="font-size: 18px;">cast</span>Push to…</button>
+<button type="button" style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 20px 0 16px; border-radius: 20px; border: 0; background: var(--md-primary-container); color: var(--md-on-primary-container); font-size: 14px; font-weight: 600;"><span class="ms" aria-hidden="true" style="font-size: 18px;">code</span>Embed</button>
+</header>
+
+<div style="flex-grow: 1; min-height: 0; display: flex; gap: 16px;">
+
+<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px;">
+<div style="position: relative; aspect-ratio: 16 / 9; width: 100%; max-height: 520px; border-radius: 16px; overflow: hidden; background: #0b0d1b;">
+<svg viewBox="0 0 1280 720" preserveAspectRatio="none" aria-hidden="true" style="position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.6;"><rect x="0" y="0" width="183" height="500" fill="#c0c0c0"></rect><rect x="183" y="0" width="183" height="500" fill="#c0c000"></rect><rect x="366" y="0" width="183" height="500" fill="#00c0c0"></rect><rect x="549" y="0" width="183" height="500" fill="#00c000"></rect><rect x="732" y="0" width="183" height="500" fill="#c000c0"></rect><rect x="915" y="0" width="183" height="500" fill="#c00000"></rect><rect x="1098" y="0" width="182" height="500" fill="#0000c0"></rect><rect x="0" y="500" width="1280" height="220" fill="#1e223d"></rect></svg>
+<div style="position: absolute; top: 16px; right: 16px; display: flex; gap: 8px;">
+<span class="num" style="height: 28px; padding: 0 12px; border-radius: 14px; background: rgba(11,13,27,.72); color: #e1e1f6; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;"><span class="ms" aria-hidden="true" style="font-size: 16px;">timer</span>1.2 s behind live</span>
+<span class="num" style="height: 28px; padding: 0 12px; border-radius: 14px; background: rgba(11,13,27,.72); color: #e1e1f6; font-size: 13px; display: inline-flex; align-items: center;">LL-HLS · 200 ms parts</span>
+</div>
+<div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 12px 16px; display: flex; align-items: center; gap: 12px; background: rgba(11,13,27,.78); color: #e1e1f6;">
+<button type="button" aria-label="Pause" style="width: 40px; height: 40px; border-radius: 20px; border: 0; background: transparent; color: inherit; display: flex; align-items: center; justify-content: center;"><span class="ms fill" aria-hidden="true">pause</span></button>
+<div style="flex-grow: 1; height: 4px; border-radius: 2px; background: rgba(225,225,246,.25); position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 97%; border-radius: 2px; background: #ff5723;"></div><div style="position: absolute; left: 97%; top: -6px; width: 16px; height: 16px; margin-left: -8px; border-radius: 8px; background: #ff5723;"></div></div>
+<span class="num" style="font-size: 13px;">DVR 50 s</span>
+<button type="button" aria-label="Mute" style="width: 40px; height: 40px; border-radius: 20px; border: 0; background: transparent; color: inherit; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">volume_up</span></button>
+<button type="button" aria-label="Full screen" style="width: 40px; height: 40px; border-radius: 20px; border: 0; background: transparent; color: inherit; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">fullscreen</span></button>
+</div>
+</div>
+
+<div style="flex-grow: 1; min-height: 0; border-radius: 16px; background: var(--md-surface-container-low); padding: 16px 20px; display: flex; flex-direction: column; gap: 8px;">
+<div style="display: flex; align-items: center; gap: 12px;"><h2 style="margin: 0; font-size: 16px; font-weight: 600;">Viewers · last 30 min</h2><div style="flex-grow: 1;"></div><span class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">now 1,102 · peak 1,190</span></div>
+<svg width="100%" height="100%" viewBox="0 0 900 140" preserveAspectRatio="none" aria-label="Viewer count rising from about 700 to 1,100 over 30 minutes" role="img" style="flex-grow: 1; min-height: 0;">
+<line x1="0" y1="35" x2="900" y2="35" stroke="var(--md-outline-variant)" stroke-width="1"></line>
+<line x1="0" y1="70" x2="900" y2="70" stroke="var(--md-outline-variant)" stroke-width="1"></line>
+<line x1="0" y1="105" x2="900" y2="105" stroke="var(--md-outline-variant)" stroke-width="1"></line>
+<polygon points="0,140 0,96 60,92 120,94 180,86 240,80 300,82 360,70 420,66 480,60 540,58 600,50 660,44 720,40 780,34 840,30 900,28 900,140" fill="#ff5723" fill-opacity="0.14"></polygon>
+<polyline points="0,96 60,92 120,94 180,86 240,80 300,82 360,70 420,66 480,60 540,58 600,50 660,44 720,40 780,34 840,30 900,28" fill="none" stroke="var(--md-primary)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
+</svg>
+</div>
+</div>
+
+<aside aria-label="Stream details" style="width: 440px; flex-shrink: 0; border-radius: 16px; background: var(--md-surface-container); display: flex; flex-direction: column; overflow: hidden;">
+<div role="tablist" aria-label="Detail sections" style="display: flex; border-bottom: 1px solid var(--md-outline-variant);">
+<sc-for list="{{tabs}}" as="t" hint-placeholder-count="4">
+<button type="button" role="tab" class="tab" aria-selected="{{t.selected}}" onClick="{{t.pick}}" style="flex-grow: 1; height: 48px; border: 0; background: transparent; color: {{t.color}}; font-size: 14px; font-weight: 600; box-shadow: {{t.underline}};">{{t.label}}</button>
+</sc-for>
+</div>
+
+<sc-if value="{{showOutputs}}" hint-placeholder-val="{{yes}}">
+<div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 12px;">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--md-on-surface-variant);">Publish here</div>
+<div style="display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; border-radius: 12px; background: var(--md-tertiary-container); color: var(--md-on-tertiary-container);"><span class="ms" aria-hidden="true">input</span><div style="flex-grow: 1; min-width: 0;"><div style="font-size: 12px; font-weight: 600;">RTMP · OBS, ffmpeg</div><div class="num" style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">rtmp://caudal.example:1935/live/main</div></div><button type="button" class="icon-btn" aria-label="Copy RTMP URL" style="width: 40px; height: 40px; border-radius: 20px; border: 0; background: transparent; color: inherit; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true" style="font-size: 20px;">content_copy</span></button></div>
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--md-on-surface-variant); margin-top: 4px;">Play it</div>
+<sc-for list="{{outputs}}" as="o" hint-placeholder-count="4">
+<div style="display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 16px; border-radius: 12px; background: var(--md-surface-container-high);">
+<span class="ms" aria-hidden="true" style="color: var(--md-on-surface-variant);">{{o.icon}}</span>
+<div style="flex-grow: 1; min-width: 0;"><div style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;">{{o.label}}<span style="font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px; border: 1px solid var(--md-outline-variant); color: var(--md-on-surface-variant);">{{o.tag}}</span></div><div class="num" style="font-size: 12px; color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{o.url}}</div></div>
+<button type="button" class="icon-btn" aria-label="{{o.copyLabel}}" style="width: 40px; height: 40px; border-radius: 20px; border: 0; background: transparent; color: var(--md-on-surface-variant); display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true" style="font-size: 20px;">content_copy</span></button>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{showTracks}}" hint-placeholder-val="{{no}}">
+<div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 10px;">
+<div style="padding: 14px 16px; border-radius: 12px; background: var(--md-surface-container-high); display: flex; gap: 12px;"><span class="ms" aria-hidden="true" style="color: var(--md-primary);">videocam</span><div><div style="font-weight: 600;">Video · H.264 High</div><div class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">1280×720 · 30 fps · GOP 2 s · avc1.64001f</div></div></div>
+<div style="padding: 14px 16px; border-radius: 12px; background: var(--md-surface-container-high); display: flex; gap: 12px;"><span class="ms" aria-hidden="true" style="color: var(--md-primary);">graphic_eq</span><div><div style="font-weight: 600;">Audio · AAC-LC</div><div class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">48 kHz · stereo · mp4a.40.2</div></div></div>
+</div>
+</sc-if>
+
+<sc-if value="{{showHealth}}" hint-placeholder-val="{{no}}">
+<div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 4px;">
+<div style="display: flex; align-items: center; gap: 12px; height: 48px;"><span class="ms fill" aria-hidden="true" style="color: var(--md-primary);">check_circle</span><span style="flex-grow: 1;">Keyframes regular</span><span class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">every 2.0 s</span></div>
+<div style="display: flex; align-items: center; gap: 12px; height: 48px;"><span class="ms fill" aria-hidden="true" style="color: var(--md-primary);">check_circle</span><span style="flex-grow: 1;">Ingest steady</span><span class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">0 dropped</span></div>
+<div style="display: flex; align-items: center; gap: 12px; height: 48px;"><span class="ms fill" aria-hidden="true" style="color: var(--md-primary);">check_circle</span><span style="flex-grow: 1;">LL-HLS conformance</span><span class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">Apple validator</span></div>
+<div style="display: flex; align-items: center; gap: 12px; height: 48px;"><span class="ms" aria-hidden="true" style="color: var(--md-error);">warning</span><span style="flex-grow: 1;">Served over HTTP/1.1</span><span style="font-size: 13px; color: var(--md-on-surface-variant);">enable TLS for HTTP/2</span></div>
+</div>
+</sc-if>
+
+<sc-if value="{{showViewers}}" hint-placeholder-val="{{no}}">
+<div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 10px;">
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;">
+<div style="padding: 12px 14px; border-radius: 12px; background: var(--md-surface-container-high);"><div style="font-size: 12px; color: var(--md-on-surface-variant);">LL-HLS</div><div class="num" style="font-size: 22px; font-weight: 500;">1,040</div></div>
+<div style="padding: 12px 14px; border-radius: 12px; background: var(--md-surface-container-high);"><div style="font-size: 12px; color: var(--md-on-surface-variant);">WebRTC</div><div class="num" style="font-size: 22px; font-weight: 500;">48</div></div>
+<div style="padding: 12px 14px; border-radius: 12px; background: var(--md-surface-container-high);"><div style="font-size: 12px; color: var(--md-on-surface-variant);">MoQ</div><div class="num" style="font-size: 22px; font-weight: 500;">12</div></div>
+<div style="padding: 12px 14px; border-radius: 12px; background: var(--md-surface-container-high);"><div style="font-size: 12px; color: var(--md-on-surface-variant);">SRT</div><div class="num" style="font-size: 22px; font-weight: 500;">2</div></div>
+</div>
+</div>
+</sc-if>
+</aside>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { tab: 'outputs' };
+  }
+  renderVals() {
+    const tab = this.state.tab;
+    const tabs = [
+      { id: 'outputs', label: 'Outputs' },
+      { id: 'tracks', label: 'Tracks' },
+      { id: 'viewers', label: 'Viewers' },
+      { id: 'health', label: 'Health' },
+    ].map((t) => ({
+      ...t,
+      selected: t.id === tab,
+      color: t.id === tab ? 'var(--md-primary)' : 'var(--md-on-surface-variant)',
+      underline: t.id === tab ? 'inset 0 -3px 0 var(--md-primary)' : 'none',
+      pick: () => this.setState({ tab: t.id }),
+    }));
+    const outputs = [
+      { icon: 'stream', label: 'LL-HLS', tag: 'Safari · hls.js', url: 'https://caudal.example/hls/main/master.m3u8' },
+      { icon: 'podcasts', label: 'WebRTC', tag: 'WHEP · < 0.5 s', url: 'https://caudal.example/whep/main' },
+      { icon: 'bolt', label: 'Media over QUIC', tag: 'WebTransport', url: 'https://caudal.example/moq/main' },
+      { icon: 'swap_calls', label: 'SRT', tag: 'broadcast', url: 'srt://caudal.example:9000?streamid=play/main' },
+    ].map((o) => ({ ...o, copyLabel: 'Copy ' + o.label + ' URL' }));
+    return {
+      tabs,
+      outputs,
+      showOutputs: tab === 'outputs',
+      showTracks: tab === 'tracks',
+      showViewers: tab === 'viewers',
+      showHealth: tab === 'health',
+      yes: true,
+      no: false,
+    };
+  }
+}
+</script>
+</body>
+</html>

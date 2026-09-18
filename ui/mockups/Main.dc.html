@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Caudal · Overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wdth,wght@8..144,25..151,100..1000&amp;family=Roboto+Mono:wght@400;500&amp;family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&amp;display=swap">
+<style>
+body{margin:0;font-family:"Roboto Flex",system-ui,sans-serif}
+.t-dark{--md-primary:#ffb5a0;--md-on-primary:#601500;--md-primary-container:#ff5723;--md-on-primary-container:#470d00;--md-secondary:#c1c4e7;--md-secondary-container:#434764;--md-on-secondary-container:#b3b6d9;--md-tertiary:#d5c5a7;--md-tertiary-container:#50452f;--md-on-tertiary-container:#f2e0c2;--md-error:#ffb4ab;--md-error-container:#93000a;--md-on-error-container:#ffdad6;--md-surface:#101221;--md-on-surface:#e1e1f6;--md-on-surface-variant:#c3c5e0;--md-surface-container-lowest:#0b0d1b;--md-surface-container-low:#191b29;--md-surface-container:#1d1f2e;--md-surface-container-high:#272938;--md-surface-container-highest:#323444;--md-outline:#8d8fa9;--md-outline-variant:#43455c;--md-video:#0b0d1b}
+.t-light{--md-primary:#ac2d00;--md-on-primary:#ffffff;--md-primary-container:#d73a01;--md-on-primary-container:#fffbff;--md-secondary:#595c7b;--md-secondary-container:#d8dafe;--md-on-secondary-container:#5b5f7d;--md-tertiary:#695d45;--md-tertiary-container:#f2e0c2;--md-on-tertiary-container:#50452f;--md-error:#ba1a1a;--md-error-container:#ffdad6;--md-on-error-container:#93000a;--md-surface:#fbf8ff;--md-on-surface:#191b29;--md-on-surface-variant:#43455c;--md-surface-container-lowest:#ffffff;--md-surface-container-low:#f4f2ff;--md-surface-container:#edecff;--md-surface-container-high:#e6e6fc;--md-surface-container-highest:#e1e1f6;--md-outline:#73758e;--md-outline-variant:#c3c5e0;--md-video:#1e223d}
+.ms{font-family:"Material Symbols Rounded";font-weight:400;font-style:normal;font-size:24px;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;direction:ltr;-webkit-font-smoothing:antialiased;font-variation-settings:"FILL" 0,"wght" 400,"GRAD" 0,"opsz" 24}
+.ms.fill{font-variation-settings:"FILL" 1,"wght" 400,"GRAD" 0,"opsz" 24}
+.num{font-family:"Roboto Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.display{font-variation-settings:"wdth" 40,"opsz" 96;font-weight:800;letter-spacing:-0.01em}
+.rail-item{display:flex;flex-direction:column;align-items:center;gap:4px;text-decoration:none;color:var(--md-on-surface-variant);font-size:12px;font-weight:500}
+.rail-item:hover .pill{background:color-mix(in srgb,var(--md-on-surface) 8%,transparent)}
+.row{cursor:pointer}
+.row:hover{background:color-mix(in srgb,var(--md-on-surface) 8%,transparent)}
+button{font-family:inherit;cursor:pointer}
+button:focus-visible,a:focus-visible,.row:focus-visible{outline:3px solid var(--md-primary);outline-offset:2px}
+a{color:var(--md-primary)}a:hover{color:var(--md-on-surface)}
+</style>
+</helmet>
+<div class="t-{{theme}}" style="width: 1440px; height: 900px; box-sizing: border-box; display: flex; background: var(--md-surface); color: var(--md-on-surface); overflow: hidden;">
+
+<nav aria-label="Main" style="width: 88px; flex-shrink: 0; box-sizing: border-box; padding: 20px 0; display: flex; flex-direction: column; align-items: center; gap: 12px; background: var(--md-surface);">
+<div style="width: 48px; height: 48px; border-radius: 16px; background: var(--md-primary-container); color: var(--md-on-primary-container); display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+<svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M4 10c4-4 8-4 10 0s6 4 10 0M4 18c4-4 8-4 10 0s6 4 10 0" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path></svg>
+</div>
+<a class="rail-item" href="#" aria-current="page" style="color: var(--md-on-surface);"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; background: var(--md-secondary-container); color: var(--md-on-secondary-container); display: flex; align-items: center; justify-content: center;"><span class="ms fill" aria-hidden="true">space_dashboard</span></span>Overview</a>
+<a class="rail-item" href="Detail.dc.html"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">live_tv</span></span>Streams</a>
+<a class="rail-item" href="#"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">input</span></span>Ingest</a>
+<a class="rail-item" href="#"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">cast</span></span>Push</a>
+<a class="rail-item" href="#"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">bolt</span></span>Triggers</a>
+<a class="rail-item" href="#"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">monitoring</span></span>Stats</a>
+<a class="rail-item" href="#"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">terminal</span></span>Logs</a>
+<a class="rail-item" href="#"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">key</span></span>Keys</a>
+<div style="flex-grow: 1;"></div>
+<a class="rail-item" href="#"><span class="pill" style="width: 56px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">settings</span></span>Settings</a>
+</nav>
+
+<main style="flex-grow: 1; min-width: 0; box-sizing: border-box; padding: 20px 24px 24px 8px; display: flex; flex-direction: column; gap: 20px;">
+
+<header style="display: flex; align-items: center; gap: 16px; height: 56px;">
+<h1 class="display" style="margin: 0; font-size: 44px; line-height: 1;">Overview</h1>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--md-outline-variant); font-size: 14px; color: var(--md-on-surface-variant);"><span class="ms fill" aria-hidden="true" style="font-size: 18px; color: var(--md-primary);">circle</span>caudal 0.1.0 · up <span class="num">3d 04:12</span></span>
+<div style="flex-grow: 1;"></div>
+<label style="display: flex; align-items: center; gap: 8px; width: 320px; height: 48px; box-sizing: border-box; padding: 0 16px; border-radius: 24px; background: var(--md-surface-container-high); color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true">search</span><input type="search" placeholder="Search streams" aria-label="Search streams" style="flex-grow: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--md-on-surface); font: inherit; font-size: 16px;"></label>
+<button type="button" aria-label="Toggle light and dark theme" onClick="{{toggleTheme}}" style="width: 48px; height: 48px; border-radius: 24px; border: 0; background: transparent; color: var(--md-on-surface-variant); display: flex; align-items: center; justify-content: center;"><span class="ms" aria-hidden="true">{{themeIcon}}</span></button>
+<button type="button" style="display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 20px 0 16px; border-radius: 16px; border: 0; background: var(--md-primary-container); color: var(--md-on-primary-container); font-size: 16px; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 4px 8px 3px rgba(0,0,0,.15);"><span class="ms" aria-hidden="true">add</span>New stream</button>
+</header>
+
+<section aria-label="Totals" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px;">
+<div style="padding: 20px; border-radius: 16px; background: var(--md-surface-container); display: flex; flex-direction: column; gap: 8px;">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true" style="font-size: 20px;">sensors</span>Live streams</div>
+<div style="display: flex; align-items: flex-end; justify-content: space-between;"><span class="num" style="font-size: 40px; font-weight: 500; line-height: 1;">3</span><span style="font-size: 13px; color: var(--md-on-surface-variant);">of 5 configured</span></div>
+</div>
+<div style="padding: 20px; border-radius: 16px; background: var(--md-surface-container); display: flex; flex-direction: column; gap: 8px;">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true" style="font-size: 20px;">group</span>Viewers</div>
+<div style="display: flex; align-items: flex-end; justify-content: space-between;"><span class="num" style="font-size: 40px; font-weight: 500; line-height: 1;">1,284</span><svg width="120" height="36" viewBox="0 0 120 36" aria-hidden="true"><polyline points="0,30 12,28 24,29 36,24 48,25 60,19 72,20 84,14 96,15 108,9 120,6" fill="none" stroke="var(--md-primary)" stroke-width="2" stroke-linejoin="round"></polyline></svg></div>
+</div>
+<div style="padding: 20px; border-radius: 16px; background: var(--md-surface-container); display: flex; flex-direction: column; gap: 8px;">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true" style="font-size: 20px;">download</span>Ingest</div>
+<div style="display: flex; align-items: flex-end; justify-content: space-between;"><span><span class="num" style="font-size: 40px; font-weight: 500; line-height: 1;">7.4</span><span style="font-size: 16px; color: var(--md-on-surface-variant);"> Mb/s</span></span><svg width="120" height="36" viewBox="0 0 120 36" aria-hidden="true"><polyline points="0,18 12,17 24,19 36,18 48,17 60,18 72,16 84,18 96,17 108,18 120,17" fill="none" stroke="var(--md-secondary)" stroke-width="2" stroke-linejoin="round"></polyline></svg></div>
+</div>
+<div style="padding: 20px; border-radius: 16px; background: var(--md-surface-container); display: flex; flex-direction: column; gap: 8px;">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true" style="font-size: 20px;">upload</span>Egress</div>
+<div style="display: flex; align-items: flex-end; justify-content: space-between;"><span><span class="num" style="font-size: 40px; font-weight: 500; line-height: 1;">2.1</span><span style="font-size: 16px; color: var(--md-on-surface-variant);"> Gb/s</span></span><svg width="120" height="36" viewBox="0 0 120 36" aria-hidden="true"><polyline points="0,32 12,30 24,31 36,26 48,27 60,21 72,22 84,15 96,16 108,10 120,8" fill="none" stroke="var(--md-primary)" stroke-width="2" stroke-linejoin="round"></polyline></svg></div>
+</div>
+</section>
+
+<div style="flex-grow: 1; min-height: 0; display: flex; gap: 16px;">
+
+<section aria-label="Streams" style="flex-grow: 1; min-width: 0; border-radius: 16px; background: var(--md-surface-container-low); display: flex; flex-direction: column; overflow: hidden;">
+<div style="display: flex; align-items: center; gap: 12px; padding: 16px 20px 12px;">
+<h2 style="margin: 0; font-size: 22px; font-weight: 500;">Streams</h2>
+<div style="flex-grow: 1;"></div>
+<button type="button" style="height: 32px; padding: 0 12px; border-radius: 8px; border: 0; background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px;"><span class="ms" aria-hidden="true" style="font-size: 18px;">check</span>All</button>
+<button type="button" style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--md-outline-variant); background: transparent; color: var(--md-on-surface-variant); font-size: 14px; font-weight: 500;">Live</button>
+<button type="button" style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--md-outline-variant); background: transparent; color: var(--md-on-surface-variant); font-size: 14px; font-weight: 500;">Issues</button>
+</div>
+<div role="table" aria-label="Streams" style="display: flex; flex-direction: column;">
+<div role="row" style="display: grid; grid-template-columns: 1.6fr 0.9fr 0.8fr 2fr 0.8fr 0.9fr 0.8fr; gap: 12px; padding: 8px 20px; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--md-on-surface-variant); border-bottom: 1px solid var(--md-outline-variant);">
+<span role="columnheader">Stream</span><span role="columnheader">Status</span><span role="columnheader">Source</span><span role="columnheader">Tracks</span><span role="columnheader" style="text-align: right;">Viewers</span><span role="columnheader" style="text-align: right;">Bitrate</span><span role="columnheader" style="text-align: right;">Latency</span>
+</div>
+<sc-for list="{{streams}}" as="s" hint-placeholder-count="5">
+<div role="row" class="row" tabindex="0" onClick="{{s.pick}}" aria-selected="{{s.selected}}" style="display: grid; grid-template-columns: 1.6fr 0.9fr 0.8fr 2fr 0.8fr 0.9fr 0.8fr; gap: 12px; align-items: center; height: 56px; padding: 0 20px; font-size: 14px; border-bottom: 1px solid var(--md-outline-variant); background: {{s.rowBg}};">
+<span role="cell" style="display: flex; flex-direction: column;"><span style="font-weight: 600; font-size: 15px;">{{s.name}}</span><span class="num" style="font-size: 12px; color: var(--md-on-surface-variant);">{{s.app}}</span></span>
+<span role="cell">
+<sc-if value="{{s.live}}" hint-placeholder-val="{{true}}"><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--md-primary-container); color: var(--md-on-primary-container); font-size: 12px; font-weight: 700; letter-spacing: 0.06em;"><span class="ms fill" aria-hidden="true" style="font-size: 14px;">radio_button_checked</span>LIVE</span></sc-if>
+<sc-if value="{{s.idle}}" hint-placeholder-val="{{false}}"><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--md-outline); color: var(--md-on-surface-variant); font-size: 12px; font-weight: 600;"><span class="ms" aria-hidden="true" style="font-size: 14px;">pause_circle</span>Idle</span></sc-if>
+<sc-if value="{{s.fault}}" hint-placeholder-val="{{false}}"><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--md-error-container); color: var(--md-on-error-container); font-size: 12px; font-weight: 600;"><span class="ms" aria-hidden="true" style="font-size: 14px;">warning</span>No keyframes</span></sc-if>
+</span>
+<span role="cell" style="display: inline-flex; align-items: center; gap: 6px; color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true" style="font-size: 18px;">{{s.srcIcon}}</span>{{s.source}}</span>
+<span role="cell" class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">{{s.tracks}}</span>
+<span role="cell" class="num" style="text-align: right;">{{s.viewers}}</span>
+<span role="cell" class="num" style="text-align: right;">{{s.bitrate}}</span>
+<span role="cell" class="num" style="text-align: right;">{{s.latency}}</span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<aside aria-label="Selected stream" style="width: 380px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px;">
+<div style="border-radius: 16px; background: var(--md-surface-container); overflow: hidden; display: flex; flex-direction: column;">
+<div style="position: relative; height: 214px; background: var(--md-video); display: flex; align-items: center; justify-content: center;">
+<svg width="380" height="214" viewBox="0 0 380 214" aria-hidden="true" style="position: absolute; inset: 0; opacity: 0.55;"><rect x="0" y="0" width="54" height="150" fill="#c0c0c0"></rect><rect x="54" y="0" width="54" height="150" fill="#c0c000"></rect><rect x="108" y="0" width="54" height="150" fill="#00c0c0"></rect><rect x="162" y="0" width="54" height="150" fill="#00c000"></rect><rect x="216" y="0" width="54" height="150" fill="#c000c0"></rect><rect x="270" y="0" width="55" height="150" fill="#c00000"></rect><rect x="325" y="0" width="55" height="150" fill="#0000c0"></rect><rect x="0" y="150" width="380" height="64" fill="#1e223d"></rect></svg>
+<span style="position: absolute; top: 12px; left: 12px; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--md-primary-container); color: var(--md-on-primary-container); font-size: 12px; font-weight: 700; letter-spacing: 0.06em;"><span class="ms fill" aria-hidden="true" style="font-size: 14px;">radio_button_checked</span>LIVE</span>
+<span class="num" style="position: absolute; top: 12px; right: 12px; height: 24px; padding: 0 10px; border-radius: 12px; background: rgba(11,13,27,.72); color: #e1e1f6; font-size: 12px; display: inline-flex; align-items: center;">{{sel.latency}} behind live</span>
+<button type="button" aria-label="Play preview" style="position: relative; width: 64px; height: 64px; border-radius: 32px; border: 0; background: rgba(11,13,27,.72); color: #ffffff; display: flex; align-items: center; justify-content: center;"><span class="ms fill" aria-hidden="true" style="font-size: 36px;">play_arrow</span></button>
+</div>
+<div style="padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 12px;">
+<div style="display: flex; align-items: center; gap: 8px;"><h2 style="margin: 0; font-size: 22px; font-weight: 500;">{{sel.name}}</h2><div style="flex-grow: 1;"></div><a href="Detail.dc.html" style="display: inline-flex; align-items: center; gap: 4px; height: 40px; padding: 0 12px; border-radius: 20px; text-decoration: none; font-size: 14px; font-weight: 600;">Open<span class="ms" aria-hidden="true" style="font-size: 18px;">arrow_forward</span></a></div>
+<div class="num" style="font-size: 13px; color: var(--md-on-surface-variant);">{{sel.tracks}}</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+<div style="padding: 10px 12px; border-radius: 12px; background: var(--md-surface-container-high);"><div style="font-size: 12px; color: var(--md-on-surface-variant);">Viewers</div><div class="num" style="font-size: 20px; font-weight: 500;">{{sel.viewers}}</div></div>
+<div style="padding: 10px 12px; border-radius: 12px; background: var(--md-surface-container-high);"><div style="font-size: 12px; color: var(--md-on-surface-variant);">Bitrate</div><div class="num" style="font-size: 20px; font-weight: 500;">{{sel.bitrate}}</div></div>
+<div style="padding: 10px 12px; border-radius: 12px; background: var(--md-surface-container-high);"><div style="font-size: 12px; color: var(--md-on-surface-variant);">Buffer</div><div class="num" style="font-size: 20px; font-weight: 500;">50 s</div></div>
+</div>
+</div>
+</div>
+<div style="flex-grow: 1; border-radius: 16px; background: var(--md-surface-container); padding: 16px 20px; display: flex; flex-direction: column; gap: 10px;">
+<h2 style="margin: 0; font-size: 16px; font-weight: 600;">Recent events</h2>
+<div style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 12px; background: var(--md-tertiary-container); color: var(--md-on-tertiary-container); font-size: 14px;"><span class="ms" aria-hidden="true" style="font-size: 20px;">info</span><span><strong>event-main</strong> reconnected over SRT · <span class="num">14:02:11</span></span></div>
+<div style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; font-size: 14px; color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true" style="font-size: 20px;">login</span><span><strong style="color: var(--md-on-surface);">live/main</strong> publish started, H.264 + AAC · <span class="num">13:58:40</span></span></div>
+<div style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; font-size: 14px; color: var(--md-on-surface-variant);"><span class="ms" aria-hidden="true" style="font-size: 20px; color: var(--md-error);">warning</span><span><strong style="color: var(--md-on-surface);">lobby-cam</strong> no keyframe for <span class="num">6 s</span> · <span class="num">13:41:07</span></span></div>
+</div>
+</aside>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { picked: 'main', theme: null };
+  }
+  renderVals() {
+    const theme = this.state.theme ?? this.props.theme ?? 'dark';
+    const rows = [
+      { id: 'main', name: 'main', app: 'rtmp · live/main', status: 'live', source: 'RTMP', srcIcon: 'input', tracks: 'H.264 1280×720 30p · AAC 48 kHz', viewers: '1,102', bitrate: '2.4 Mb/s', latency: '1.2 s' },
+      { id: 'event', name: 'event-main', app: 'srt · streamid=event-main', status: 'live', source: 'SRT', srcIcon: 'swap_calls', tracks: 'HEVC 1920×1080 60p · AAC 48 kHz', viewers: '176', bitrate: '4.6 Mb/s', latency: '1.4 s' },
+      { id: 'studio', name: 'studio-b', app: 'whip · /whip/studio-b', status: 'live', source: 'WHIP', srcIcon: 'podcasts', tracks: 'H.264 1280×720 30p · Opus 48 kHz', viewers: '6', bitrate: '1.8 Mb/s', latency: '0.4 s' },
+      { id: 'lobby', name: 'lobby-cam', app: 'rtsp · 10.0.4.21', status: 'fault', source: 'RTSP', srcIcon: 'videocam', tracks: 'H.264 1920×1080 15p', viewers: '0', bitrate: '0.6 Mb/s', latency: '—' },
+      { id: 'backup', name: 'main-backup', app: 'rtmp · live/main-backup', status: 'idle', source: 'RTMP', srcIcon: 'input', tracks: '—', viewers: '0', bitrate: '—', latency: '—' },
+    ];
+    const streams = rows.map((r) => ({
+      ...r,
+      live: r.status === 'live',
+      idle: r.status === 'idle',
+      fault: r.status === 'fault',
+      selected: r.id === this.state.picked,
+      rowBg: r.id === this.state.picked ? 'var(--md-secondary-container)' : 'transparent',
+      pick: () => this.setState({ picked: r.id }),
+    }));
+    const sel = rows.find((r) => r.id === this.state.picked) || rows[0];
+    return {
+      theme,
+      themeIcon: theme === 'dark' ? 'light_mode' : 'dark_mode',
+      toggleTheme: () => this.setState({ theme: theme === 'dark' ? 'light' : 'dark' }),
+      streams,
+      sel,
+      true: true,
+      false: false,
+    };
+  }
+}
+</script>
+</body>
+</html>

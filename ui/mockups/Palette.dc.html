@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Caudal · Palette to Material 3 roles</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wdth,wght@8..144,25..151,100..1000&amp;family=Roboto+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;font-family:"Roboto Flex",system-ui,sans-serif}
+.num{font-family:"Roboto Mono",ui-monospace,monospace}
+.display{font-variation-settings:"wdth" 40,"opsz" 96;font-weight:800;letter-spacing:-0.01em}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; padding: 56px 64px; display: flex; flex-direction: column; gap: 36px; background: #101221; color: #e1e1f6;">
+
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px;">
+<div style="height: 180px; box-sizing: border-box; padding: 28px; border-radius: 20px; background: #F54F1B; color: #E6D5B7; display: flex; flex-direction: column; justify-content: flex-end;"><div class="display" style="font-size: 44px; line-height: 1;">ORANGE</div><div class="num" style="font-size: 18px; margin-top: 6px;">#F54F1B → primary</div></div>
+<div style="height: 180px; box-sizing: border-box; padding: 28px; border-radius: 20px; background: #1E223D; color: #E6D5B7; border: 1px solid #43455c; display: flex; flex-direction: column; justify-content: flex-end;"><div class="display" style="font-size: 44px; line-height: 1;">SPACE CADET</div><div class="num" style="font-size: 18px; margin-top: 6px;">#1E223D → secondary · surfaces</div></div>
+<div style="height: 180px; box-sizing: border-box; padding: 28px; border-radius: 20px; background: #E6D5B7; color: #1E223D; display: flex; flex-direction: column; justify-content: flex-end;"><div class="display" style="font-size: 44px; line-height: 1;">GARGOYLE GAS</div><div class="num" style="font-size: 18px; margin-top: 6px;">#E6D5B7 → tertiary</div></div>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; flex-grow: 1;">
+<sc-for list="{{schemes}}" as="sc" hint-placeholder-count="2">
+<div style="display: flex; flex-direction: column; gap: 12px;">
+<h2 style="margin: 0; font-size: 20px; font-weight: 600;">{{sc.title}}</h2>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;">
+<sc-for list="{{sc.roles}}" as="r" hint-placeholder-count="8">
+<div style="height: 64px; box-sizing: border-box; padding: 0 16px; border-radius: 12px; background: {{r.bg}}; color: {{r.fg}}; border: 1px solid rgba(141,143,169,.35); display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+<span style="font-size: 14px; font-weight: 600;">{{r.name}}</span>
+<span class="num" style="font-size: 12px; text-align: right;">{{r.bg}}<br>{{r.ratio}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = [
+      { name: 'primary container', bg: '#ff5723', fg: '#470d00', ratio: '5.01 : 1 AA' },
+      { name: 'primary', bg: '#ffb5a0', fg: '#601500', ratio: '7.71 : 1 AA' },
+      { name: 'secondary container', bg: '#434764', fg: '#b3b6d9', ratio: '4.57 : 1 AA' },
+      { name: 'tertiary container', bg: '#50452f', fg: '#f2e0c2', ratio: '7.26 : 1 AA' },
+      { name: 'surface', bg: '#101221', fg: '#e1e1f6', ratio: '14.42 : 1 AA' },
+      { name: 'surface container', bg: '#1d1f2e', fg: '#c3c5e0', ratio: '9.62 : 1 AA' },
+      { name: 'surface container high', bg: '#272938', fg: '#e1e1f6', ratio: 'text on it' },
+      { name: 'error container', bg: '#93000a', fg: '#ffdad6', ratio: 'faults only' },
+    ];
+    const light = [
+      { name: 'primary container', bg: '#d73a01', fg: '#fffbff', ratio: '4.56 : 1 AA' },
+      { name: 'primary', bg: '#ac2d00', fg: '#ffffff', ratio: '6.71 : 1 AA' },
+      { name: 'secondary container', bg: '#d8dafe', fg: '#5b5f7d', ratio: '4.55 : 1 AA' },
+      { name: 'tertiary container', bg: '#f2e0c2', fg: '#50452f', ratio: '7.26 : 1 AA' },
+      { name: 'surface', bg: '#fbf8ff', fg: '#191b29', ratio: '16.24 : 1 AA' },
+      { name: 'surface container', bg: '#edecff', fg: '#43455c', ratio: '8.04 : 1 AA' },
+      { name: 'surface container high', bg: '#e6e6fc', fg: '#191b29', ratio: 'text on it' },
+      { name: 'error container', bg: '#ffdad6', fg: '#93000a', ratio: 'faults only' },
+    ];
+    return {
+      schemes: [
+        { title: 'Dark (default)', roles: dark },
+        { title: 'Light', roles: light },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # STATUS — Caudal
 
-**Last updated:** 18 Sep 2026 (batch 4 closed: WebRTC)
+**Last updated:** 18 Sep 2026 (batch 5 closed: MoQ; Safari over HTTP/2 measured)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
@@ -104,6 +104,20 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
+
+## Safari over HTTP/2 (measured 18 Sep 2026, after Saul ran `mkcert -install`)
+Release binary with `[tls]` and a mkcert certificate for localhost; ffmpeg RTMP 720p publish.
+- `curl --http2` without `-k`: **HTTP/2, 200** (the mkcert CA is trusted).
+- Apple `mediastreamvalidator` over HTTPS: multivariant + LIVE, 0 parse errors, avc1 + aac, **-50120 gone**. Only -50125 remains (needs a second rendition, M11).
+- **Safari's native player (Playwright WebKit on macOS, 30 s): steady ingest-to-glass 0.52 s** (was 5.4–6 s over HTTP/1.1). Confirms the hypothesis: Apple's player only stays in low-latency mode over HTTP/2.
+- Follow-up: run the browser suite's WebKit project over HTTPS (self-signed rcgen cert + `ignoreHTTPSErrors`) so CI measures this too and the known-gap branch can go.
+
+## Batch 5 result (18 Sep 2026): M6 MoQ
+Merged P (MoQ output: moq-native server + one origin, no relay needed; each stream a `hang` broadcast via moq-mux, H.264/H.265 + AAC/Opus; self-signed P-256 cert, 13-day validity, rotated every 6 days live; `/moq/fingerprint`; viewer counts from moq-net stats; `?jwt=` auth per path) and Q (UI: 3-way LL-HLS / WebRTC / MoQ toggle with `@moq/watch` 0.5.4 rendering to canvas, lazy chunk ≈ 123 KB gzip; Outputs rows; Playwright test).
+
+**Verified:** caudal-moq 13/13 (native client over WebTransport with the fingerprint pinned: catalog avc1 + mp4a, groups open on IDR, 1 viewer counted, broadcast ends with the source); UI 39/39; **MoQ plays in Chromium through the UI: 97 frames decoded in 3 s, AAC audio bytes received**; cargo-deny ok; clippy clean.
+
+**Not verified:** MoQ in Firefox; AAC actually audible (bytes arrive; WebCodecs support varies by browser); MoQ ingest (out of scope).
 
 ## Batch 5 (launched 18 Sep 2026): M6 MoQ output
 **Goal:** every live stream is also a Media over QUIC broadcast; a browser plays it over WebTransport with the `@moq/watch` player, no mkcert needed.

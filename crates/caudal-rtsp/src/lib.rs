@@ -1,10 +1,19 @@
 //! RTSP in and out. Entry point fixed by the orchestrator.
 //!
-//! - Pull: each [`RtspPull`] connects to a camera (`rtsp://user:pass@cam/...`)
-//!   with `retina` and publishes it as `stream`, reconnecting forever.
-//! - Serve: when `bind` is set, `rtsp://host:port/<stream>` (optional
-//!   `?token=`) plays any live stream: DESCRIBE, SETUP (TCP interleaved;
-//!   UDP optional), PLAY, TEARDOWN, with `Access::Play` checked.
+//! - Pull ([`pull`]): each [`RtspPull`] connects to a camera
+//!   (`rtsp://user:pass@cam/...`) over TCP interleaved with `retina` and
+//!   publishes it as `stream` (AVCC video, avcC/hvcC init, raw AAC audio),
+//!   reconnecting forever with backoff.
+//! - Serve ([`server`]): when `bind` is set, `rtsp://host:port/<stream>`
+//!   (optional `?token=`) plays any live stream over TCP interleaved:
+//!   OPTIONS, DESCRIBE (SDP built in [`sdp`]), SETUP, PLAY, TEARDOWN,
+//!   GET_PARAMETER, with `Access::Play` checked. Packetizing (H.264 FU-A,
+//!   RFC 3640 AAC AU headers) lives in [`rtp`].
+
+mod pull;
+mod rtp;
+mod sdp;
+mod server;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -25,8 +34,17 @@ pub struct RtspConfig {
     pub buffer: BufferConfig,
 }
 
-/// Runs pulls and the server until dropped.
+/// Runs pulls and the server until dropped. Pulls never return (they
+/// reconnect forever); if `bind` is `None` this simply waits on them.
 pub async fn serve(cfg: RtspConfig, registry: Arc<Registry>) -> std::io::Result<()> {
-    let _ = (cfg, registry);
-    Err(std::io::Error::other("RTSP not implemented yet"))
+    for p in cfg.pulls {
+        let registry = registry.clone();
+        let buffer = cfg.buffer;
+        tokio::spawn(async move { pull::run(p, registry, buffer).await });
+    }
+
+    match cfg.bind {
+        Some(bind) => server::serve(bind, registry).await,
+        None => std::future::pending().await,
+    }
 }

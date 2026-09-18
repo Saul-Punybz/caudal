@@ -126,15 +126,64 @@ fn parse_publish(streamid: &str) -> Option<(&str, Option<&str>)> {
     None
 }
 
-/// Drives one accepted SRT connection to completion. Never panics: a
-/// malformed stream ends this connection only (via the ordinary recv-error
-/// path), never the listener.
-pub(crate) async fn handle(mut socket: SrtSocket, peer: SocketAddrV4, registry: Arc<Registry>, buffer: BufferConfig) {
+/// Extracts the play target and optional token from an SRT stream id:
+/// `play/<name>` or `play/<name>?token=<t>`, or the SRT access-control form
+/// `#!::r=<name>,m=request` with an optional `t=<token>`. Mirrors
+/// [`parse_publish`], just for `m=request` instead of `m=publish`.
+fn parse_play(streamid: &str) -> Option<(&str, Option<&str>)> {
+    if let Some(rest) = streamid.strip_prefix("play/") {
+        let (name, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let token = query.split('&').find_map(|kv| kv.strip_prefix("token="));
+        return (!name.is_empty()).then_some((name, token.filter(|t| !t.is_empty())));
+    }
+    if let Some(rest) = streamid.strip_prefix("#!::") {
+        let mut mode: Option<&str> = None;
+        let mut name: Option<&str> = None;
+        let mut token: Option<&str> = None;
+        for field in rest.split(',') {
+            let (key, value) = field.split_once('=')?;
+            match key {
+                "m" => mode = Some(value),
+                "r" => name = Some(value),
+                "t" => token = Some(value),
+                _ => {}
+            }
+        }
+        if mode == Some("request") {
+            return name.filter(|n| !n.is_empty()).map(|n| (n, token.filter(|t| !t.is_empty())));
+        }
+        return None;
+    }
+    None
+}
+
+/// Dispatches one accepted SRT connection by stream-id mode: `publish/...`
+/// or `#!::...,m=publish` goes to [`handle_publish`]; `play/...` or
+/// `#!::...,m=request` goes to [`crate::play::handle`]. Anything else is
+/// rejected. Never panics: a malformed stream or a rejected caller ends
+/// this connection only, never the listener.
+pub(crate) async fn handle(socket: SrtSocket, peer: SocketAddrV4, registry: Arc<Registry>, buffer: BufferConfig) {
     let streamid = socket.streamid().unwrap_or_default();
-    let Some((name, token)) = parse_publish(&streamid) else {
-        tracing::debug!(%peer, %streamid, "srt rejected: not a publish stream id");
+    if let Some((name, token)) = parse_publish(&streamid) {
+        handle_publish(socket, peer, registry, buffer, name, token).await;
         return;
-    };
+    }
+    if let Some((name, token)) = parse_play(&streamid) {
+        crate::play::handle(socket, peer, registry, name, token).await;
+        return;
+    }
+    tracing::debug!(%peer, %streamid, "srt rejected: unrecognized stream id");
+}
+
+/// Handles one accepted `publish/...` connection to completion.
+async fn handle_publish(
+    mut socket: SrtSocket,
+    peer: SocketAddrV4,
+    registry: Arc<Registry>,
+    buffer: BufferConfig,
+    name: &str,
+    token: Option<&str>,
+) {
     if let Err(denied) = registry.authorize(caudal_core::Access::Publish, name, token).await {
         tracing::info!(%peer, stream = %name, reason = ?denied, "srt publish rejected");
         return;
@@ -222,5 +271,22 @@ mod tests {
         assert_eq!(parse_publish("#!::m=publish"), None);
         assert_eq!(parse_publish(""), None);
         assert_eq!(parse_publish("garbage"), None);
+    }
+
+    #[test]
+    fn play_form_accepted() {
+        assert_eq!(parse_play("play/test"), Some(("test", None)));
+        assert_eq!(parse_play("play/test?token=abc"), Some(("test", Some("abc"))));
+        assert_eq!(parse_play("#!::r=test,m=request,t=abc"), Some(("test", Some("abc"))));
+        assert_eq!(parse_play("play/"), None);
+    }
+
+    #[test]
+    fn publish_and_other_modes_rejected_for_play() {
+        assert_eq!(parse_play("publish/test"), None);
+        assert_eq!(parse_play("#!::r=test,m=publish"), None);
+        assert_eq!(parse_play("#!::m=request"), None);
+        assert_eq!(parse_play(""), None);
+        assert_eq!(parse_play("garbage"), None);
     }
 }

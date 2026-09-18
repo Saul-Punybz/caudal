@@ -16,6 +16,9 @@ use rsrt::{SrtListener, SrtOptions};
 
 mod connection;
 mod demux;
+mod mux;
+mod play;
+mod push;
 mod ts;
 
 #[derive(Debug, Clone)]
@@ -62,6 +65,13 @@ pub async fn serve(cfg: SrtConfig, registry: Arc<Registry>) -> std::io::Result<(
         .await
         .map_err(|err| std::io::Error::other(format!("srt bind failed: {err}")))?;
     tracing::info!(bind = %cfg.bind, "srt listening");
+
+    for push in cfg.pushes.clone() {
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            push::run(push, registry).await;
+        });
+    }
 
     loop {
         let (socket, peer) =

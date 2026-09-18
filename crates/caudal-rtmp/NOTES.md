@@ -50,21 +50,47 @@ before announcement are simply pushed and rejected by
 *is* the "drop frames before announcement" behavior, no extra bookkeeping
 needed.
 
-## Wrong app / busy stream rejection
+## Wrong app / busy / invalid-name rejection now closes the connection
 
 `scuffle_rtmp::session::server::ServerSessionError` is a closed, fixed enum
 (`Timeout`, `PublishBeforeConnect`, `PlayNotSupported`, `InvalidChunkSize`)
 with no "other/custom" variant, and `caudal-rtmp` cannot modify a dependency.
-So a wrong-app or already-busy publish is rejected at the `caudal-core`
-level instead of the RTMP protocol level: `on_publish` returns `Ok(())` (the
-handshake completes) but no `Publisher` is created and no entry is added to
-`Handler::streams`, so every subsequent video/audio/AMF0 message for that
-`stream_id` is silently dropped and nothing ever reaches the `Registry`.
-Confirmed by the `wrong_app_is_rejected` test. `PublishError::Busy` is
-handled the same way (see `Handler::on_publish`); it isn't covered by its
-own integration test (would need two concurrent ffmpeg publishers racing
-for the same name) given the batch's time budget, but the code path is
-identical to the wrong-app one.
+Batch 1 worked around this by accepting the publish handshake and silently
+dropping every subsequent message for that `stream_id` — which left the
+rejected client's TCP connection open indefinitely (it kept sending into
+nothing).
+
+Batch 2 fixes this by having `Handler::on_publish` (`session.rs`) return
+`Err` instead of `Ok(())` for all three rejection cases (wrong app,
+`PublishError::Busy`, `PublishError::InvalidName`). Reading
+`scuffle-rtmp`'s own `on_command_publish`
+(`session/server/mod.rs:497-527`): it calls
+`self.handler.on_publish(...).await?` *before* pushing the stream id into
+`publishing_stream_ids` or sending `NetStream.Publish.Start`, so an `Err`
+propagates with `?` straight out through `on_command_message` →
+`process_message` → `process_chunks` → `drive` → `ServerSession::run`'s
+main loop (`Err(e) => return Err(e)`), which immediately drops `self` —
+and with it the `TcpStream` it owns (`ServerSession<S, H>` holds `io: S` by
+value). No `tokio::select!`/`oneshot` machinery was needed: returning an
+error *is* "an error that ends the session cleanly", per the closed-enum
+constraint. No new public API in `caudal-rtmp`; `Handler` stays
+`pub(crate)`.
+
+Since none of the four fixed variants describes "publish rejected",
+`session::reject_error()` reuses `InvalidChunkSize(0)` purely as an inert
+carrier to trigger the unwind — its `Display` text must never be read as
+the real reason. The real reason (`app`, `stream`, `reason` — one of
+`wrong_app`/`busy`/`invalid_name`) is logged at `info` as `rtmp publish
+rejected` right before the `Err` is returned; the generic
+`rtmp session ended with error` debug log in `lib.rs::serve` (already
+existing, unchanged) just shows `ServerSessionError`'s misleading text.
+
+Covered by three integration tests in `tests/rtmp.rs`:
+`wrong_app_is_rejected`, `busy_name_second_publisher_is_rejected` (two
+concurrent ffmpeg publishers racing for `live/same`, 1s apart — the second
+is disconnected within 3s and the first's `frames_in` keeps rising for 2
+more seconds), and `invalid_stream_name_is_rejected` (`live/..bad`). All
+three assert ffmpeg exits within 3s with a non-zero status.
 
 ## Video dimensions / fps
 

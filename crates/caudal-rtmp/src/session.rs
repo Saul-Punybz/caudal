@@ -153,6 +153,20 @@ impl Handler {
     }
 }
 
+/// `ServerSessionError` (scuffle-rtmp 0.2.3) is a closed enum with no
+/// "rejected"/"custom" variant we're allowed to add (see NOTES.md). Returning
+/// *any* `Err` from `on_publish` still does what we need: `on_command_publish`
+/// propagates it with `?` before sending `NetStream.Publish.Start`, straight
+/// out of `ServerSession::run(self)`, which drops `self` — and with it the
+/// `TcpStream` it owns — closing the connection immediately, no extra
+/// round trip. `InvalidChunkSize(0)` is reused purely as an inert carrier to
+/// trigger that unwind; its `Display` text is misleading and must never be
+/// treated as the reason. The real reason is the `rtmp publish rejected` info
+/// log emitted right before returning it.
+fn reject_error() -> ServerSessionError {
+    ServerSessionError::InvalidChunkSize(0)
+}
+
 impl SessionHandler for Handler {
     async fn on_publish(
         &mut self,
@@ -161,10 +175,10 @@ impl SessionHandler for Handler {
         stream_name: &str,
     ) -> Result<(), ServerSessionError> {
         if app_name != self.app {
-            tracing::warn!(app = %app_name, expected = %self.app, stream = %stream_name, "rejecting publish: wrong app");
-            // Accept the RTMP handshake but never create a Publisher: no data
-            // for this stream_id will ever be published to the registry.
-            return Ok(());
+            tracing::info!(app = %app_name, stream = %stream_name, reason = "wrong_app", "rtmp publish rejected");
+            // No Publisher is ever created for this stream_id; returning Err
+            // ends the session and closes the TCP connection (see reject_error).
+            return Err(reject_error());
         }
 
         match self.registry.publish(stream_name, self.buffer) {
@@ -172,16 +186,17 @@ impl SessionHandler for Handler {
                 let shared = Arc::new(Shared { publisher, pending: Mutex::new(Pending::default()) });
                 spawn_announce_deadline(&shared);
                 self.streams.insert(stream_id, shared);
+                Ok(())
             }
             Err(PublishError::Busy(name)) => {
-                tracing::warn!(stream = %name, "rejecting publish: already publishing");
+                tracing::info!(app = %app_name, stream = %name, reason = "busy", "rtmp publish rejected");
+                Err(reject_error())
             }
             Err(PublishError::InvalidName) => {
-                tracing::warn!(stream = %stream_name, "rejecting publish: invalid stream name");
+                tracing::info!(app = %app_name, stream = %stream_name, reason = "invalid_name", "rtmp publish rejected");
+                Err(reject_error())
             }
         }
-
-        Ok(())
     }
 
     async fn on_unpublish(&mut self, stream_id: u32) -> Result<(), ServerSessionError> {

@@ -93,11 +93,11 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [x] **M1: Server shell.** `caudal` binary, TOML config, HTTP API, `/metrics`, graceful shutdown.
 - [x] **M2: RTMP ingest.** OBS or ffmpeg publishing into the ring.
 - [x] **M3: LL-HLS / CMAF output.** (browser playback still to confirm) First playable path: OBS → Caudal → browser.
-- [~] **M4: SRT** in (done, batch 2); out still to do.
+- [x] **M4: SRT** in (batch 2) and out: pull + push (batch 6).
 - [x] **M5: WebRTC.** WHIP in, WHEP out (no TURN yet; AAC sources video-only until M11).
 - [x] **M6: MoQ / WebTransport.** Output done (ingest over MoQ still to do).
 - [x] **M7: Auth + TLS.** JWT/JWKS, webhooks, ACME (ACME untested against a real CA; Safari over h2 pending a trusted local cert).
-- [ ] **M8: Recording and VOD.** MP4 to disk, DVR window, MP4/TS/MKV file inputs.
+- [x] **M8: Recording and VOD.** (batch 6; S3/GCS upload untested against real buckets) MP4 to disk, DVR window, MP4/TS/MKV file inputs.
 - [ ] **M9: RTSP** pull (retina) and server.
 - [ ] **M10: Clustering.** Origin-edge.
 - [ ] **M11: Transcoding.**

@@ -105,6 +105,11 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
 
+## Batch 6 result (18 Sep 2026)
+All three agents stalled once on a service watchdog (600 s without progress); R's WIP was saved and resumed, S restarted from scratch. Merged R (recording: CMAF segments + VOD playlist, crash-safe temp+rename, restart recovery, retention, ordered object_store upload with retries; clips as progressive MP4 streamed from segment byte ranges with edit lists; StartAt::Oldest), S (SRT out: `play/<name>` pull and `[[srt.push]]` with reconnect; MPEG-TS mux on `mpeg2ts` — moq-mux's exporter needs a hang broadcast; H.264 + AAC verified, H.265 untested, Opus not muxed; fixed a trailing-PES bug), T (WebKit over HTTPS in the browser suite; Safari bimodal finding).
+**Verified:** workspace **158/158**, e2e **15/15** (new: record → VOD → clip), cargo-deny ok, clippy clean, no leftover processes.
+**Not verified:** object-storage upload against real S3/GCS (file:// only); H.265 over SRT out; Opus over SRT out (not muxed).
+
 ## Batch 6 (launched 18 Sep 2026): M8 recording + VOD, SRT out, Safari over HTTPS in CI
 **Goal:** record any stream to disk (optionally S3/R2), replay it as VOD, cut clips; send streams out over SRT; the browser suite measures Safari over HTTPS.
 

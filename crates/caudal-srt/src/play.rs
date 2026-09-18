@@ -16,7 +16,13 @@ const CHUNK_BYTES: usize = 7 * 188;
 /// Serves `name` as MPEG-TS on `socket` until the stream ends, the viewer
 /// disconnects, or authorization is refused. Never panics: any failure ends
 /// this connection only, never the listener.
-pub(crate) async fn handle(socket: SrtSocket, peer: SocketAddrV4, registry: Arc<Registry>, name: &str, token: Option<&str>) {
+pub(crate) async fn handle(
+    socket: SrtSocket,
+    peer: SocketAddrV4,
+    registry: Arc<Registry>,
+    name: &str,
+    token: Option<&str>,
+) {
     if let Err(denied) = registry.authorize(Access::Play, name, token).await {
         tracing::info!(%peer, stream = %name, reason = ?denied, "srt play rejected");
         return;

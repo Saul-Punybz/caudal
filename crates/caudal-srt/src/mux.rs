@@ -204,11 +204,7 @@ impl TsMux {
     /// (Opus, or a video codec whose init hasn't parsed yet) is dropped.
     pub(crate) fn push_frame(&mut self, info: &TrackInfo, frame: &Frame) {
         self.maybe_write_psi(frame.keyframe && info.kind() == TrackKind::Video);
-        let pcr = if self.is_pcr_track(info.kind()) {
-            self.due_pcr(to_90k(frame.dts, info.timescale))
-        } else {
-            None
-        };
+        let pcr = if self.is_pcr_track(info.kind()) { self.due_pcr(to_90k(frame.dts, info.timescale)) } else { None };
         match info.kind() {
             TrackKind::Video => self.write_video(info, frame, pcr),
             TrackKind::Audio if info.codec == Codec::Aac => self.write_audio(info, frame, pcr),
@@ -468,9 +464,7 @@ mod tests {
     fn h264_init() -> Bytes {
         // A tiny but structurally valid SPS/PPS pair (baseline, 16x16),
         // built the same way `crate::ts::build_avcc` does.
-        let sps: &[u8] = &[
-            0x67, 0x42, 0x00, 0x0A, 0x8C, 0x8D, 0x40, 0x50, 0x1E, 0xD0, 0x0F, 0x08, 0x84, 0x6A,
-        ];
+        let sps: &[u8] = &[0x67, 0x42, 0x00, 0x0A, 0x8C, 0x8D, 0x40, 0x50, 0x1E, 0xD0, 0x0F, 0x08, 0x84, 0x6A];
         let pps: &[u8] = &[0x68, 0xCE, 0x3C, 0x80];
         let avcc = mp4_atom::Avcc::new(sps, pps).unwrap();
         let mut out = Vec::new();
@@ -548,8 +542,7 @@ mod tests {
         let audio = audio_track();
         let mut mux = TsMux::new();
         mux.set_tracks(std::slice::from_ref(&audio));
-        let frame =
-            Frame { track: TrackId(1), dts: 0, pts: 0, keyframe: true, data: Bytes::from_static(&[0xAA; 100]) };
+        let frame = Frame { track: TrackId(1), dts: 0, pts: 0, keyframe: true, data: Bytes::from_static(&[0xAA; 100]) };
         mux.push_frame(&audio, &frame);
         let out = mux.take_output();
         assert!(!out.is_empty());
@@ -598,7 +591,20 @@ mod tests {
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../caudal-hls/tests/fixtures/av.mp4");
         let annexb_path = std::env::temp_dir().join(format!("caudal_srt_mux_fixture_{}.h264", std::process::id()));
         let extract = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-i", fixture, "-an", "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264"])
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                fixture,
+                "-an",
+                "-c:v",
+                "copy",
+                "-bsf:v",
+                "h264_mp4toannexb",
+                "-f",
+                "h264",
+            ])
             .arg(&annexb_path)
             .status()
             .expect("run ffmpeg to extract Annex B");
@@ -616,9 +622,7 @@ mod tests {
             .expect("run ffmpeg to build the reference remux");
         assert!(remux.success(), "ffmpeg reference remux failed");
         let probe = std::process::Command::new("ffprobe")
-            .args([
-                "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts,dts", "-of", "csv=p=0",
-            ])
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts,dts", "-of", "csv=p=0"])
             .arg(&ref_ts_path)
             .output()
             .expect("run ffprobe on the reference remux");

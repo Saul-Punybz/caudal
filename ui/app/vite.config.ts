@@ -18,6 +18,7 @@ export default defineConfig({
       '/api': 'http://127.0.0.1:8080',
       '/hls': 'http://127.0.0.1:8080',
       '/play': 'http://127.0.0.1:8080',
+      '/moq': 'http://127.0.0.1:8080',
     },
   },
 });

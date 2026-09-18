@@ -11,6 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@moq/hang": "0.4.3",
+    "@moq/watch": "0.5.4",
     "hls.js": "^1.5.17",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

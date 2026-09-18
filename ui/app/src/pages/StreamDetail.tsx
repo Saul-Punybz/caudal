@@ -1,22 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { getStream } from '../api';
+import { getMoqFingerprint, getStream } from '../api';
 import { bitrateFromDelta, formatBitrate } from '../bitrate';
 import { usePolling } from '../hooks/usePolling';
 import { LiveBadge } from '../components/LiveBadge';
 import { Player, type AuthErrorKind } from '../components/Player';
 import { WebRtcPlayer } from '../components/WebRtcPlayer';
+import { MoqPlayer } from '../components/MoqPlayer';
 import { CopyRow } from '../components/CopyRow';
 import { ErrorBanner, ErrorState } from '../components/ErrorState';
 import { formatCount, formatSeconds, summarizeTrack } from '../format';
 
 type Tab = 'outputs' | 'tracks' | 'health';
-type PlaybackMode = 'hls' | 'webrtc';
+type PlaybackMode = 'hls' | 'webrtc' | 'moq';
 
 export function StreamDetail() {
   const { name = '' } = useParams<{ name: string }>();
   const [searchParams] = useSearchParams();
   const { data: stream, error } = usePolling(() => getStream(name), 1000);
+  // The relay's cert is rotated every so often (see STATUS.md "Batch 5"), not
+  // every second, but polling slowly here also means the MoQ option starts
+  // working without a page reload once the server adds support.
+  const { data: moq, error: moqError } = usePolling(() => getMoqFingerprint(), 5000);
+  const moqSupported = typeof window !== 'undefined' && 'WebTransport' in window;
   const [tab, setTab] = useState<Tab>('outputs');
   const [mode, setMode] = useState<PlaybackMode>('hls');
   const [latency, setLatency] = useState<number | null>(null);
@@ -105,6 +111,7 @@ export function StreamDetail() {
           <div className="flex items-center justify-between gap-3">
             <ModeSwitch
               mode={mode}
+              moqDisabled={!moqSupported}
               onChange={(m) => {
                 setMode(m);
                 setAuthError(null);
@@ -131,8 +138,23 @@ export function StreamDetail() {
             />
           ) : mode === 'hls' ? (
             <Player streamName={stream.name} token={token} onLatency={setLatency} onAuthError={setAuthError} />
-          ) : (
+          ) : mode === 'webrtc' ? (
             <WebRtcPlayer url={whepUrl} token={token} onLatencyMs={setLatency} onAuthError={setAuthError} />
+          ) : moq ? (
+            <MoqPlayer
+              relayUrl={moq.url}
+              broadcastName={stream.name}
+              fingerprint={moq.fingerprint}
+              token={token}
+              onLatencyMs={setLatency}
+            />
+          ) : (
+            <div
+              role="status"
+              className="flex aspect-video w-full items-center justify-center rounded-lg bg-surface-container-high text-sm text-on-surface-variant"
+            >
+              {moqError ? "Media over QUIC isn't available on this server yet." : 'Loading MoQ endpoint…'}
+            </div>
           )}
 
           <div aria-live="polite" className="flex flex-wrap gap-3 text-sm text-on-surface-variant">
@@ -141,7 +163,9 @@ export function StreamDetail() {
                 ? 'measuring latency…'
                 : mode === 'hls'
                   ? `${latency.toFixed(1)} s behind live`
-                  : `≈ ${Math.round(latency)} ms buffer`}
+                  : mode === 'webrtc'
+                    ? `≈ ${Math.round(latency)} ms buffer`
+                    : `≈ ${Math.round(latency)} ms jitter buffer`}
             </span>
             <span className="num rounded-full bg-surface-container-high px-3 py-1">
               {formatCount(stream.stats.viewers)} viewers
@@ -178,7 +202,28 @@ export function StreamDetail() {
                 tag={aacOnly ? 'POST · video only' : 'POST · H.264 + Opus'}
                 url={whepUrl}
               />
-              <CopyRow icon="bolt" label="Media over QUIC" tag="coming soon" url="not yet available" disabled />
+              {moq ? (
+                <>
+                  <CopyRow icon="bolt" label="Media over QUIC relay" tag="WebTransport" url={moq.url} />
+                  <CopyRow icon="podcasts" label="Broadcast name" tag="= stream name" url={stream.name} />
+                  {moq.fingerprint && (
+                    <CopyRow
+                      icon="fingerprint"
+                      label="Certificate fingerprint"
+                      tag="sha-256, self-signed"
+                      url={moq.fingerprint}
+                    />
+                  )}
+                </>
+              ) : (
+                <CopyRow
+                  icon="bolt"
+                  label="Media over QUIC"
+                  tag={moqError ? 'not available yet' : 'loading…'}
+                  url="not yet available"
+                  disabled
+                />
+              )}
               <CopyRow icon="swap_calls" label="SRT" tag="coming soon" url="not yet available" disabled />
             </div>
           )}
@@ -285,14 +330,16 @@ function HealthRow({ ok, label, detail }: { ok: boolean | null; label: string; d
   );
 }
 
-/** M3 segmented button: a two-way choice between the low-latency HLS
- * player and the sub-second WebRTC one. */
+/** M3 segmented button: a three-way choice between the low-latency HLS
+ * player, the sub-second WebRTC one, and Media over QUIC. */
 function ModeSwitch({
   mode,
+  moqDisabled,
   onChange,
 }: {
-  mode: 'hls' | 'webrtc';
-  onChange: (mode: 'hls' | 'webrtc') => void;
+  mode: PlaybackMode;
+  moqDisabled: boolean;
+  onChange: (mode: PlaybackMode) => void;
 }) {
   return (
     <div
@@ -302,18 +349,40 @@ function ModeSwitch({
     >
       <SegButton label="LL-HLS" selected={mode === 'hls'} onSelect={() => onChange('hls')} />
       <SegButton label="WebRTC" selected={mode === 'webrtc'} onSelect={() => onChange('webrtc')} />
+      <SegButton
+        label="MoQ"
+        selected={mode === 'moq'}
+        onSelect={() => onChange('moq')}
+        disabled={moqDisabled}
+        disabledReason="needs WebTransport (Chrome, Edge, Firefox)"
+      />
     </div>
   );
 }
 
-function SegButton({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
+function SegButton({
+  label,
+  selected,
+  onSelect,
+  disabled = false,
+  disabledReason,
+}: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+  disabled?: boolean;
+  disabledReason?: string;
+}) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
-      onClick={onSelect}
-      className={`state-layer flex items-center gap-1.5 border-0 px-4 text-sm font-medium ${
+      aria-disabled={disabled}
+      title={disabled ? disabledReason : undefined}
+      onClick={disabled ? undefined : onSelect}
+      disabled={disabled}
+      className={`state-layer flex items-center gap-1.5 border-0 px-4 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${
         selected ? 'bg-secondary-container text-on-secondary-container' : 'bg-transparent text-on-surface-variant'
       }`}
     >

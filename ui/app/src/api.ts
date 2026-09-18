@@ -67,3 +67,16 @@ export function listStreams(): Promise<Stream[]> {
 export function getStream(name: string): Promise<Stream> {
   return getJson<Stream>(`/api/v1/streams/${encodeURIComponent(name)}`);
 }
+
+export interface MoqFingerprint {
+  /** The relay's own base URL, e.g. `https://host:port`. */
+  url: string;
+  /** Lowercase hex SHA-256 of the relay's certificate, or null when the
+   * server has a real (CA-signed) certificate the browser already trusts. */
+  fingerprint: string | null;
+}
+
+/** GET /moq/fingerprint */
+export function getMoqFingerprint(): Promise<MoqFingerprint> {
+  return getJson<MoqFingerprint>('/moq/fingerprint');
+}

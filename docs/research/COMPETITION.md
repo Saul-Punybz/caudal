@@ -4,7 +4,7 @@ Compiled 18 Sep 2026 from five Haiku research agents (open-source servers,
 commercial/cloud, SFUs + MoQ, user pain points, markets) and checked by hand.
 Claims marked **verified** were checked against the source; everything else
 is as reported and **unverified**. A Gemini Deep Research run
-(`gemini-competition-prompt.md`) is pending for cross-checking.
+(`gemini-competition-prompt.md`) was received the same day; see the cross-check at the end.
 
 ## Corrections to the agents (verified)
 

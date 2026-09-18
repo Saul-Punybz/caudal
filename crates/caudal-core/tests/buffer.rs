@@ -230,3 +230,17 @@ async fn recv_wakes_on_push_and_on_end() {
     let got = tokio::time::timeout(Duration::from_secs(5), reader).await.unwrap().unwrap();
     assert_eq!(got, (0..60).map(|n| n * 3000).collect::<Vec<_>>());
 }
+
+#[test]
+fn publishes_are_announced() {
+    let reg = Registry::new();
+    let mut rx = reg.subscribe_publishes();
+    let _p = reg.publish("live", cfg(1)).unwrap();
+    assert_eq!(rx.try_recv().unwrap().name(), "live");
+}
+
+#[test]
+fn api_names() {
+    assert_eq!(Codec::H264.as_str(), "h264");
+    assert_eq!(Codec::Aac.kind().as_str(), "audio");
+}

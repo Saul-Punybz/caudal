@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tokio::sync::broadcast;
 
 use crate::media::{Frame, TrackInfo, valid_stream_name};
 use crate::stream::{BufferConfig, PushError, StartAt, Stream, Subscriber};
@@ -16,14 +17,26 @@ pub enum PublishError {
     Busy(String),
 }
 
-#[derive(Default)]
 pub struct Registry {
     streams: Mutex<HashMap<Arc<str>, Arc<Stream>>>,
+    published: broadcast::Sender<Arc<Stream>>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self { streams: Mutex::default(), published: broadcast::channel(64).0 }
+    }
 }
 
 impl Registry {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Every stream that starts publishing from now on. Outputs that must
+    /// run ahead of their first viewer (LL-HLS) start their packager here.
+    pub fn subscribe_publishes(&self) -> broadcast::Receiver<Arc<Stream>> {
+        self.published.subscribe()
     }
 
     /// Claims `name` for a new publisher. The claim lasts until the returned
@@ -39,6 +52,8 @@ impl Registry {
         let name: Arc<str> = name.into();
         let stream = Stream::new(name.clone(), cfg);
         map.insert(name, stream.clone());
+        drop(map);
+        let _ = self.published.send(stream.clone());
         tracing::info!(stream = %stream.name(), "publish started");
         Ok(Publisher { registry: self.clone(), stream })
     }

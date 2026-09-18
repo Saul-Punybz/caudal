@@ -38,7 +38,41 @@ pub enum Codec {
     Json,
 }
 
+impl TrackKind {
+    /// Lowercase name used in the HTTP API.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrackKind::Video => "video",
+            TrackKind::Audio => "audio",
+            TrackKind::Subtitle => "subtitle",
+            TrackKind::Data => "data",
+        }
+    }
+}
+
 impl Codec {
+    /// Lowercase name used in the HTTP API and logs.
+    pub fn as_str(self) -> &'static str {
+        use Codec::*;
+        match self {
+            H264 => "h264",
+            H265 => "h265",
+            Av1 => "av1",
+            Vp8 => "vp8",
+            Vp9 => "vp9",
+            Aac => "aac",
+            Opus => "opus",
+            Mp3 => "mp3",
+            Ac3 => "ac3",
+            Eac3 => "eac3",
+            Flac => "flac",
+            Pcm => "pcm",
+            WebVtt => "webvtt",
+            Scte35 => "scte35",
+            Json => "json",
+        }
+    }
+
     pub fn kind(self) -> TrackKind {
         use Codec::*;
         match self {

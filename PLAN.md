@@ -145,6 +145,17 @@ claiming in public.
 - **`caudal doctor`**: checks ports, NAT, TLS, clock, codecs of an incoming stream, and prints what to fix.
 - **Conformance in CI**: Apple `mediastreamvalidator` on every LL-HLS change, fuzz targets on every parser, interop tests against libsrt/librist/ffmpeg/OBS.
 
+### A+. From the competition study (18 Sep 2026, docs/research/COMPETITION.md)
+- **Automatic live captions** (local speech-to-text → WebVTT in LL-HLS, CEA-608 in TS; es + en). ADA Title II: 26 Apr 2027 / 26 Apr 2028.
+- **Multistreaming** to YouTube/Twitch/Facebook (RTMP push with per-destination status).
+- **Admin login** for UI and API (OIDC/SSO; LDAP optional). Blocker for public deployments.
+- **Stream health alerts** (no keyframes, bitrate drop, publisher lost) → webhooks / email / Slack.
+- **Recording schedules.**
+- **MoQ on Safari 26.4+** (WebTransport shipped); test and lift the UI gate.
+- **Geo-blocking / IP allow-lists** per stream.
+- **Raspberry Pi appliance image.**
+- **DASH output** (low priority).
+
 ### C. Later
 - HDR metadata passthrough (HEVC SEI via `hevc_parser`), Dolby Vision RPU.
 - Scheduled/playlist channels from VOD files (keep small; ANTENA787 is the real playout).

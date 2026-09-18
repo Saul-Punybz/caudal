@@ -1,21 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { getStream } from '../api';
 import { bitrateFromDelta, formatBitrate } from '../bitrate';
 import { usePolling } from '../hooks/usePolling';
 import { LiveBadge } from '../components/LiveBadge';
-import { Player } from '../components/Player';
+import { Player, type AuthErrorKind } from '../components/Player';
+import { WebRtcPlayer } from '../components/WebRtcPlayer';
 import { CopyRow } from '../components/CopyRow';
 import { ErrorBanner, ErrorState } from '../components/ErrorState';
 import { formatCount, formatSeconds, summarizeTrack } from '../format';
 
 type Tab = 'outputs' | 'tracks' | 'health';
+type PlaybackMode = 'hls' | 'webrtc';
 
 export function StreamDetail() {
   const { name = '' } = useParams<{ name: string }>();
+  const [searchParams] = useSearchParams();
   const { data: stream, error } = usePolling(() => getStream(name), 1000);
   const [tab, setTab] = useState<Tab>('outputs');
+  const [mode, setMode] = useState<PlaybackMode>('hls');
   const [latency, setLatency] = useState<number | null>(null);
+  const [authError, setAuthError] = useState<AuthErrorKind | null>(null);
+  const [token, setToken] = useState<string | undefined>(() => searchParams.get('token') ?? undefined);
 
   // Track frames_in across polls to report whether ingest is still moving,
   // and bytes_in to compute a live bitrate — same technique as the Overview
@@ -46,6 +52,9 @@ export function StreamDetail() {
     setFramesRising(null);
     setBitrate(null);
     setTab('outputs');
+    setMode('hls');
+    setAuthError(null);
+    setLatency(null);
   }, [name]);
 
   if (!stream && error) {
@@ -72,6 +81,11 @@ export function StreamDetail() {
   const origin = typeof window !== 'undefined' ? window.location.origin : `http://${host}:8080`;
   const rtmpUrl = `rtmp://${host}:1935/live/${stream.name}`;
   const hlsUrl = `${origin}/hls/${encodeURIComponent(stream.name)}/master.m3u8`;
+  const whepUrl = `${origin}/whep/${encodeURIComponent(stream.name)}`;
+  // RTMP/SRT sources without Opus arrive as AAC; WHEP can't carry that
+  // without transcoding (see STATUS.md "Batch 4"), so the stream is
+  // video-only over WebRTC. Said plainly rather than silently dropping audio.
+  const aacOnly = stream.tracks.some((t) => t.kind === 'audio' && t.codec.toLowerCase().includes('aac'));
 
   return (
     <main className="flex min-w-0 flex-grow flex-col gap-4 p-6">
@@ -88,10 +102,46 @@ export function StreamDetail() {
 
       <div className="flex min-h-0 flex-grow flex-col gap-4 lg:flex-row">
         <div className="flex min-w-0 flex-grow flex-col gap-4">
-          <Player streamName={stream.name} onLatency={setLatency} />
-          <div className="flex flex-wrap gap-3 text-sm text-on-surface-variant">
+          <div className="flex items-center justify-between gap-3">
+            <ModeSwitch
+              mode={mode}
+              onChange={(m) => {
+                setMode(m);
+                setAuthError(null);
+                setLatency(null);
+              }}
+            />
+            {mode === 'webrtc' && aacOnly && (
+              <span className="flex items-center gap-1.5 text-xs text-on-surface-variant">
+                <span className="ms text-base" aria-hidden="true">
+                  info
+                </span>
+                audio not available over WebRTC for this stream (AAC source)
+              </span>
+            )}
+          </div>
+
+          {authError ? (
+            <TokenPrompt
+              refused={authError === 'refused'}
+              onSubmit={(t) => {
+                setToken(t);
+                setAuthError(null);
+              }}
+            />
+          ) : mode === 'hls' ? (
+            <Player streamName={stream.name} token={token} onLatency={setLatency} onAuthError={setAuthError} />
+          ) : (
+            <WebRtcPlayer url={whepUrl} token={token} onLatencyMs={setLatency} onAuthError={setAuthError} />
+          )}
+
+          <div aria-live="polite" className="flex flex-wrap gap-3 text-sm text-on-surface-variant">
             <span className="num rounded-full bg-surface-container-high px-3 py-1">
-              {latency !== null ? `${latency.toFixed(1)} s behind live` : 'measuring latency…'}
+              {latency === null
+                ? 'measuring latency…'
+                : mode === 'hls'
+                  ? `${latency.toFixed(1)} s behind live`
+                  : `≈ ${Math.round(latency)} ms buffer`}
             </span>
             <span className="num rounded-full bg-surface-container-high px-3 py-1">
               {formatCount(stream.stats.viewers)} viewers
@@ -122,7 +172,12 @@ export function StreamDetail() {
                 Play it
               </div>
               <CopyRow icon="stream" label="LL-HLS" tag="hls.js / Safari" url={hlsUrl} />
-              <CopyRow icon="podcasts" label="WebRTC" tag="coming soon" url="not yet available" disabled />
+              <CopyRow
+                icon="podcasts"
+                label="WebRTC (WHEP)"
+                tag={aacOnly ? 'POST · video only' : 'POST · H.264 + Opus'}
+                url={whepUrl}
+              />
               <CopyRow icon="bolt" label="Media over QUIC" tag="coming soon" url="not yet available" disabled />
               <CopyRow icon="swap_calls" label="SRT" tag="coming soon" url="not yet available" disabled />
             </div>
@@ -226,6 +281,94 @@ function HealthRow({ ok, label, detail }: { ok: boolean | null; label: string; d
       </span>
       <span className="flex-grow">{label}</span>
       <span className="num text-sm text-on-surface-variant">{detail}</span>
+    </div>
+  );
+}
+
+/** M3 segmented button: a two-way choice between the low-latency HLS
+ * player and the sub-second WebRTC one. */
+function ModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: 'hls' | 'webrtc';
+  onChange: (mode: 'hls' | 'webrtc') => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Playback protocol"
+      className="inline-flex h-10 overflow-hidden rounded-full border border-outline"
+    >
+      <SegButton label="LL-HLS" selected={mode === 'hls'} onSelect={() => onChange('hls')} />
+      <SegButton label="WebRTC" selected={mode === 'webrtc'} onSelect={() => onChange('webrtc')} />
+    </div>
+  );
+}
+
+function SegButton({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      className={`state-layer flex items-center gap-1.5 border-0 px-4 text-sm font-medium ${
+        selected ? 'bg-secondary-container text-on-secondary-container' : 'bg-transparent text-on-surface-variant'
+      }`}
+    >
+      {selected && (
+        <span className="ms text-lg" aria-hidden="true">
+          check
+        </span>
+      )}
+      {label}
+    </button>
+  );
+}
+
+/** Shown instead of a broken player on 401 ("token needed") or 403
+ * ("token refused"). An M3 outlined text field with a floating label. */
+function TokenPrompt({ refused, onSubmit }: { refused: boolean; onSubmit: (token: string) => void }) {
+  const [value, setValue] = useState('');
+  return (
+    <div
+      role="alert"
+      className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-lg bg-surface-container-high p-6 text-center"
+    >
+      <span className="ms text-4xl text-on-surface-variant" aria-hidden="true">
+        {refused ? 'block' : 'lock'}
+      </span>
+      <p className="m-0 text-sm text-on-surface-variant">
+        {refused ? 'Token refused.' : 'This stream needs a token to play.'}
+      </p>
+      <form
+        className="flex w-full max-w-xs items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (value.trim()) onSubmit(value.trim());
+        }}
+      >
+        <label className="relative min-w-0 flex-grow">
+          <span className="absolute -top-2 left-2.5 rounded-sm bg-surface-container-high px-1 text-xs text-on-surface-variant">
+            Token
+          </span>
+          <input
+            type="text"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            aria-label="Play token"
+            autoComplete="off"
+            className="h-12 w-full min-w-0 rounded-sm border border-outline bg-transparent px-3.5 text-sm text-on-surface outline-none focus-visible:border-2 focus-visible:border-primary"
+          />
+        </label>
+        <button
+          type="submit"
+          className="state-layer h-12 flex-shrink-0 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary"
+        >
+          Play
+        </button>
+      </form>
     </div>
   );
 }

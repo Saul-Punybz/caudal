@@ -1,16 +1,23 @@
 import type Hls from 'hls.js';
 import { useEffect, useRef, useState } from 'react';
 
+export type AuthErrorKind = 'missing' | 'refused';
+
 interface Props {
   streamName: string;
+  /** From the page's `?token=`, if any. Appended to the manifest URL. */
+  token?: string;
   /** Called whenever the measured "seconds behind live" changes. */
   onLatency: (seconds: number | null) => void;
+  /** Called with 'missing' on 401, 'refused' on 403, or null once playback
+   * is proceeding normally. */
+  onAuthError: (kind: AuthErrorKind | null) => void;
 }
 
 /** hls.js in low-latency mode, with a native-HLS fallback for Safari.
  * Muted autoplay so browsers don't block it. hls.js (~150KB gzipped) is
  * dynamically imported so the Overview page never has to load it. */
-export function Player({ streamName, onLatency }: Props) {
+export function Player({ streamName, token, onLatency, onAuthError }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
 
@@ -18,13 +25,35 @@ export function Player({ streamName, onLatency }: Props) {
     const video = videoRef.current;
     if (!video) return;
     setPlaybackError(null);
-    const src = `/hls/${encodeURIComponent(streamName)}/master.m3u8`;
+    onAuthError(null);
+    const base = `/hls/${encodeURIComponent(streamName)}/master.m3u8`;
+    const src = token ? `${base}?token=${encodeURIComponent(token)}` : base;
 
     let hls: Hls | null = null;
     let latencyTimer: ReturnType<typeof setInterval> | undefined;
     let cancelled = false;
 
     async function setup() {
+      // Preflight the manifest so a missing/wrong token shows a token
+      // field instead of a broken player. If the fetch itself fails (CORS
+      // in dev, offline), fall through — hls.js's own error handling below
+      // still surfaces that.
+      try {
+        const probe = await fetch(src, { headers: { accept: 'application/vnd.apple.mpegurl' } });
+        if (cancelled) return;
+        if (probe.status === 401) {
+          onAuthError('missing');
+          return;
+        }
+        if (probe.status === 403) {
+          onAuthError('refused');
+          return;
+        }
+      } catch {
+        // See comment above.
+      }
+      if (cancelled) return;
+
       const { default: HlsCtor } = await import('hls.js');
       if (cancelled || !video) return;
 
@@ -67,7 +96,7 @@ export function Player({ streamName, onLatency }: Props) {
       onLatency(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamName]);
+  }, [streamName, token]);
 
   return (
     <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-[#0b0d1b]">

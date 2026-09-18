@@ -52,9 +52,9 @@ function RailPlaceholder({ icon, label }: { icon: string; label: string }) {
   );
 }
 
-/** Left navigation rail. Only Overview and Streams have real screens today;
- * the rest of MistServer's parity list is shown disabled, per DESIGN.md's
- * screen inventory, rather than built as fake pages. */
+/** Left navigation rail. Only Overview, Publish and Streams have real
+ * screens today; the rest of MistServer's parity list is shown disabled,
+ * per DESIGN.md's screen inventory, rather than built as fake pages. */
 export function NavRail() {
   return (
     <nav
@@ -75,6 +75,7 @@ export function NavRail() {
         </svg>
       </div>
       <RailLink to="/" icon="space_dashboard" label="Overview" />
+      <RailLink to="/publish" icon="videocam" label="Publish" />
       <RailPlaceholder icon="input" label="Ingest" />
       <RailPlaceholder icon="cast" label="Push" />
       <RailPlaceholder icon="bolt" label="Triggers" />

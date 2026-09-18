@@ -18,9 +18,9 @@ tracing = "0.1"
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-caudal-core = { path = "crates/caudal-core" }
-caudal-rtmp = { path = "crates/caudal-rtmp" }
-caudal-hls = { path = "crates/caudal-hls" }
+caudal-core = { path = "crates/caudal-core", version = "0.1.0" }
+caudal-rtmp = { path = "crates/caudal-rtmp", version = "0.1.0" }
+caudal-hls = { path = "crates/caudal-hls", version = "0.1.0" }
 
 [profile.release]
 lto = "fat"

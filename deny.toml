@@ -1,12 +1,18 @@
+# cargo-deny v2 configuration. Run: cargo deny check
+
+[graph]
+all-features = true
+
 [advisories]
-db-path = "$CARGO_HOME/advisory-db"
-db-urls = ["https://github.com/rustsec/advisory-db/raw/main/db.json.gz"]
-vulnerability = "deny"
-unmaintained = "warn"
-notice = "warn"
+version = 2
+# RustSec vulnerabilities fail the build; unmaintained crates are reported
+# for workspace dependencies only.
+unmaintained = "workspace"
+yanked = "deny"
 
 [licenses]
-unlicense = "allow"
+version = 2
+# Copyleft (GPL, AGPL, LGPL, MPL) is excluded by omission.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -22,3 +28,8 @@ confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

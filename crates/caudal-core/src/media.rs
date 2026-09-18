@@ -148,9 +148,7 @@ pub fn valid_stream_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && !name.starts_with('.')
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+'))
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+'))
 }
 
 #[cfg(test)]

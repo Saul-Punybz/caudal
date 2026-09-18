@@ -60,7 +60,9 @@ pub enum Event {
     /// before handling further frames. Always the first event a viewer gets.
     TracksChanged,
     /// The viewer was too slow and was moved forward to a keyframe.
-    Lagged { skipped: u64 },
+    Lagged {
+        skipped: u64,
+    },
     /// The publisher is gone and every buffered frame has been delivered.
     End,
 }
@@ -234,11 +236,7 @@ impl Stream {
             if r.ended {
                 return Err(PushError::Ended);
             }
-            let track = r
-                .tracks
-                .iter()
-                .find(|t| t.id == frame.track)
-                .ok_or(PushError::UnknownTrack(frame.track))?;
+            let track = r.tracks.iter().find(|t| t.id == frame.track).ok_or(PushError::UnknownTrack(frame.track))?;
             let micros = track.to_micros(frame.dts);
             // A join point is a video keyframe, or any audio frame in an
             // audio-only stream.
@@ -274,12 +272,7 @@ impl Stream {
             .unwrap_or(u64::MAX)
         };
         self.viewers.fetch_add(1, Ordering::Relaxed);
-        Subscriber {
-            stream: self.clone(),
-            next,
-            tracks_version: 0,
-            notify: self.notify.subscribe(),
-        }
+        Subscriber { stream: self.clone(), next, tracks_version: 0, notify: self.notify.subscribe() }
     }
 }
 

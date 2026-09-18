@@ -45,6 +45,10 @@ jobs:
           - aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild

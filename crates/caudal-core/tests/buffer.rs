@@ -90,9 +90,7 @@ fn window_evicts_whole_gops() {
 #[test]
 fn byte_cap_bounds_memory_regardless_of_window() {
     let reg = Registry::new();
-    let publ = reg
-        .publish("live", BufferConfig { window: Duration::from_secs(3600), max_bytes: 100_000 })
-        .unwrap();
+    let publ = reg.publish("live", BufferConfig { window: Duration::from_secs(3600), max_bytes: 100_000 }).unwrap();
     publ.set_tracks(vec![video()]).unwrap();
     for n in 0..600 {
         publ.push(vframe(n, 1_000)).unwrap();

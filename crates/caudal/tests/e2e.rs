@@ -55,7 +55,11 @@ fn rtmp_publish_appears_in_api_and_ends_on_disconnect() {
 
     // frames_in must keep rising while ffmpeg publishes.
     let read = |b: &str| -> u64 {
-        b.split("\"frames_in\":").nth(1).and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse().ok()).unwrap_or(0)
+        b.split("\"frames_in\":")
+            .nth(1)
+            .and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0)
     };
     let a = read(&s.get("/api/v1/streams/e2e").unwrap().1);
     std::thread::sleep(Duration::from_secs(2));
@@ -94,7 +98,15 @@ fn ll_hls_plays_and_validates() {
     let _publ = Publisher::rtmp(&s.rtmp_url("e2e"), 60);
 
     let playlist = s.wait_until("/hls/e2e/index.m3u8", Duration::from_secs(20), |b| b.contains("#EXT-X-PART"));
-    for tag in ["#EXTM3U", "#EXT-X-VERSION", "#EXT-X-SERVER-CONTROL", "#EXT-X-PART-INF", "#EXT-X-PART", "#EXT-X-MAP", "#EXT-X-PROGRAM-DATE-TIME"] {
+    for tag in [
+        "#EXTM3U",
+        "#EXT-X-VERSION",
+        "#EXT-X-SERVER-CONTROL",
+        "#EXT-X-PART-INF",
+        "#EXT-X-PART",
+        "#EXT-X-MAP",
+        "#EXT-X-PROGRAM-DATE-TIME",
+    ] {
         assert!(playlist.contains(tag), "playlist lacks {tag}:\n{playlist}");
     }
     assert!(playlist.contains("CAN-BLOCK-RELOAD=YES"), "blocking reload is on by default");
@@ -102,12 +114,19 @@ fn ll_hls_plays_and_validates() {
     // Init segment and the newest part must be fetchable fMP4.
     let init = s.get_bytes("/hls/e2e/init.mp4");
     assert_eq!(&init[4..8], b"ftyp", "init.mp4 starts with ftyp");
-    let part = playlist.lines().rev().find_map(|l| l.strip_prefix("#EXT-X-PART:")).and_then(|l| l.split("URI=\"").nth(1)).and_then(|u| u.split('"').next()).expect("a part URI");
+    let part = playlist
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("#EXT-X-PART:"))
+        .and_then(|l| l.split("URI=\"").nth(1))
+        .and_then(|u| u.split('"').next())
+        .expect("a part URI");
     let bytes = s.get_bytes(&format!("/hls/e2e/{part}"));
     assert!(bytes.windows(4).any(|w| w == b"moof"), "part is a CMAF fragment");
 
     // Blocking reload: asking for the next part must wait, not 404.
-    let msn: u64 = playlist.lines().find_map(|l| l.strip_prefix("#EXT-X-MEDIA-SEQUENCE:")).unwrap().trim().parse().unwrap();
+    let msn: u64 =
+        playlist.lines().find_map(|l| l.strip_prefix("#EXT-X-MEDIA-SEQUENCE:")).unwrap().trim().parse().unwrap();
     let segs = playlist.lines().filter(|l| l.starts_with("#EXTINF")).count() as u64;
     let t0 = Instant::now();
     let (code, _) = s.get(&format!("/hls/e2e/index.m3u8?_HLS_msn={}&_HLS_part=0", msn + segs)).unwrap();
@@ -123,7 +142,9 @@ fn ll_hls_plays_and_validates() {
     match support::validate_hls(&s.url("/hls/e2e/index.m3u8"), dir.path()) {
         Some(Ok(())) => {}
         Some(Err(report)) => panic!("mediastreamvalidator reported errors:\n{report}"),
-        None => eprintln!("NOT VERIFIED: mediastreamvalidator not installed; LL-HLS conformance unchecked on this machine"),
+        None => {
+            eprintln!("NOT VERIFIED: mediastreamvalidator not installed; LL-HLS conformance unchecked on this machine")
+        }
     }
 
     // The player page exists and carries the latency readout.

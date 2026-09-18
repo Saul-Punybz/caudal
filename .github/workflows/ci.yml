@@ -34,7 +34,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: brew install ffmpeg
-      - run: CAUDAL_E2E=1 cargo test -p caudal --test e2e -- --test-threads=1
+      - name: Is Apple's validator installed?
+        id: msv
+        run: |
+          if command -v mediastreamvalidator >/dev/null; then
+            echo "present=1" >> "$GITHUB_OUTPUT"
+            echo "mediastreamvalidator: $(command -v mediastreamvalidator)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "present=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=LL-HLS conformance NOT VERIFIED::mediastreamvalidator is not installed on this runner (Apple ships it in the HTTP Live Streaming Tools download, behind an Apple ID)."
+            echo "### ⚠️ LL-HLS conformance NOT VERIFIED: mediastreamvalidator not installed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: e2e (validator required when present)
+        env:
+          CAUDAL_E2E: "1"
+          CAUDAL_REQUIRE_HLS_VALIDATOR: ${{ steps.msv.outputs.present }}
+          CAUDAL_VALIDATION_DIR: ${{ github.workspace }}/hls-validation
+        run: cargo test -p caudal --test e2e -- --test-threads=1 --nocapture
+      - name: Evidence the validator ran
+        if: steps.msv.outputs.present == '1'
+        run: |
+          ls -l hls-validation
+          test -s hls-validation/ll_hls.json
+          test -s hls-validation/canary.json
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.msv.outputs.present == '1'
+        with:
+          name: hls-validation
+          path: hls-validation/
 
   build-static:
     runs-on: ubuntu-latest

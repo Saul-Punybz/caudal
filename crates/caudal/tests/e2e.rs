@@ -152,7 +152,7 @@ fn ll_hls_plays_and_validates() {
 
     // Apple's validator, when installed (macOS with Xcode tools).
     let dir = tempfile::tempdir().unwrap();
-    match support::validate_hls(&s.url("/hls/e2e/index.m3u8"), dir.path()) {
+    match support::validate_hls(&s.url("/hls/e2e/index.m3u8"), dir.path(), "ll_hls") {
         Some(Ok(())) => {}
         Some(Err(report)) => panic!("mediastreamvalidator reported errors:\n{report}"),
         None => {
@@ -179,4 +179,29 @@ fn config_check_rejects_unknown_key_with_line_number() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("http_bnid") && err.contains("line 3"), "{err}");
+}
+
+/// Canary: the validator must FAIL on a broken playlist. Proves the tool is
+/// installed and actually checking, not just exiting 0.
+#[test]
+fn validator_rejects_a_broken_playlist() {
+    if std::env::var("CAUDAL_E2E").is_err() {
+        return;
+    }
+    if !support::have_validator() {
+        eprintln!("NOT VERIFIED: mediastreamvalidator not installed; canary skipped");
+        return;
+    }
+    // Segment URI that 404s, target duration shorter than the segment, no
+    // ENDLIST on a VOD-looking list: several independent errors.
+    let port = support::serve_static(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:6.0,\nmissing.ts\n",
+        "application/vnd.apple.mpegurl",
+    );
+    let dir = tempfile::tempdir().unwrap();
+    match support::validate_hls(&format!("http://127.0.0.1:{port}/bad.m3u8"), dir.path(), "canary") {
+        Some(Err(_)) => {}
+        Some(Ok(())) => panic!("mediastreamvalidator accepted a broken playlist; it is not really validating"),
+        None => unreachable!("have_validator() was true"),
+    }
 }

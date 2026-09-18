@@ -147,13 +147,32 @@ pub fn ffmpeg_has_filter(name: &str) -> bool {
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.split_whitespace().nth(1) == Some(name)))
 }
 
-/// Runs Apple's mediastreamvalidator when available. Returns `None` when the
-/// tool is not installed (Linux CI); the caller reports that, not a pass.
-pub fn validate_hls(playlist_url: &str, out_dir: &Path) -> Option<Result<(), String>> {
-    if !have("mediastreamvalidator") {
+/// True when CI demands the validator (`CAUDAL_REQUIRE_HLS_VALIDATOR=1`):
+/// then a missing tool is a failure, not a silent skip.
+pub fn validator_required() -> bool {
+    std::env::var("CAUDAL_REQUIRE_HLS_VALIDATOR").is_ok_and(|v| v == "1")
+}
+
+pub fn have_validator() -> bool {
+    let present = have("mediastreamvalidator");
+    if !present && validator_required() {
+        panic!("CAUDAL_REQUIRE_HLS_VALIDATOR=1 but mediastreamvalidator is not installed");
+    }
+    present
+}
+
+/// Runs Apple's mediastreamvalidator on `playlist_url`. Returns `None` when
+/// the tool is absent (and not required). When `CAUDAL_VALIDATION_DIR` is
+/// set, the JSON report is kept there as evidence that the tool really ran;
+/// CI uploads that directory and fails if it is empty.
+pub fn validate_hls(playlist_url: &str, out_dir: &Path, label: &str) -> Option<Result<(), String>> {
+    if !have_validator() {
         return None;
     }
-    let report: PathBuf = out_dir.join("validation.json");
+    let keep = std::env::var_os("CAUDAL_VALIDATION_DIR").map(PathBuf::from);
+    let dir = keep.clone().unwrap_or_else(|| out_dir.to_path_buf());
+    std::fs::create_dir_all(&dir).ok()?;
+    let report = dir.join(format!("{label}.json"));
     let out = Command::new("mediastreamvalidator")
         .args(["--timeout", "20", "--validation-data-path"])
         .arg(&report)
@@ -161,6 +180,27 @@ pub fn validate_hls(playlist_url: &str, out_dir: &Path) -> Option<Result<(), Str
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    std::fs::write(dir.join(format!("{label}.log")), &text).ok();
+    assert!(report.exists(), "mediastreamvalidator ran but wrote no report at {}", report.display());
     let errors = text.lines().filter(|l| l.contains("ERROR")).count();
     Some(if out.status.success() && errors == 0 { Ok(()) } else { Err(text) })
+}
+
+/// Serves one fixed body at `/bad.m3u8` on a local port, for canary tests.
+pub fn serve_static(body: &'static str, content_type: &'static str) -> u16 {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for mut c in l.incoming().flatten() {
+            let mut buf = [0u8; 2048];
+            let _ = c.read(&mut buf);
+            let _ = write!(
+                c,
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    port
 }

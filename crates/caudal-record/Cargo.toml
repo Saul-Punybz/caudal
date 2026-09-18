@@ -13,3 +13,20 @@ caudal-cmaf.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+mp4-atom = "0.15.0"
+# S3 and GCS over reqwest + rustls on ring: the batteries-included `aws` /
+# `gcp` features pull aws-lc-rs (C), which the project does not link.
+object_store = { version = "0.14", default-features = false, features = ["fs", "aws-base", "gcp-base", "reqwest", "ring"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
+url = "2"
+parking_lot.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

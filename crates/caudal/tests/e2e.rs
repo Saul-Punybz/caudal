@@ -236,3 +236,45 @@ fn validator_output_parser() {
     assert_eq!(got.len(), 1, "{got:?}");
     assert!(got[0].starts_with("-12642"), "critical errors block; allow-listed MUSTs and SHOULDs do not");
 }
+
+#[test]
+fn srt_publish_plays_as_ll_hls() {
+    if !enabled() {
+        return;
+    }
+    if !have("srt-live-transmit") {
+        eprintln!("SKIP: srt-live-transmit not on PATH (brew install srt)");
+        return;
+    }
+    let s = Server::start();
+    let _publ = Publisher::srt(&s.srt_url("srt1"), 40);
+
+    let body = s.wait_until("/api/v1/streams/srt1", Duration::from_secs(20), |b| {
+        b.contains("\"h264\"") && b.contains("\"aac\"")
+    });
+    assert!(body.contains("\"width\":1280") && body.contains("\"height\":720"), "{body}");
+
+    let playlist = s.wait_until("/hls/srt1/index.m3u8", Duration::from_secs(20), |b| b.contains("#EXT-X-PART"));
+    assert!(playlist.contains("INDEPENDENT=YES"), "{playlist}");
+    let init = s.get_bytes("/hls/srt1/init.mp4");
+    assert_eq!(&init[4..8], b"ftyp");
+    let (code, master) = s.get("/hls/srt1/master.m3u8").unwrap();
+    assert_eq!(code, 200);
+    assert!(master.contains("avc1.") && master.contains("mp4a.40.2"), "{master}");
+}
+
+#[test]
+fn ui_is_served_with_spa_fallback() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start();
+    let (code, root) = s.get("/").unwrap();
+    assert_eq!(code, 200);
+    assert!(root.contains("<html") || root.contains("<!doctype"), "{root}");
+    // Client-side routes load the app too; missing files stay 404.
+    assert_eq!(s.get("/streams/anything").unwrap().0, 200);
+    assert_eq!(s.get("/assets/missing-file.js").unwrap().0, 404);
+    // API and HLS routes still win over the fallback.
+    assert_eq!(s.get("/api/v1/streams").unwrap().1.trim(), "[]");
+}

@@ -12,6 +12,10 @@ pub fn have(tool: &str) -> bool {
     Command::new("which").arg(tool).output().is_ok_and(|o| o.status.success())
 }
 
+pub fn free_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
 pub fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
@@ -21,18 +25,19 @@ pub struct Server {
     child: Child,
     pub http: u16,
     pub rtmp: u16,
+    pub srt: u16,
     _dir: tempfile::TempDir,
 }
 
 impl Server {
     pub fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (http, rtmp) = (free_port(), free_port());
+        let (http, rtmp, srt) = (free_port(), free_port(), free_udp_port());
         let cfg = dir.path().join("caudal.toml");
         std::fs::write(
             &cfg,
             format!(
-                "[server]\nhttp_bind = \"127.0.0.1:{http}\"\n\n[rtmp]\nbind = \"127.0.0.1:{rtmp}\"\napp = \"live\"\n\n[hls]\npart_ms = 200\nsegment_ms = 2000\n"
+                "[server]\nhttp_bind = \"127.0.0.1:{http}\"\n\n[rtmp]\nbind = \"127.0.0.1:{rtmp}\"\napp = \"live\"\n\n[srt]\nbind = \"127.0.0.1:{srt}\"\n\n[hls]\npart_ms = 200\nsegment_ms = 2000\n"
             ),
         )
         .unwrap();
@@ -43,13 +48,17 @@ impl Server {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn caudal");
-        let s = Self { child, http, rtmp, _dir: dir };
+        let s = Self { child, http, rtmp, srt, _dir: dir };
         s.wait_for("/healthz", Duration::from_secs(10));
         s
     }
 
     pub fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{}", self.http, path)
+    }
+
+    pub fn srt_url(&self, name: &str) -> String {
+        format!("srt://127.0.0.1:{}?streamid=publish/{name}", self.srt)
     }
 
     pub fn rtmp_url(&self, name: &str) -> String {
@@ -133,8 +142,34 @@ impl Publisher {
     }
 }
 
+impl Publisher {
+    /// The same test pattern as MPEG-TS over SRT. Homebrew's ffmpeg has no
+    /// SRT protocol, so ffmpeg writes TS to a pipe and libsrt's
+    /// srt-live-transmit carries it. Both run in their own process group so
+    /// dropping the publisher stops the whole pipeline.
+    pub fn srt(url: &str, secs: u32) -> Self {
+        use std::os::unix::process::CommandExt;
+        let pipeline = format!(
+            "exec ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc2=size=1280x720:rate=30 \
+             -f lavfi -i sine=frequency=440:sample_rate=48000 -t {secs} \
+             -c:v libx264 -preset veryfast -tune zerolatency -g 60 -b:v 2M -c:a aac -b:a 128k -f mpegts - \
+             | srt-live-transmit -q -chunk:1316 file://con '{url}'"
+        );
+        let child = Command::new("sh")
+            .args(["-c", &pipeline])
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn ffmpeg | srt-live-transmit");
+        Self { child }
+    }
+}
+
 impl Drop for Publisher {
     fn drop(&mut self) {
+        // Kill the whole process group (the SRT pipeline has two processes).
+        let _ = Command::new("kill").args(["-TERM", &format!("-{}", self.child.id())]).status();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

@@ -41,6 +41,7 @@ impl TestServer {
             latency_ms: 120,
             passphrase: passphrase.map(str::to_owned),
             buffer: BufferConfig::default(),
+            pushes: Vec::new(),
         };
         let reg = registry.clone();
         let handle = tokio::spawn(async move {

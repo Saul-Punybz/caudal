@@ -520,6 +520,7 @@ dependencies = [
  "caudal-core",
  "caudal-hls",
  "caudal-moq",
+ "caudal-record",
  "caudal-rtmp",
  "caudal-srt",
  "caudal-tls",
@@ -561,6 +562,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "caudal-cmaf"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "caudal-core",
+ "mp4-atom",
+]
+
+[[package]]
 name = "caudal-core"
 version = "0.1.0"
 dependencies = [
@@ -577,6 +587,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "bytes",
+ "caudal-cmaf",
  "caudal-core",
  "mp4-atom",
  "tokio",
@@ -606,6 +617,17 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "caudal-record"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "caudal-cmaf",
+ "caudal-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

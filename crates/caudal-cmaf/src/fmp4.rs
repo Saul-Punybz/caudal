@@ -18,7 +18,7 @@ const FLAGS_NON_SYNC: u32 = 0x0101_0000;
 
 /// One sample ready to be written into a fragment.
 #[derive(Debug, Clone)]
-pub(crate) struct Sample {
+pub struct Sample {
     /// Decode time on the track's clock, already shifted to be non-negative.
     pub dts: i64,
     /// `pts - dts`.
@@ -30,14 +30,14 @@ pub(crate) struct Sample {
 
 /// A track as written into the MP4 (`track_id` is the MP4 id, 1-based).
 #[derive(Debug, Clone)]
-pub(crate) struct Mp4Track {
+pub struct Mp4Track {
     pub track_id: u32,
     pub info: TrackInfo,
 }
 
 /// Builds `ftyp` + `moov` for the given tracks, or `None` if a codec
 /// configuration cannot be parsed.
-pub(crate) fn init_segment(tracks: &[Mp4Track]) -> Option<Bytes> {
+pub fn init_segment(tracks: &[Mp4Track]) -> Option<Bytes> {
     let mut traks = Vec::with_capacity(tracks.len());
     let mut trex = Vec::with_capacity(tracks.len());
     for t in tracks {
@@ -209,14 +209,14 @@ fn visual(width: u16, height: u16) -> Visual {
 }
 
 /// One track's run inside a fragment.
-pub(crate) struct Run<'a> {
+pub struct Run<'a> {
     pub track_id: u32,
     pub samples: &'a [Sample],
 }
 
 /// Writes one `moof` + `mdat` holding every run, in order. Runs with no
 /// samples are skipped.
-pub(crate) fn fragment(sequence: u32, runs: &[Run<'_>]) -> Bytes {
+pub fn fragment(sequence: u32, runs: &[Run<'_>]) -> Bytes {
     let runs: Vec<&Run<'_>> = runs.iter().filter(|r| !r.samples.is_empty()).collect();
     let mut moof = Moof {
         mfhd: Mfhd { sequence_number: sequence },

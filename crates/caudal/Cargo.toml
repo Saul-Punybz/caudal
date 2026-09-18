@@ -17,6 +17,7 @@ caudal-tls.workspace = true
 caudal-auth.workspace = true
 caudal-webrtc.workspace = true
 caudal-moq.workspace = true
+caudal-record.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

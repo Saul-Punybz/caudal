@@ -6,8 +6,6 @@
 //! only read the packager state; blocking playlist reloads and requests for
 //! the preload-hinted part wait on a `watch` channel bumped by the packager.
 
-mod fmp4;
-mod opus;
 mod packager;
 
 use std::collections::HashMap;

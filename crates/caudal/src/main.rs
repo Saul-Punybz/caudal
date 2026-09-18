@@ -168,6 +168,12 @@ async fn run(cfg: config::Config) -> ExitCode {
         latency_ms: cfg.srt.latency_ms,
         passphrase: cfg.srt.passphrase.clone(),
         buffer: cfg.buffer.to_buffer_config(),
+        pushes: cfg
+            .srt
+            .push
+            .iter()
+            .map(|p| caudal_srt::SrtPush { stream: p.stream.clone(), url: p.url.clone() })
+            .collect(),
     };
     tracing::info!(bind = %srt_cfg.bind, "starting srt listener");
     let srt_handle = tokio::spawn(caudal_srt::serve(srt_cfg, registry.clone()));
@@ -212,9 +218,32 @@ async fn run(cfg: config::Config) -> ExitCode {
         None => axum::Router::new(),
     };
 
+    // Recording failing to start (e.g. its directory is not writable)
+    // disables recording only.
+    let record_router = match cfg.record.to_record_config() {
+        Some(rc) => {
+            let dir = rc.dir.display().to_string();
+            match caudal_record::start(registry.clone(), rc) {
+                Ok(svc) => {
+                    tracing::info!(%dir, "recording enabled");
+                    svc.router()
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, %dir, "recording disabled");
+                    axum::Router::new()
+                }
+            }
+        }
+        None => axum::Router::new(),
+    };
+
     // The UI router is a catch-all fallback, so it goes last.
-    let app =
-        api::router(state.clone()).merge(hls_router).merge(webrtc_router).merge(moq_router).merge(caudal_ui::router());
+    let app = api::router(state.clone())
+        .merge(hls_router)
+        .merge(webrtc_router)
+        .merge(moq_router)
+        .merge(record_router)
+        .merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {
         Ok(l) => l,

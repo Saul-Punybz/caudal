@@ -105,6 +105,22 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
 
+## Batch 6 (launched 18 Sep 2026): M8 recording + VOD, SRT out, Safari over HTTPS in CI
+**Goal:** record any stream to disk (optionally S3/R2), replay it as VOD, cut clips; send streams out over SRT; the browser suite measures Safari over HTTPS.
+
+Refactor first (orchestrator): the fMP4 writer and Opus helpers moved from `caudal-hls` into a new shared crate `caudal-cmaf` (`fmp4::{init_segment, fragment, Mp4Track, Run, Sample}`, `opus::{parse_opus_head, frame_duration_samples}`), so the recorder reuses the tested writer. HLS tests unchanged and green.
+
+| Agent | Model | Owns | Done when |
+|---|---|---|---|
+| R · recording | **Opus** | `crates/caudal-record/**` | `start(registry, RecordConfig)` records matching streams as CMAF segments cut on keyframes + a growing VOD `index.m3u8` (ENDLIST at end), `meta.json`; retention sweep; optional `object_store` upload; routes per lib.rs doc; clip endpoint writes a progressive MP4 (moov with sample tables) for a time range cut on keyframes; tests incl. ffprobe of VOD and clip |
+| S · SRT out | Sonnet | `crates/caudal-srt/**` | `play/<name>` (and `m=request`) pulls a stream as MPEG-TS over SRT with `Access::Play`; `pushes` push streams to remote listeners with reconnect; TS mux from AVCC/AAC/Opus (moq-mux TS export if usable standalone, else `mpeg2ts` writer); tests with `srt-live-transmit` as receiver + ffprobe |
+| T · Safari HTTPS | Haiku | `tests/browser/**` | harness can start Caudal with `[tls]` (self-signed cert via openssl, `ignoreHTTPSErrors`); WebKit runs play + steady tests over HTTPS; the known-gap branch becomes a < 3 s assertion when served over HTTP/2 |
+| Orchestrator | Opus | refactor, config, main, e2e | `[record]` and `[srt] push` config (done), e2e: record → VOD playable, clip download |
+
+**Fixed names:** `caudal_record::{start, RecordConfig { dir, streams, segment_secs, retention_hours, upload_url }, RecordService::router}`; routes `GET /api/v1/recordings`, `GET|DELETE /api/v1/recordings/{stream}/{id}`, `GET /vod/{stream}/{id}/index.m3u8`, `GET /vod/{stream}/{id}/{file}`, `POST /api/v1/clips {stream, id, from_ms, to_ms}`; id = `YYYYMMDDTHHMMSSZ`; `caudal_srt::{SrtConfig { .., pushes }, SrtPush { stream, url }}`; config `[record] enabled, dir, streams, segment_secs, retention_hours, upload_url`, `[[srt.push]] stream, url`.
+
+**Budget:** R ≈ $5, S ≈ $3, T ≈ $0.5, orchestrator ≈ $6, a third held back ⇒ **≈ $20**. **Machine rule:** one heavy run at a time, debug binaries for tests, no release builds during tests; any test that spawns `srt-live-transmit` uses a process-group Drop guard.
+
 ## Safari over HTTP/2 (measured 18 Sep 2026, after Saul ran `mkcert -install`)
 Release binary with `[tls]` and a mkcert certificate for localhost; ffmpeg RTMP 720p publish.
 - `curl --http2` without `-k`: **HTTP/2, 200** (the mkcert CA is trusted).

@@ -7,7 +7,7 @@ use bytes::Bytes;
 
 /// Fields out of an RFC 7845 §5.1 `OpusHead` (little-endian on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OpusHead {
+pub struct OpusHead {
     pub channels: u8,
     pub pre_skip: u16,
     pub input_sample_rate: u32,
@@ -17,7 +17,7 @@ pub(crate) struct OpusHead {
 /// Parses `OpusHead` bytes. `None` if the magic is missing, the packet is
 /// short, or the channel mapping needs a mapping table (family != 0) that
 /// the `dOps` box we write cannot express.
-pub(crate) fn parse_opus_head(data: &[u8]) -> Option<OpusHead> {
+pub fn parse_opus_head(data: &[u8]) -> Option<OpusHead> {
     if data.len() < 19 || &data[0..8] != b"OpusHead" {
         return None;
     }
@@ -36,7 +36,7 @@ pub(crate) fn parse_opus_head(data: &[u8]) -> Option<OpusHead> {
 /// from its TOC byte (RFC 6716 §3.1) rather than assumed. Every Opus frame
 /// duration is one of 2.5/5/10/20/40/60 ms; a packet may bundle several
 /// equal-length frames (frame-count codes 1-3).
-pub(crate) fn frame_duration_samples(packet: &Bytes) -> u32 {
+pub fn frame_duration_samples(packet: &Bytes) -> u32 {
     let Some(&toc) = packet.first() else { return 960 };
     let config = toc >> 3;
     let per_frame = config_frame_samples(config);

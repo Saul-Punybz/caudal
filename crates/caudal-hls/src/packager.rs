@@ -23,7 +23,7 @@ use bytes::{Bytes, BytesMut};
 use caudal_core::{Codec, Frame, TrackId, TrackInfo, TrackKind};
 
 use crate::HlsConfig;
-use crate::fmp4::{self, Mp4Track, Run, Sample};
+use caudal_cmaf::fmp4::{self, Mp4Track, Run, Sample};
 
 /// Full segments kept in the playlist.
 pub(crate) const WINDOW: usize = 6;
@@ -100,7 +100,7 @@ impl Lane {
     /// TOC byte (RFC 6716 §3.1), which can change frame to frame, so it is
     /// read off the packet itself instead of assuming the last one's length.
     fn fallback_dur(&self, data: &Bytes) -> u32 {
-        if self.codec == Codec::Opus { crate::opus::frame_duration_samples(data) } else { self.last_dur }
+        if self.codec == Codec::Opus { caudal_cmaf::opus::frame_duration_samples(data) } else { self.last_dur }
     }
 
     fn sample(&self, f: &Frame, audio: bool) -> Sample {
@@ -189,7 +189,7 @@ impl Packager {
         let video = tracks.iter().find(|t| matches!(t.codec, Codec::H264 | Codec::H265) && !t.init.is_empty());
         let audio = tracks.iter().find(|t| match t.codec {
             Codec::Aac => t.init.len() >= 2,
-            Codec::Opus => crate::opus::parse_opus_head(&t.init).is_some(),
+            Codec::Opus => caudal_cmaf::opus::parse_opus_head(&t.init).is_some(),
             _ => false,
         });
         let mut mp4 = Vec::new();
@@ -597,7 +597,7 @@ pub(crate) fn codec_string(t: &TrackInfo) -> Option<String> {
         Codec::Aac if !c.is_empty() => Some(format!("mp4a.40.{}", c[0] >> 3)),
         // RFC 6381 (and common practice): Opus in MP4 is just "opus", no
         // profile or level suffix.
-        Codec::Opus if crate::opus::parse_opus_head(c).is_some() => Some("opus".to_string()),
+        Codec::Opus if caudal_cmaf::opus::parse_opus_head(c).is_some() => Some("opus".to_string()),
         _ => None,
     }
 }

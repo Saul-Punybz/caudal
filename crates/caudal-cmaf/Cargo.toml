@@ -1,0 +1,13 @@
+[package]
+name = "caudal-cmaf"
+description = "CMAF / fragmented MP4 writer shared by Caudal's outputs (LL-HLS, recording)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+bytes.workspace = true
+mp4-atom = "0.15.0"

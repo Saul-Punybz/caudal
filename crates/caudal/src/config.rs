@@ -81,11 +81,20 @@ pub struct SrtSection {
     pub latency_ms: u32,
     /// AES passphrase callers must use; none means unencrypted.
     pub passphrase: Option<String>,
+    /// Push streams out to remote SRT listeners.
+    pub push: Vec<SrtPushEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SrtPushEntry {
+    pub stream: String,
+    pub url: String,
 }
 
 impl Default for SrtSection {
     fn default() -> Self {
-        Self { bind: default_srt_bind(), latency_ms: default_srt_latency_ms(), passphrase: None }
+        Self { bind: default_srt_bind(), latency_ms: default_srt_latency_ms(), passphrase: None, push: Vec::new() }
     }
 }
 
@@ -138,6 +147,59 @@ pub struct Config {
     pub hooks: HooksSection,
     pub webrtc: WebRtcSection,
     pub moq: MoqSection,
+    pub record: RecordSection,
+}
+
+fn default_record_dir() -> std::path::PathBuf {
+    "recordings".into()
+}
+
+fn default_record_streams() -> Vec<String> {
+    vec!["*".into()]
+}
+
+fn default_segment_secs() -> u32 {
+    4
+}
+
+/// Recording to disk (and optionally object storage), VOD and clips.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct RecordSection {
+    pub enabled: bool,
+    #[serde(default = "default_record_dir")]
+    pub dir: std::path::PathBuf,
+    #[serde(default = "default_record_streams")]
+    pub streams: Vec<String>,
+    #[serde(default = "default_segment_secs")]
+    pub segment_secs: u32,
+    pub retention_hours: Option<u32>,
+    pub upload_url: Option<String>,
+}
+
+impl Default for RecordSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: default_record_dir(),
+            streams: default_record_streams(),
+            segment_secs: default_segment_secs(),
+            retention_hours: None,
+            upload_url: None,
+        }
+    }
+}
+
+impl RecordSection {
+    pub fn to_record_config(&self) -> Option<caudal_record::RecordConfig> {
+        self.enabled.then(|| caudal_record::RecordConfig {
+            dir: self.dir.clone(),
+            streams: self.streams.clone(),
+            segment_secs: self.segment_secs.max(1),
+            retention_hours: self.retention_hours,
+            upload_url: self.upload_url.clone(),
+        })
+    }
 }
 
 fn default_moq_bind() -> SocketAddr {

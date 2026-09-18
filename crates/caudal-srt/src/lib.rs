@@ -26,11 +26,23 @@ pub struct SrtConfig {
     /// When set, callers must use this passphrase (AES).
     pub passphrase: Option<String>,
     pub buffer: BufferConfig,
+    /// Streams to push out to remote SRT listeners (caller mode).
+    pub pushes: Vec<SrtPush>,
+}
+
+/// Push `stream` to `url` (`srt://host:port?streamid=...&passphrase=...`),
+/// reconnecting while the stream is live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SrtPush {
+    pub stream: String,
+    pub url: String,
 }
 
 /// Listens until the future is dropped or the socket fails. A caller's
-/// stream id selects the stream: `publish/<name>`, or the SRT access-control
-/// form `#!::r=<name>,m=publish`.
+/// stream id selects the stream and direction: `publish/<name>` or
+/// `#!::r=<name>,m=publish` to send into Caudal; `play/<name>` or
+/// `#!::r=<name>,m=request` to receive a stream as MPEG-TS (batch 6).
+/// Also runs the configured `pushes`.
 pub async fn serve(cfg: SrtConfig, registry: Arc<Registry>) -> std::io::Result<()> {
     // A live publisher sends media continuously, so 3 s without any means it
     // is gone. A caller killed outright never sends SRT's shutdown, and the

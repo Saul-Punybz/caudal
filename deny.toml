@@ -9,6 +9,16 @@ version = 2
 # for workspace dependencies only.
 unmaintained = "workspace"
 yanked = "deny"
+ignore = [
+    # Marvin attack on the `rsa` crate (pulled in by jsonwebtoken's pure-Rust
+    # backend): a timing side channel in RSA *private-key* operations
+    # (decrypt/sign). Caudal only verifies JWT signatures with public keys
+    # and never holds an RSA private key, so the vulnerable path is never
+    # run. The alternative backend (aws-lc-rs) is C and breaks our static
+    # musl builds. Revisit when rsa 0.10 ships a constant-time fix.
+    # Reviewed 18 Sep 2026.
+    { id = "RUSTSEC-2023-0071", reason = "only public-key verification is used; no RSA private-key operations" },
+]
 
 [licenses]
 version = 2
@@ -23,6 +33,8 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
+    # webpki-roots: Mozilla's CA root list, a permissive data license.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

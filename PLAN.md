@@ -104,7 +104,7 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [ ] **M12: Open Media Transport (OMT), the open NDI alternative.** Pure-Rust port of the MIT reference (libomtnet C#, ~10.6K lines) and the VMX codec (libvmx C, ~23.5K lines incl. SIMD), mDNS discovery with `mdns-sd`. First native Rust OMT. Send and receive, so Caudal can take in and put out LAN video for live production.
   - **Licensing (decided by Saul, 18 Sep 2026):** NOT part of Caudal's MIT/Apache code. Own repo and crate, **PolyForm Noncommercial 1.0.0**: free for personal, research and education use; any commercial use needs a license from the owners. Copyright holders: **Saul González and Puny.bz Inc.** Caudal's default build does not include it; it plugs in behind `--features omt`.
   - Keep the MIT notices of `libomtnet` and `libvmx` for the ported parts, crediting their authors. Own product name, not OMT's logos.
-  - Before publishing: lawyer review of the license notice and a commercial license agreement; co-ownership agreement between Saul González and Puny.bz Inc. already signed (confirmed by Saul, 18 Sep 2026); a CLA before accepting outside contributions. External ffmpeg process, never linked, so no GPL.
+  - Legal: co-ownership agreement signed; license notice and commercial license agreement reviewed (confirmed by Saul, 18 Sep 2026). A CLA is still needed before accepting outside contributions. External ffmpeg process, never linked, so no GPL.
 
 MistServer outputs that are dead in 2026 (HDS, Flash, Smooth Streaming) are
 not being ported.

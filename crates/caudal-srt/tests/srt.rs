@@ -14,8 +14,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-use caudal_core::{BufferConfig, Codec, Event, Registry, StartAt, Stream, TrackKind};
-use caudal_srt::{SrtConfig, serve};
+use caudal_core::{Access, BufferConfig, Codec, Denied, Event, Gate, GateFuture, Registry, StartAt, Stream, TrackKind};
+use caudal_srt::{SrtConfig, SrtPush, serve};
 
 fn have(bin: &str) -> bool {
     Command::new("which").arg(bin).output().is_ok_and(|o| o.status.success())
@@ -34,14 +34,29 @@ struct TestServer {
 
 impl TestServer {
     async fn start(passphrase: Option<&str>) -> Self {
+        Self::start_full(passphrase, None, Vec::new()).await
+    }
+
+    async fn start_with_gate(gate: Arc<dyn Gate>) -> Self {
+        Self::start_full(None, Some(gate), Vec::new()).await
+    }
+
+    async fn start_with_pushes(pushes: Vec<SrtPush>) -> Self {
+        Self::start_full(None, None, pushes).await
+    }
+
+    async fn start_full(passphrase: Option<&str>, gate: Option<Arc<dyn Gate>>, pushes: Vec<SrtPush>) -> Self {
         let port = free_port();
         let registry = Registry::new();
+        if let Some(gate) = gate {
+            registry.set_gate(gate);
+        }
         let cfg = SrtConfig {
             bind: format!("127.0.0.1:{port}").parse().unwrap(),
             latency_ms: 120,
             passphrase: passphrase.map(str::to_owned),
             buffer: BufferConfig::default(),
-            pushes: Vec::new(),
+            pushes,
         };
         let reg = registry.clone();
         let handle = tokio::spawn(async move {
@@ -50,6 +65,21 @@ impl TestServer {
         // Let the listener bind before the pipeline tries to connect.
         tokio::time::sleep(Duration::from_millis(300)).await;
         Self { registry, port, handle }
+    }
+}
+
+/// Denies `Access::Play` unconditionally; publish is always allowed so a
+/// stream can exist for the play attempt to be refused against.
+struct DenyPlayGate;
+
+impl Gate for DenyPlayGate {
+    fn check<'a>(&'a self, access: Access, _stream: &'a str, _token: Option<&'a str>) -> GateFuture<'a> {
+        Box::pin(async move {
+            match access {
+                Access::Play => Err(Denied::Refused("test gate denies play".to_owned())),
+                Access::Publish => Ok(()),
+            }
+        })
     }
 }
 
@@ -123,6 +153,54 @@ impl Drop for Pipeline {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Runs an arbitrary shell command in its own process group, killed on
+/// drop. Same rationale as `Pipeline`: a receiving or listening
+/// `srt-live-transmit` never exits on its own when its input or output
+/// ends, so this kills the whole process group rather than waiting for it.
+struct Guarded {
+    child: Child,
+}
+
+impl Guarded {
+    fn spawn(cmd: &str) -> Self {
+        use std::os::unix::process::CommandExt;
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn guarded command");
+        Self { child }
+    }
+}
+
+impl Drop for Guarded {
+    fn drop(&mut self) {
+        let pgid = self.child.id();
+        let _ = Command::new("kill").args(["-KILL", &format!("-{pgid}")]).status();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A unique path under the OS temp dir for one test's captured TS output.
+fn ts_output_path(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("caudal_srt_{tag}_{}.ts", std::process::id()))
+}
+
+/// Runs `ffprobe -show_entries stream=codec_name,codec_type` on `path` and
+/// returns `(stderr, stdout)`.
+fn ffprobe_codecs(path: &std::path::Path) -> (String, String) {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_name,codec_type", "-of", "json"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe");
+    (String::from_utf8_lossy(&output.stderr).trim().to_owned(), String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// True when `data` looks like AVCC: a 4-byte big-endian length prefix whose
@@ -302,4 +380,142 @@ async fn disconnect_ends_the_stream_within_5s() {
     drop(pipeline);
     let gone = wait_for(Duration::from_secs(5), || server.registry.get("dc").is_none().then_some(())).await;
     assert!(gone.is_some(), "stream 'dc' was not removed within 5s of a hard disconnect");
+}
+
+/// Pull: `play/<name>` serves a live stream as MPEG-TS. Publishes with the
+/// same ffmpeg | srt-live-transmit pipeline as the ingest tests, then pulls
+/// it back with a second, guarded `srt-live-transmit` acting as the viewer.
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_serves_mpegts_to_a_viewer() {
+    if !have("ffmpeg") || !have("srt-live-transmit") || !have("ffprobe") {
+        eprintln!("SKIP: ffmpeg/srt-live-transmit/ffprobe not installed");
+        return;
+    }
+
+    let server = TestServer::start(None).await;
+    let publish_url = format!("srt://127.0.0.1:{}?streamid=publish/pull1", server.port);
+    let publish_pipeline = Pipeline::start("640x360", 30, &publish_url);
+    wait_for(Duration::from_secs(10), || server.registry.get("pull1")).await.expect("publish never appeared");
+    let stream = server.registry.get("pull1").unwrap();
+    wait_for_tracks(&stream, Duration::from_secs(8)).await;
+
+    let out_path = ts_output_path("pull");
+    let play_url = format!("srt://127.0.0.1:{}?streamid=play/pull1", server.port);
+    let receiver = Guarded::spawn(&format!("srt-live-transmit -q \"{play_url}\" file://con > {}", out_path.display()));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    // `srt-live-transmit` never propagates its stdin EOF as a clean SRT
+    // close (see the module doc): both ends here are always hard-killed,
+    // which can truncate the very last video access unit mid-frame. That
+    // is a property of the test's fixed-duration capture, not of the
+    // muxer, so the decode check below only requires ffmpeg to succeed,
+    // not a silent stderr.
+    drop(receiver);
+    drop(publish_pipeline);
+
+    let len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+    assert!(len > 0, "no TS bytes were received by the viewer");
+
+    let (stderr, stdout) = ffprobe_codecs(&out_path);
+    assert!(stderr.is_empty(), "ffprobe reported errors on the pulled output: {stderr}");
+    assert!(stdout.contains("h264"), "no h264 in the pulled output: {stdout}");
+    assert!(stdout.contains("aac"), "no aac in the pulled output: {stdout}");
+
+    let decode = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&out_path)
+        .args(["-f", "null", "-"])
+        .output()
+        .expect("run ffmpeg decode");
+    let decode_err = String::from_utf8_lossy(&decode.stderr);
+    assert!(decode.status.success(), "ffmpeg failed to decode the pulled output: {decode_err}");
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+/// Pull of a stream name nobody is publishing: the connection closes with
+/// no data, never creating a stream or hanging.
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_of_unknown_stream_closes() {
+    if !have("srt-live-transmit") {
+        eprintln!("SKIP: srt-live-transmit not installed");
+        return;
+    }
+
+    let server = TestServer::start(None).await;
+    let out_path = ts_output_path("unknown");
+    let play_url = format!("srt://127.0.0.1:{}?streamid=play/doesnotexist", server.port);
+    let receiver = Guarded::spawn(&format!("srt-live-transmit -q \"{play_url}\" file://con > {}", out_path.display()));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    drop(receiver);
+
+    let len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+    assert_eq!(len, 0, "an unknown stream must never send any TS bytes");
+    assert!(server.registry.list().is_empty(), "a play attempt must never create a stream");
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+/// Play refused by an installed [`Gate`]: even though the stream exists and
+/// is live, the connection closes with no data.
+#[tokio::test(flavor = "multi_thread")]
+async fn play_refused_by_gate_closes() {
+    if !have("ffmpeg") || !have("srt-live-transmit") {
+        eprintln!("SKIP: ffmpeg/srt-live-transmit not installed");
+        return;
+    }
+
+    let server = TestServer::start_with_gate(Arc::new(DenyPlayGate)).await;
+    let publish_url = format!("srt://127.0.0.1:{}?streamid=publish/gated", server.port);
+    let publish_pipeline = Pipeline::start("320x240", 20, &publish_url);
+    wait_for(Duration::from_secs(10), || server.registry.get("gated")).await.expect("publish never appeared");
+
+    let out_path = ts_output_path("gated");
+    let play_url = format!("srt://127.0.0.1:{}?streamid=play/gated", server.port);
+    let receiver = Guarded::spawn(&format!("srt-live-transmit -q \"{play_url}\" file://con > {}", out_path.display()));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    drop(receiver);
+    drop(publish_pipeline);
+
+    let len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+    assert_eq!(len, 0, "a gate-refused play must never send any TS bytes");
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+/// Push: a `[[srt.push]]` entry connects out to a remote SRT listener and
+/// sends the configured stream as MPEG-TS once it is live.
+#[tokio::test(flavor = "multi_thread")]
+async fn push_sends_a_live_stream_to_a_remote_listener() {
+    if !have("ffmpeg") || !have("srt-live-transmit") || !have("ffprobe") {
+        eprintln!("SKIP: ffmpeg/srt-live-transmit/ffprobe not installed");
+        return;
+    }
+
+    let push_port = free_port();
+    let out_path = ts_output_path("push");
+    let listener =
+        Guarded::spawn(&format!("srt-live-transmit -q \"srt://:{push_port}\" file://con > {}", out_path.display()));
+    // Give the listener a moment to bind before Caudal's push tries to connect.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let push = SrtPush { stream: "pushed".to_owned(), url: format!("srt://127.0.0.1:{push_port}") };
+    let server = TestServer::start_with_pushes(vec![push]).await;
+
+    let publish_url = format!("srt://127.0.0.1:{}?streamid=publish/pushed", server.port);
+    let publish_pipeline = Pipeline::start("640x360", 30, &publish_url);
+    wait_for(Duration::from_secs(10), || server.registry.get("pushed")).await.expect("publish never appeared");
+
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    drop(listener);
+    drop(publish_pipeline);
+
+    let len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+    assert!(len > 0, "no TS bytes were pushed to the remote listener");
+
+    let (stderr, stdout) = ffprobe_codecs(&out_path);
+    assert!(stderr.is_empty(), "ffprobe reported errors on the pushed output: {stderr}");
+    assert!(stdout.contains("h264"), "no h264 in the pushed output: {stdout}");
+    assert!(stdout.contains("aac"), "no aac in the pushed output: {stdout}");
+
+    let _ = std::fs::remove_file(&out_path);
 }

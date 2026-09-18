@@ -72,3 +72,31 @@ Clustering / origin-edge (SRS, MistServer, Ant Enterprise, Red5 Pro have it); DA
 ## Business models seen (as reported)
 
 Open core + cloud (Grafana: >$400M ARR reported Sep 2025), sponsorship + consulting (OvenMediaEngine), Enterprise editions (Ant Media, Red5 Pro), hosted cloud on top of open source (LiveKit Cloud). For Puny.bz: support and managed hosting for the segments above; captions and multistreaming as paid managed add-ons are the most natural first offers.
+
+## Gemini Deep Research cross-check (received 18 Sep 2026)
+
+**Agreement with the Haiku study (strong signal, two independent sources):**
+multistreaming to YouTube/Twitch/Facebook is the #1 gap; stream health alerts;
+AI captions; clustering; geo-blocking; Helm/Kubernetes; Raspberry Pi appliance.
+
+**Gemini claims corrected (verified):**
+
+| Gemini | Reality |
+|---|---|
+| "Strict mandates" by CISA/ONCD; position as "CISA-compliant" | Non-binding guidance. Do not say "CISA-compliant". Say "memory-safe, aligned with CISA Secure by Design guidance". |
+| MistServer is GPL | Unlicense (public domain), per the repo's `UNLICENSE`. |
+| Caudal needs external ffmpeg to restream | Caudal pushes over SRT natively; RTMP push to platforms is the actual gap. |
+| An OBS plugin is needed for WHIP | OBS 30+ ships a native WHIP output; a guide / "copy WHIP URL + token" in the UI is enough. |
+| Market $21.1B (2025) → $24.4B (2026) → $70.7B (2033) | Contradicts the Haiku figure attributed to the same publisher ($43.3B → $91.7B). Neither is used until read from the original report. |
+
+**New from Gemini, adopted into the backlog:** SCTE-35 passthrough moves up
+(FAST channels); forensic watermarking; web/mobile player SDKs; legal caution:
+describe OMT on its own merits, don't market it with the NDI trademark.
+
+**New from Gemini, NOT adopted:** 24/7 linear channels from VOD playlists:
+that is ANTENA787's job (Saul's playout project); Caudal can ingest its output.
+
+**Known licensing trade-off (decision already made by Saul: MIT OR Apache-2.0):**
+a permissive license allows clouds to host Caudal commercially without
+contributing back; AGPL + commercial licensing (OvenMediaEngine's model)
+would prevent that at the cost of adoption. Recorded as an accepted risk.

@@ -155,6 +155,10 @@ claiming in public.
 - **Geo-blocking / IP allow-lists** per stream.
 - **Raspberry Pi appliance image.**
 - **DASH output** (low priority).
+- **SCTE-35 passthrough** moved up (FAST channels; Gemini cross-check).
+- **Forensic watermarking** (per-viewer marks; needs transcoding).
+- **Player SDKs** (web component first, then mobile).
+- **OBS guide**: OBS 30+ publishes WHIP natively; add "copy WHIP URL + token" to the UI.
 
 ### C. Later
 - HDR metadata passthrough (HEVC SEI via `hevc_parser`), Dolby Vision RPU.

@@ -11,7 +11,7 @@ All agents stopped; `main` is pushed, clean, and verified (clippy 0, deny ok, e2
 2. **UI screens (batch 8):** not started (agent stopped while reading). Re-launch: Channels (`/api/v1/channels`, skip), Restreams, Recordings (API since batch 6, no screen), "Copy for OBS" WHIP helper. Brief = the fixed API shapes in this file and in `crates/caudal-channel/src/http.rs`.
 3. **SCTE-35 (batch 9):** not started (no changes saved). Re-launch with the same brief: core `Cue { at_us, section, kind: CueKind::{Out{duration_us}, In, Other} }`, `Event::Cue`, `Publisher::push_cue`, `Stream::inject_cue`; crate `caudal-scte35` on `scte35-splice =2.1.0`; TS 0x86 + RTMP onCuePoint in; DATERANGE (`[hls] cue_tags`) + TS out; `POST /api/v1/streams/{name}/cues`. Research: `docs/research/SCTE35.md`.
 4. Then batch 9 rest (admin login, health alerts) and the roadmap in `PLAN.md`.
-5. RTSP backlog: UDP transport (461 today).
+5. MediaMTX gap (added to PLAN batch 9 by Saul): RTSP UDP + RTSPS, hot config reload, side-by-side benchmark vs MediaMTX v1.21.
 
 ## Where we are (18 Sep 2026, evening)
 | Area | State |

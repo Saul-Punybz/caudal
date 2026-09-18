@@ -177,6 +177,7 @@ claiming in public.
 | 9 | SCTE-35 passthrough → `EXT-X-DATERANGE` (`scte35-splice`); channel ad-break markers | Sonnet | next |
 | 9 | Admin login (OIDC + local password) for UI and API | Opus | next |
 | 9 | Stream health alerts (no keyframes, bitrate drop, publisher gone) → webhooks | Haiku/Sonnet | next |
+| 9 | **Close the gap with MediaMTX (Saul, 18 Sep 2026):** (1) RTSP over UDP + RTSPS in `caudal-rtsp` (today TCP only, UDP answers 461); (2) hot config reload without dropping viewers (SIGHUP + `POST /api/v1/config/reload`; diff sections, restart only what changed); (3) side-by-side benchmark vs MediaMTX v1.21 on the same machine: CPU, RSS, binary size, glass-to-glass latency at 1/100/1,000 viewers over LL-HLS, WHEP, RTSP; script in `bench/`, results in `docs/research/BENCH-MEDIAMTX.md`. No "faster" claim until (3) exists. | Sonnet (1, 2), Opus (3) | next |
 | 10 | M10 origin-edge clustering on `moq-relay` cluster (xiu as RTMP reference), failover/backup source | Opus | planned |
 | 10 | Live captions (Whisper-class, es/en) → WebVTT in LL-HLS | Opus | planned |
 | 11 | Recording schedules, geo-blocking/IP lists, DASH, MoQ ingest, MoQ on Safari 26.4+ | Sonnet | planned |

@@ -1,0 +1,14 @@
+{
+  "name": "caudal-browser-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright suite proving a real browser (Chromium + WebKit) plays Caudal's LL-HLS end to end.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

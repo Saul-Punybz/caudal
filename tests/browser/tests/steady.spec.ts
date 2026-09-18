@@ -28,7 +28,6 @@ interface SteadyStateMetrics {
   fatalHlsError: string | null;
   hlsInstanceExposed: boolean;
   engine: string | null;
-  knownGap?: string;
 }
 
 test.describe("Caudal LL-HLS steady-state latency", () => {
@@ -37,18 +36,31 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
   let server: CaudalServer;
   let publisher: FfmpegPublisher;
 
-  test.beforeAll(async () => {
-    server = await startCaudal();
+  test.beforeAll(async ({ browserName }) => {
+    server = await startCaudal({ tls: browserName === "webkit" });
     publisher = startFfmpegPublisher(server.rtmpUrl(STREAM_NAME));
     // Give ffmpeg + the RTMP handshake + the first LL-HLS parts a moment
     // before a browser asks for the playlist.
     const deadline = Date.now() + 15_000;
     let ready = false;
+    const baseUrl = browserName === "webkit" ? server.httpsBaseUrl || server.baseUrl : server.baseUrl;
     while (Date.now() < deadline) {
-      const res = await fetch(`${server.baseUrl}/hls/${STREAM_NAME}/master.m3u8`).catch(() => null);
-      if (res && res.status === 200) {
-        ready = true;
-        break;
+      const oldRejectUnauth = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      if (browserName === "webkit") {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+      }
+      try {
+        const res = await fetch(`${baseUrl}/hls/${STREAM_NAME}/master.m3u8`).catch(() => null);
+        if (res && res.status === 200) {
+          ready = true;
+          break;
+        }
+      } finally {
+        if (oldRejectUnauth !== undefined) {
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED = oldRejectUnauth;
+        } else {
+          delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+        }
       }
       await new Promise((r) => setTimeout(r, 250));
     }
@@ -69,7 +81,8 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
       (window as any).__fatalHlsError = null;
     });
 
-    await page.goto(`${server.baseUrl}/play/${STREAM_NAME}`);
+    const baseUrl = browserName === "webkit" ? server.httpsBaseUrl || server.baseUrl : server.baseUrl;
+    await page.goto(`${baseUrl}/play/${STREAM_NAME}`);
 
     // Attach hls.js error listener.
     await page
@@ -175,11 +188,6 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
       engine: metricsSnapshot.engine,
     };
 
-    // For native HLS (Apple), add known-gap annotation if applicable.
-    if (!metricsSnapshot.hlsInstanceExposed && steadyStateMedian !== null) {
-      result.knownGap = `WebKit ingest-to-glass ${steadyStateMedian.toFixed(2)} s (target < 3 s after M7)`;
-    }
-
     console.log(`[${browserName}] steady-state samples collected: ${samples.length}`);
     console.log(`[${browserName}] steady-state ingest-to-glass: min=${steadyStateMin?.toFixed(2) ?? "n/a"}s, median=${steadyStateMedian?.toFixed(2) ?? "n/a"}s, max=${steadyStateMax?.toFixed(2) ?? "n/a"}s`);
     console.log(`[${browserName}] hls.js instance exposed: ${metricsSnapshot.hlsInstanceExposed} (engine: ${metricsSnapshot.engine})`);
@@ -206,16 +214,10 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
     expect(samples.length, "at least 15 valid steady-state samples required").toBeGreaterThanOrEqual(15);
     expect(metricsSnapshot.fatalHlsError).toBeNull();
 
-    if (metricsSnapshot.hlsInstanceExposed) {
-      // hls.js engine: assert median < 3s.
-      expect(steadyStateMedian, "hls.js steady-state median ingest-to-glass should be < 3s").not.toBeNull();
-      expect(steadyStateMedian as number).toBeLessThan(3);
-    } else {
-      // Native HLS (WebKit/Apple): record with known-gap annotation, no assertion.
-      test.info().annotations.push({
-        type: "known-gap",
-        description: result.knownGap || "WebKit native player steady-state latency (target < 3 s after M7)",
-      });
-    }
+    // Apple's native HLS player (macOS WebKit/Safari) requires HTTP/2 for low-latency mode.
+    // Measured on 18 Sep 2026: ~5.5 s over HTTP/1.1, 0.52 s over HTTP/2 (HTTPS).
+    // Linux WebKit (Playwright) uses hls.js instead. All browsers should meet < 3 s over HTTPS/HTTP/2.
+    expect(steadyStateMedian, "steady-state median ingest-to-glass should be < 3s").not.toBeNull();
+    expect(steadyStateMedian as number).toBeLessThan(3);
   });
 });

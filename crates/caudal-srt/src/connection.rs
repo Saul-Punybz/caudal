@@ -228,6 +228,12 @@ async fn handle_publish(
                                     tracing::trace!(%err, "dropped frame");
                                 }
                             }
+                            DemuxEvent::Cue(cue) => {
+                                tracing::debug!(%peer, at_us = cue.at_us, kind = cue.kind.as_str(), "scte-35 cue in");
+                                if let Err(err) = shared.publisher.push_cue(cue) {
+                                    tracing::trace!(%err, "dropped cue");
+                                }
+                            }
                         }
                     }
                 }

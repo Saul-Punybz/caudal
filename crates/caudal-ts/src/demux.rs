@@ -12,7 +12,7 @@
 //! is converted to its own timescale (the sample rate) at the end.
 
 use bytes::Bytes;
-use caudal_core::{AudioParams, Codec, Frame, TrackId, TrackInfo, VideoParams};
+use caudal_core::{AudioParams, Codec, Cue, Frame, TrackId, TrackInfo, VideoParams};
 use mp4_atom::{Atom, Avcc, HvcCArray, Hvcc};
 
 use crate::ts::{EsKind, EsUnit};
@@ -27,6 +27,9 @@ pub enum DemuxEvent {
     VideoFrame(Frame),
     AudioInit(TrackInfo),
     AudioFrame(Frame),
+    /// An SCTE-35 cue, its splice time mapped onto the same rebased clock
+    /// as the frames (so `at_us` matches `TrackInfo::to_micros(dts)`).
+    Cue(Cue),
 }
 
 /// `a - b` on the 33-bit TS clock, wrapped into `(-2^32, 2^32]`. Used both
@@ -103,7 +106,37 @@ impl Demuxer {
         match unit.kind {
             EsKind::H264 | EsKind::H265 => self.consume_video(unit, out),
             EsKind::Aac => self.consume_audio(unit, out),
+            EsKind::Scte35 => self.consume_cue(unit, out),
         }
+    }
+
+    /// Places a `splice_info_section` on the frames' timeline. Its splice
+    /// time is a 33-bit wire value like any PTS, so it is unwrapped against
+    /// the newest video DTS (audio when there is no video): a cue sent just
+    /// before a clock wrap for a splice just after it lands after, not 26.5
+    /// hours before. An immediate cue (no splice time) applies at the
+    /// newest media time.
+    fn consume_cue(&mut self, unit: EsUnit, out: &mut Vec<DemuxEvent>) {
+        let splice = match caudal_scte35::parse(&unit.data) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::debug!(%err, "scte-35 section dropped");
+                return;
+            }
+        };
+        let clock = [&self.video_clock, &self.audio_clock].into_iter().find(|c| c.last_raw.is_some());
+        let ticks = match (splice.pts_90k, clock) {
+            (Some(p), Some(c)) => c.absolute + wrapped_diff(p, c.last_raw.unwrap_or(0)),
+            (None, Some(c)) => c.absolute,
+            (Some(p), None) => p as i64,
+            (None, None) => self.zero_point.unwrap_or(0),
+        };
+        let zero = *self.zero_point.get_or_insert(ticks);
+        out.push(DemuxEvent::Cue(Cue {
+            at_us: caudal_scte35::ticks_to_us(ticks - zero),
+            section: Bytes::from(unit.data),
+            kind: splice.kind,
+        }));
     }
 
     /// Extends the DTS series (falling back to PTS if a unit has no DTS,

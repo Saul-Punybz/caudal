@@ -168,7 +168,7 @@ async fn restreams_into_a_real_rtmp_ingest() {
         match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await.expect("timed out reading dst frames") {
             Event::Frame(f) if f.track == TrackId(0) => video_ts.push(f.dts),
             Event::Frame(f) if f.track == TrackId(1) => audio_ts.push(f.dts),
-            Event::Frame(_) | Event::TracksChanged | Event::Lagged { .. } => {}
+            Event::Frame(_) | Event::TracksChanged | Event::Lagged { .. } | Event::Cue(_) => {}
             Event::End => panic!("dst ended before all frames arrived"),
         }
     }

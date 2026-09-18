@@ -8,6 +8,7 @@ app = "live"  # RTMP application name
 [hls]
 part_ms = 200  # HLS part duration in milliseconds
 segment_ms = 2000  # HLS segment duration in milliseconds
+cue_tags = true  # SCTE-35 cues as EXT-X-DATERANGE (SCTE35-OUT/IN/CMD)
 
 [buffer]
 window_secs = 50  # Buffer window duration in seconds

@@ -25,7 +25,7 @@ async fn main() {
     eprintln!("{path}: {} tracks, {} frames per loop", fx.tracks.len(), fx.frames.len());
 
     let registry = Registry::new();
-    let app = router(registry.clone(), HlsConfig { part_ms: 200, segment_ms: 2000 });
+    let app = router(registry.clone(), HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true });
 
     let publisher = registry.publish("demo", BufferConfig::default()).unwrap();
     publisher.set_tracks(fx.tracks.clone()).unwrap();

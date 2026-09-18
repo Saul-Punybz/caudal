@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
 use crate::gate::{Access, Denied, Gate};
-use crate::media::{Frame, TrackInfo, valid_stream_name};
+use crate::media::{Cue, Frame, TrackInfo, valid_stream_name};
 use crate::stream::{BufferConfig, PushError, StartAt, Stream, Subscriber};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -124,6 +124,12 @@ impl Publisher {
 
     pub fn push(&self, frame: Frame) -> Result<(), PushError> {
         self.stream.push(frame)
+    }
+
+    /// Pushes an SCTE-35 cue that arrived with the media (TS PID 0x86,
+    /// RTMP `onCuePoint`). Same path as [`Stream::inject_cue`].
+    pub fn push_cue(&self, cue: Cue) -> Result<(), PushError> {
+        self.stream.inject_cue(cue)
     }
 }
 

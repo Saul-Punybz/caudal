@@ -16,7 +16,7 @@ use tower::ServiceExt;
 use super::*;
 use mp4demux::{Demuxed, demux};
 
-const CFG: HlsConfig = HlsConfig { part_ms: 200, segment_ms: 2000 };
+const CFG: HlsConfig = HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true };
 
 fn fixture() -> Demuxed {
     demux(include_bytes!("../tests/fixtures/av.mp4"))
@@ -570,4 +570,116 @@ fn codec_strings() {
     // A malformed OpusHead (bad magic) yields no codec string, same as a
     // config record that fails to parse for the other codecs.
     assert!(crate::packager::codec_string(&t(Codec::Opus, b"not-an-opus-head!!!")).is_none());
+}
+
+fn cue(at_us: i64, kind: caudal_core::CueKind) -> caudal_core::Cue {
+    let pts = caudal_scte35::us_to_ticks(at_us) as u64;
+    let section = caudal_scte35::build(kind, Some(pts), 1, caudal_scte35::Command::TimeSignal).unwrap();
+    caudal_core::Cue { at_us, section, kind }
+}
+
+/// Drives the packager with a wall clock that tracks media time exactly,
+/// starting at t0, so every date in the playlist is predictable.
+fn packager_with(cfg: HlsConfig, loops: std::ops::Range<i64>, cues: &[(i64, caudal_core::Cue)]) -> Packager {
+    let fx = fixture();
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    let mut pkg = Packager::new(cfg);
+    pkg.set_tracks(&fx.tracks);
+    for n in loops {
+        for f in fx.looped(n) {
+            let us = fx.micros(&f);
+            pkg.push(&f, t0 + Duration::from_micros(us as u64));
+            // A cue is pushed once media has reached the time given with it.
+            for (after, c) in cues {
+                if f.track.0 == 0 && (us..us + 33_334).contains(after) {
+                    pkg.push_cue(c);
+                }
+            }
+        }
+    }
+    pkg
+}
+
+#[test]
+fn cues_become_dateranges_dated_from_their_segment() {
+    use caudal_core::CueKind;
+    let out = cue(4_500_000, CueKind::Out { duration_us: Some(30_000_000) });
+    let inn = cue(7_250_000, CueKind::In);
+    let pkg = packager_with(CFG, 0..3, &[(4_500_000, out.clone()), (7_250_000, inn.clone())]);
+    let pl = pkg.playlist();
+
+    let out_line = format!(
+        "#EXT-X-DATERANGE:ID=\"scte35-1\",START-DATE=\"1970-01-01T00:16:44.500Z\",PLANNED-DURATION=30.000,SCTE35-OUT={}",
+        caudal_scte35::to_hex(&out.section)
+    );
+    let in_line = format!(
+        "#EXT-X-DATERANGE:ID=\"scte35-1\",START-DATE=\"1970-01-01T00:16:44.500Z\",DURATION=2.750,SCTE35-IN={}",
+        caudal_scte35::to_hex(&inn.section)
+    );
+    // Each right after the PDT of the segment its cue falls in (s2 starts
+    // at 4 s, s3 at 6 s); START-DATE = that PDT + the offset into it.
+    assert!(pl.contains(&format!("#EXT-X-PROGRAM-DATE-TIME:1970-01-01T00:16:44.000Z\n{out_line}\n")), "{pl}");
+    assert!(pl.contains(&format!("#EXT-X-PROGRAM-DATE-TIME:1970-01-01T00:16:46.000Z\n{in_line}\n")), "{pl}");
+    assert_eq!(tag_values(&pl, "#EXT-X-DATERANGE:").len(), 2, "{pl}");
+    // The hex round-trips to the same cue.
+    let hex = attr(tag_values(&pl, "#EXT-X-DATERANGE:")[0], "SCTE35-OUT").unwrap();
+    let parsed = caudal_scte35::parse(&caudal_scte35::from_hex(hex).unwrap()).unwrap();
+    assert_eq!(parsed.kind, CueKind::Out { duration_us: Some(30_000_000) });
+
+    // Off by config.
+    let off = packager_with(
+        HlsConfig { cue_tags: false, ..CFG },
+        0..3,
+        &[(4_500_000, out.clone()), (7_250_000, inn.clone())],
+    );
+    assert!(!off.playlist().contains("DATERANGE"));
+}
+
+#[test]
+fn dateranges_leave_with_the_window_but_not_before_their_end() {
+    use caudal_core::CueKind;
+    let other = cue(1_000_000, CueKind::Other);
+    let out = cue(4_500_000, CueKind::Out { duration_us: Some(30_000_000) });
+    // 32 s of media: the window (6 full segments) starts past 18 s.
+    let pkg = packager_with(CFG, 0..8, &[(1_000_000, other), (4_500_000, out)]);
+    let pl = pkg.playlist();
+    assert!(!pl.contains("SCTE35-CMD"), "a 1 s cue is gone once its segment left:\n{pl}");
+    // The break (4.5 s + 30 s) still overlaps the window: kept, and listed
+    // before the first segment it is older than.
+    let lines: Vec<&str> = pl.lines().collect();
+    let first_pdt = lines.iter().position(|l| l.starts_with("#EXT-X-PROGRAM-DATE-TIME")).unwrap();
+    assert!(lines[first_pdt + 1].contains("SCTE35-OUT"), "{pl}");
+}
+
+#[tokio::test]
+async fn a_pushed_cue_reaches_the_live_playlist() {
+    use caudal_core::CueKind;
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router(reg.clone(), CFG);
+    let p = publish(&reg, "ad", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..2);
+    let c = cue(4_500_000, CueKind::Out { duration_us: Some(15_000_000) });
+    p.push_cue(c.clone()).unwrap();
+    push_loops(&p, &fx, 2..3);
+    let pl = wait_playlist(&app, "ad", |pl| pl.contains("SCTE35-OUT") && pl.contains("s4.m4s")).await;
+    let lines: Vec<&str> = pl.lines().collect();
+    let at = lines.iter().position(|l| l.starts_with("#EXT-X-DATERANGE:")).unwrap();
+    let dr = lines[at];
+    assert_eq!(attr(dr, "PLANNED-DURATION"), Some("15.000"));
+    assert_eq!(attr(dr, "SCTE35-OUT"), Some(caudal_scte35::to_hex(&c.section).as_str()));
+    // START-DATE = the PDT of the segment it sits under (s2, 4 s) + 0.5 s.
+    let pdt = lines[at - 1].strip_prefix("#EXT-X-PROGRAM-DATE-TIME:").expect("right after a PDT");
+    let ms = |s: &str| -> i64 {
+        let t = &s[11..23]; // HH:MM:SS.mmm
+        let h: i64 = t[0..2].parse().unwrap();
+        let m: i64 = t[3..5].parse().unwrap();
+        let sec: i64 = t[6..8].parse().unwrap();
+        let milli: i64 = t[9..12].parse().unwrap();
+        ((h * 60 + m) * 60 + sec) * 1000 + milli
+    };
+    let start = attr(dr, "START-DATE").unwrap();
+    assert_eq!((ms(start) - ms(pdt)).rem_euclid(86_400_000), 500, "{pl}");
+    assert!(lines[at + 1].starts_with("#EXT-X-PART") || lines[at + 1].starts_with("#EXTINF"), "{pl}");
+    drop(p);
 }

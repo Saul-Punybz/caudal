@@ -105,11 +105,14 @@ pub struct HlsSection {
     pub part_ms: u32,
     #[serde(default = "default_segment_ms")]
     pub segment_ms: u32,
+    /// SCTE-35 cues as `EXT-X-DATERANGE` in the media playlists.
+    #[serde(default = "default_true")]
+    pub cue_tags: bool,
 }
 
 impl Default for HlsSection {
     fn default() -> Self {
-        Self { part_ms: default_part_ms(), segment_ms: default_segment_ms() }
+        Self { part_ms: default_part_ms(), segment_ms: default_segment_ms(), cue_tags: true }
     }
 }
 
@@ -601,6 +604,9 @@ mod tests {
         let cfg: Config = toml::from_str("[hls]\npart_ms = 100\n").unwrap();
         assert_eq!(cfg.hls.part_ms, 100);
         assert_eq!(cfg.hls.segment_ms, 2000);
+        assert!(cfg.hls.cue_tags, "cue tags default on");
+        let cfg: Config = toml::from_str("[hls]\ncue_tags = false\n").unwrap();
+        assert!(!cfg.hls.cue_tags);
     }
 
     #[test]

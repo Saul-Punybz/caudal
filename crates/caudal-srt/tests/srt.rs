@@ -288,8 +288,10 @@ async fn h264_aac_publish_end_to_end() {
     if have("ffprobe") {
         let hls_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let hls_port = hls_listener.local_addr().unwrap().port();
-        let router =
-            caudal_hls::router(server.registry.clone(), caudal_hls::HlsConfig { part_ms: 200, segment_ms: 2000 });
+        let router = caudal_hls::router(
+            server.registry.clone(),
+            caudal_hls::HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true },
+        );
         tokio::spawn(async move {
             let _ = axum::serve(hls_listener, router).await;
         });

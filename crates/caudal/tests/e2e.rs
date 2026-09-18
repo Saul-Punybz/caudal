@@ -150,6 +150,19 @@ fn ll_hls_plays_and_validates() {
     let joined = s.wait_until("/hls/e2e/index.m3u8", Duration::from_secs(5), |b| b.contains("#EXT-X-PART"));
     assert!(joined.contains("INDEPENDENT=YES"), "at least one independent part to join on");
 
+    // An SCTE-35 cue inserted over the API shows up as EXT-X-DATERANGE,
+    // and is part of what the validator checks below.
+    let mut resp = ureq::post(s.url("/api/v1/streams/e2e/cues"))
+        .header("content-type", "application/json")
+        .send(r#"{"kind":"out","duration_ms":30000}"#)
+        .expect("POST cue");
+    assert_eq!(resp.status().as_u16(), 202);
+    let cue: serde_json::Value = serde_json::from_str(&resp.body_mut().read_to_string().unwrap()).unwrap();
+    let hex = cue["section_hex"].as_str().expect("section_hex").to_owned();
+    let with_cue = s.wait_until("/hls/e2e/index.m3u8", Duration::from_secs(5), |b| b.contains("#EXT-X-DATERANGE"));
+    let dr = with_cue.lines().find(|l| l.starts_with("#EXT-X-DATERANGE:")).unwrap();
+    assert!(dr.contains(&format!("SCTE35-OUT={hex}")) && dr.contains("PLANNED-DURATION=30.000"), "{dr}");
+
     // Apple's validator, when installed (macOS with Xcode tools).
     let dir = tempfile::tempdir().unwrap();
     // Players and the validator enter through the multivariant playlist.

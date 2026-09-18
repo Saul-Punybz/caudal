@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 caudal-core.workspace = true
 caudal-cmaf.workspace = true
+caudal-scte35.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -46,6 +46,7 @@ async fn collect(registry: &Arc<Registry>, name: &str, timeout: Duration) -> Col
             }
             Ok(Event::TracksChanged) => c.tracks = sub.tracks(),
             Ok(Event::Lagged { .. }) => panic!("rendition reader lagged"),
+            Ok(Event::Cue(_)) => {}
             Ok(Event::Frame(f)) => c.frames.push((*f).clone()),
         }
     }

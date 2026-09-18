@@ -78,7 +78,7 @@ pub(crate) async fn forward(
                     }
                 }
                 // The ring already moved us to a keyframe.
-                Event::Lagged { .. } => {}
+                Event::Lagged { .. } | Event::Cue(_) => {}
                 Event::End => {
                     let _ = tx.send((id, Out::End)).await;
                     return;

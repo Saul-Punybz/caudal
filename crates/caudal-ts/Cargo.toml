@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 caudal-core.workspace = true
+caudal-scte35.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true

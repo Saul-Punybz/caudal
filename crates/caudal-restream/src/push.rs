@@ -150,7 +150,7 @@ async fn push_frames(client: &mut RtmpClient, stream: &Arc<Stream>, status: &Arc
                             }
                         }
                     }
-                    Event::Lagged { .. } => {}
+                    Event::Lagged { .. } | Event::Cue(_) => {}
                     Event::End => return sent_any,
                 }
             }

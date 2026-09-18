@@ -75,6 +75,7 @@ pub fn testsrc_clip(dir: &Path, secs: u32) -> Clip {
                 }
             }
             DemuxEvent::VideoFrame(f) | DemuxEvent::AudioFrame(f) => frames.push(f),
+            DemuxEvent::Cue(_) => {}
         }
     }
     tracks.sort_by_key(|t| t.id);

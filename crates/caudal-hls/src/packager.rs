@@ -17,10 +17,10 @@
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use bytes::{Bytes, BytesMut};
-use caudal_core::{Codec, Frame, TrackId, TrackInfo, TrackKind};
+use caudal_core::{Codec, Cue, CueKind, Frame, TrackId, TrackInfo, TrackKind};
 
 use crate::HlsConfig;
 use caudal_cmaf::fmp4::{self, Mp4Track, Run, Sample};
@@ -49,6 +49,8 @@ pub(crate) struct Segment {
     pub parts: Vec<Part>,
     /// Wall clock at which the packager received the segment's first frame.
     pub pdt: SystemTime,
+    /// Media time of the segment's first frame, on the `Cue::at_us` clock.
+    pub start_us: i64,
     pub discontinuity: bool,
     /// `Some` once the segment is complete: all its parts, concatenated.
     pub full: Option<Bytes>,
@@ -149,6 +151,33 @@ pub(crate) struct Packager {
     codecs: Vec<String>,
     resolution: Option<(u32, u32)>,
     frame_rate: Option<f64>,
+
+    /// `EXT-X-DATERANGE` lines for SCTE-35 cues, oldest first.
+    dateranges: VecDeque<DateRange>,
+    /// Cues that arrived before the first segment: nothing to date them by.
+    early_cues: Vec<Cue>,
+    /// The splice-out still waiting for its splice-in, which reuses its ID.
+    open_out: Option<OpenOut>,
+    cue_seq: u64,
+}
+
+/// One `EXT-X-DATERANGE` line. The text is fixed when the cue arrives:
+/// tags with the same ID must keep the same attribute values on every
+/// reload (RFC 8216bis §4.4.5.1).
+struct DateRange {
+    /// Media time the tag is placed at (after the PDT of the segment that
+    /// contains it).
+    at_us: i64,
+    /// Media time the range ends, for keeping it while it still overlaps
+    /// the window.
+    end_us: i64,
+    line: String,
+}
+
+struct OpenOut {
+    id: String,
+    start_date: String,
+    at_us: i64,
 }
 
 /// Everything one rendition contributes to a multivariant playlist's
@@ -186,7 +215,80 @@ impl Packager {
             codecs: Vec::new(),
             resolution: None,
             frame_rate: None,
+            dateranges: VecDeque::new(),
+            early_cues: Vec::new(),
+            open_out: None,
+            cue_seq: 0,
         }
+    }
+
+    /// Turns an SCTE-35 cue into `EXT-X-DATERANGE` (RFC 8216 §4.3.2.7.1):
+    /// a splice-out gets `SCTE35-OUT` and `PLANNED-DURATION`; the next
+    /// splice-in reuses its ID with `SCTE35-IN` and the measured `DURATION`;
+    /// anything else gets `SCTE35-CMD`. `START-DATE` is the wall clock of
+    /// the segment the cue falls in, plus the cue's media offset into it.
+    pub fn push_cue(&mut self, cue: &Cue) {
+        if !self.cfg.cue_tags || self.ended {
+            return;
+        }
+        let anchor = self.segments.iter().rev().find(|s| s.start_us <= cue.at_us).or(self.segments.front());
+        let Some(anchor) = anchor else {
+            if self.early_cues.len() < 16 {
+                self.early_cues.push(cue.clone());
+            }
+            return;
+        };
+        let offset = cue.at_us - anchor.start_us;
+        let date = if offset >= 0 {
+            anchor.pdt + Duration::from_micros(offset as u64)
+        } else {
+            anchor.pdt - Duration::from_micros(offset.unsigned_abs())
+        };
+        let date = rfc3339(date);
+        let hex = caudal_scte35::to_hex(&cue.section);
+        let (line, end_us) = match cue.kind {
+            CueKind::Out { duration_us } => {
+                let id = self.next_cue_id();
+                let mut line = format!("#EXT-X-DATERANGE:ID=\"{id}\",START-DATE=\"{date}\"");
+                if let Some(d) = duration_us.filter(|d| *d > 0) {
+                    let _ = write!(line, ",PLANNED-DURATION={:.3}", d as f64 / 1e6);
+                }
+                let _ = write!(line, ",SCTE35-OUT={hex}");
+                self.open_out = Some(OpenOut { id, start_date: date, at_us: cue.at_us });
+                (line, cue.at_us + duration_us.unwrap_or(0).max(0))
+            }
+            CueKind::In => match self.open_out.take() {
+                Some(out) => {
+                    let d = (cue.at_us - out.at_us).max(0) as f64 / 1e6;
+                    let line = format!(
+                        "#EXT-X-DATERANGE:ID=\"{}\",START-DATE=\"{}\",DURATION={d:.3},SCTE35-IN={hex}",
+                        out.id, out.start_date
+                    );
+                    (line, cue.at_us)
+                }
+                None => {
+                    let id = self.next_cue_id();
+                    (format!("#EXT-X-DATERANGE:ID=\"{id}\",START-DATE=\"{date}\",SCTE35-IN={hex}"), cue.at_us)
+                }
+            },
+            CueKind::Other => {
+                let id = self.next_cue_id();
+                (format!("#EXT-X-DATERANGE:ID=\"{id}\",START-DATE=\"{date}\",SCTE35-CMD={hex}"), cue.at_us)
+            }
+        };
+        self.dateranges.push_back(DateRange { at_us: cue.at_us, end_us, line });
+        self.prune_dateranges();
+    }
+
+    fn next_cue_id(&mut self) -> String {
+        self.cue_seq += 1;
+        format!("scte35-{}", self.cue_seq)
+    }
+
+    /// Drops ranges that ended before the oldest segment in the window.
+    fn prune_dateranges(&mut self) {
+        let Some(first) = self.segments.front().map(|s| s.start_us) else { return };
+        self.dateranges.retain(|d| d.at_us.max(d.end_us) >= first);
     }
 
     pub fn part_target(&self) -> f64 {
@@ -232,6 +334,8 @@ impl Packager {
         self.flush();
         let had_output = !self.segments.is_empty();
         self.segments.clear();
+        self.dateranges.clear();
+        self.open_out = None;
         self.discontinuity_next = had_output;
         self.resume_from = None;
         self.queue.clear();
@@ -348,6 +452,8 @@ impl Packager {
     fn open_segment(&mut self, dts: i64, now: SystemTime) {
         let lane = self.primary.as_ref().unwrap();
         let start_micros = lane.micros(dts);
+        // Sample times carry SHIFT_SECS; cue times do not.
+        let media_us = lane.micros(dts - lane.shift);
         let mut discontinuity = std::mem::take(&mut self.discontinuity_next);
         if let Some(prev) = self.resume_from.take() {
             let gap = start_micros - prev;
@@ -361,8 +467,18 @@ impl Packager {
             self.waiting_key = false;
         }
         self.seg_start = Some(dts);
-        self.segments.push_back(Segment { msn: self.next_msn, parts: Vec::new(), pdt: now, discontinuity, full: None });
+        self.segments.push_back(Segment {
+            msn: self.next_msn,
+            parts: Vec::new(),
+            pdt: now,
+            start_us: media_us,
+            discontinuity,
+            full: None,
+        });
         self.next_msn += 1;
+        for cue in std::mem::take(&mut self.early_cues) {
+            self.push_cue(&cue);
+        }
     }
 
     fn close_part(&mut self) {
@@ -424,6 +540,7 @@ impl Packager {
                 self.discontinuity_seq += 1;
             }
         }
+        self.prune_dateranges();
     }
 
     /// Commits held-back frames with their last known duration and closes
@@ -533,14 +650,21 @@ impl Packager {
         }
         o.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n");
         let n = self.segments.len();
-        for (i, seg) in self.segments.iter().enumerate() {
-            if seg.parts.is_empty() {
-                continue;
-            }
+        // Each DATERANGE goes right after the PDT of the listed segment its
+        // cue falls in (the first listed one for anything older).
+        let listed: Vec<usize> = (0..n).filter(|&i| !self.segments[i].parts.is_empty()).collect();
+        for (k, &i) in listed.iter().enumerate() {
+            let seg = &self.segments[i];
             if seg.discontinuity {
                 o.push_str("#EXT-X-DISCONTINUITY\n");
             }
             let _ = writeln!(o, "#EXT-X-PROGRAM-DATE-TIME:{}", rfc3339(seg.pdt));
+            let from = if k == 0 { i64::MIN } else { seg.start_us };
+            let until = listed.get(k + 1).map_or(i64::MAX, |&j| self.segments[j].start_us);
+            for d in self.dateranges.iter().filter(|d| (from..until).contains(&d.at_us)) {
+                o.push_str(&d.line);
+                o.push('\n');
+            }
             if i + PART_SEGMENTS >= n {
                 for (j, p) in seg.parts.iter().enumerate() {
                     let _ = write!(o, "#EXT-X-PART:DURATION={:.5},URI=\"s{}.p{}.m4s\"", p.duration, seg.msn, j);

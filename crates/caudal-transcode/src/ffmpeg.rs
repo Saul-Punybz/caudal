@@ -278,6 +278,7 @@ async fn session(
                 pre.clear();
             }
             Event::Lagged { .. } => pre.clear(),
+            Event::Cue(_) => {}
             Event::Frame(f) => {
                 let is_video = f.track == src.video.id;
                 if src.track(f.track).is_none() || (pre.is_empty() && !(is_video && f.keyframe)) {
@@ -397,6 +398,7 @@ async fn session(
                     }
                 }
                 Event::Lagged { .. } => resync = true,
+                Event::Cue(_) => {}
                 Event::End => {
                     // Let ffmpeg flush what it has, then stop it.
                     drop(tx);
@@ -506,6 +508,7 @@ async fn read_outputs(
                         f.pts += off;
                         out.push(f);
                     }
+                    DemuxEvent::Cue(_) => {}
                 }
             }
         }

@@ -10,7 +10,7 @@ use std::io::Cursor;
 
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::Bytes;
-use caudal_core::{AudioParams, Codec, Frame, TrackId, TrackInfo, VideoParams};
+use caudal_core::{AudioParams, Codec, Cue, CueKind, Frame, TrackId, TrackInfo, VideoParams};
 use scuffle_amf0::{Amf0Decoder, Amf0Value};
 use scuffle_flv::audio::AudioData;
 use scuffle_flv::audio::body::AudioTagBody;
@@ -196,6 +196,81 @@ fn audio_init(asc: Bytes) -> Option<TrackInfo> {
     })
 }
 
+/// An SCTE-35 cue from an AMF0 data message: `onCuePoint` (or the
+/// `onAdCue` spelling some encoders use), optionally behind
+/// `@setDataFrame`. There is no single standard layout (Enhanced RTMP
+/// defines none), so this accepts, in order:
+///
+/// 1. any string field, top level or under `parameters`, holding a whole
+///    `splice_info_section` in hex or base64 (it must parse, CRC included);
+/// 2. otherwise a `type` / `name` of `cue-out`/`out`/`adStart`/... or
+///    `cue-in`/`in`/`adEnd`/..., with an optional `duration` in seconds, for
+///    which a `time_signal` section is built.
+///
+/// The cue is placed at `time` (seconds on the stream clock) when present,
+/// else at the message timestamp. RTMP timestamps are milliseconds, and
+/// video/audio frames use the same clock, so `at_us` lines up with them.
+pub(crate) fn parse_cue_point(timestamp_ms: u32, data: Bytes, event_id: u32) -> Option<Cue> {
+    let mut decoder = Amf0Decoder::from_buf(data);
+    let values = decoder.decode_all().ok()?;
+    let mut values =
+        values.into_iter().skip_while(|v| matches!(v, Amf0Value::String(s) if s.as_str() == "@setDataFrame"));
+    match values.next()? {
+        Amf0Value::String(name)
+            if name.as_str().eq_ignore_ascii_case("onCuePoint") || name.as_str().eq_ignore_ascii_case("onAdCue") => {}
+        _ => return None,
+    }
+    let Amf0Value::Object(obj) = values.next()? else { return None };
+
+    // Flatten the top level and `parameters` into one list of fields.
+    let mut fields: Vec<(String, Amf0Value<'_>)> = Vec::new();
+    for (k, v) in obj.iter() {
+        if let (true, Amf0Value::Object(params)) = (k.as_str().eq_ignore_ascii_case("parameters"), v) {
+            fields.extend(params.iter().map(|(k, v)| (k.as_str().to_ascii_lowercase(), v.clone())));
+        } else {
+            fields.push((k.as_str().to_ascii_lowercase(), v.clone()));
+        }
+    }
+    let number = |key: &str| {
+        fields.iter().find_map(|(k, v)| match v {
+            Amf0Value::Number(n) if k == key && n.is_finite() && *n >= 0.0 => Some(*n),
+            Amf0Value::String(s) if k == key => {
+                s.as_str().trim().parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0)
+            }
+            _ => None,
+        })
+    };
+    let at_us = number("time").map_or(i64::from(timestamp_ms) * 1000, |s| (s * 1e6).round() as i64);
+
+    for (_, v) in &fields {
+        if let Amf0Value::String(s) = v
+            && let Some((section, splice)) = caudal_scte35::decode_text(s.as_str())
+        {
+            return Some(Cue { at_us, section, kind: splice.kind });
+        }
+    }
+
+    let word = |key: &str| {
+        fields.iter().find_map(|(k, v)| match v {
+            Amf0Value::String(s) if k == key => {
+                Some(s.as_str().chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase())
+            }
+            _ => None,
+        })
+    };
+    let kind = ["type", "name"].iter().filter_map(|k| word(k)).find_map(|w| match w.as_str() {
+        "cueout" | "out" | "adstart" | "breakstart" | "spliceout" | "start" => {
+            let duration_us = number("duration").map(|s| (s * 1e6).round() as i64);
+            Some(CueKind::Out { duration_us })
+        }
+        "cuein" | "in" | "adend" | "breakend" | "splicein" | "end" | "return" => Some(CueKind::In),
+        _ => None,
+    })?;
+    let pts = (caudal_scte35::us_to_ticks(at_us) as u64) & caudal_scte35::PTS_MASK;
+    let section = caudal_scte35::build(kind, Some(pts), event_id, caudal_scte35::Command::TimeSignal).ok()?;
+    Some(Cue { at_us, section, kind })
+}
+
 /// Best-effort `framerate` extraction from an `onMetaData` AMF0 payload.
 pub(crate) fn parse_metadata_fps(data: Bytes) -> Option<f64> {
     let mut decoder = Amf0Decoder::from_buf(data);
@@ -213,4 +288,74 @@ pub(crate) fn parse_metadata_fps(data: Bytes) -> Option<f64> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use scuffle_amf0::{Amf0Encoder, Amf0Object};
+
+    use super::*;
+
+    fn message(set_data_frame: bool, name: &str, obj: Amf0Object<'_>) -> Bytes {
+        let mut buf = Vec::new();
+        let mut enc = Amf0Encoder::new(&mut buf);
+        if set_data_frame {
+            enc.encode_string("@setDataFrame").unwrap();
+        }
+        enc.encode_string(name).unwrap();
+        enc.encode_object(&obj).unwrap();
+        Bytes::from(buf)
+    }
+
+    fn obj<'a>(fields: Vec<(&'a str, Amf0Value<'a>)>) -> Amf0Object<'a> {
+        fields.into_iter().map(|(k, v)| (k.into(), v)).collect()
+    }
+
+    #[test]
+    fn a_named_cue_out_gets_a_built_section() {
+        let data = message(
+            false,
+            "onCuePoint",
+            obj(vec![
+                ("name", Amf0Value::String("CUE-OUT".into())),
+                ("time", Amf0Value::Number(12.5)),
+                ("duration", Amf0Value::Number(30.0)),
+            ]),
+        );
+        let cue = parse_cue_point(99_000, data, 1).unwrap();
+        assert_eq!(cue.at_us, 12_500_000, "time wins over the message timestamp");
+        assert_eq!(cue.kind, CueKind::Out { duration_us: Some(30_000_000) });
+        let s = caudal_scte35::parse(&cue.section).unwrap();
+        assert_eq!(s.kind, cue.kind);
+        assert_eq!(s.pts_90k, Some(12_500_000 * 9 / 100));
+    }
+
+    #[test]
+    fn a_section_in_parameters_is_passed_through() {
+        let kind = CueKind::Out { duration_us: Some(60_000_000) };
+        let section = caudal_scte35::build(kind, Some(1234), 5, caudal_scte35::Command::SpliceInsert).unwrap();
+        let hex = caudal_scte35::to_hex(&section);
+        let params = obj(vec![("cue", Amf0Value::String(hex.as_str().into()))]);
+        let data = message(
+            true,
+            "onCuePoint",
+            obj(vec![("name", Amf0Value::String("scte35".into())), ("parameters", Amf0Value::Object(params))]),
+        );
+        let cue = parse_cue_point(4_000, data, 1).unwrap();
+        assert_eq!(cue.section, section, "bytes unchanged");
+        assert_eq!(cue.kind, kind);
+        assert_eq!(cue.at_us, 4_000_000, "no time field: the message timestamp");
+    }
+
+    #[test]
+    fn cue_in_and_non_cues() {
+        let data = message(false, "onAdCue", obj(vec![("type", Amf0Value::String("cue-in".into()))]));
+        assert_eq!(parse_cue_point(1, data, 1).unwrap().kind, CueKind::In);
+        let meta = message(true, "onMetaData", obj(vec![("framerate", Amf0Value::Number(30.0))]));
+        assert!(parse_cue_point(1, meta.clone(), 1).is_none());
+        assert_eq!(parse_metadata_fps(meta), Some(30.0));
+        let unknown = message(false, "onCuePoint", obj(vec![("name", Amf0Value::String("chapter".into()))]));
+        assert!(parse_cue_point(1, unknown, 1).is_none());
+        assert!(parse_cue_point(1, Bytes::from_static(&[0xFF, 0x00]), 1).is_none());
+    }
 }

@@ -142,6 +142,44 @@ pub struct Frame {
     pub data: Bytes,
 }
 
+/// An SCTE-35 ad cue (a `splice_info_section`) placed on the stream's
+/// media timeline.
+///
+/// `at_us` is on the same clock as frame timestamps converted with
+/// [`TrackInfo::to_micros`], so outputs can place the cue next to the frame
+/// it applies to. `section` is the whole section (table_id `0xFC` through
+/// CRC_32), carried unchanged so downstream splicers see what the source
+/// sent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cue {
+    pub at_us: i64,
+    pub section: Bytes,
+    pub kind: CueKind,
+}
+
+/// What a cue asks a downstream splicer to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CueKind {
+    /// Leave the network feed (an ad break starts). `duration_us` is the
+    /// planned break length, when the section declares one.
+    Out { duration_us: Option<i64> },
+    /// Return to the network feed (the break ends).
+    In,
+    /// Any other command (a cancel, a program boundary, a private command).
+    Other,
+}
+
+impl CueKind {
+    /// Lowercase name used in the HTTP API.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CueKind::Out { .. } => "out",
+            CueKind::In => "in",
+            CueKind::Other => "other",
+        }
+    }
+}
+
 /// Stream names travel into URLs, file paths and log lines, so they are
 /// restricted up front instead of escaped everywhere.
 pub fn valid_stream_name(name: &str) -> bool {

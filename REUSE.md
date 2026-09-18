@@ -202,6 +202,11 @@ repo re-checked by hand with crates.io and `gh api`.
 - **Serve RTSP, pure Rust, corrected:** `rtsp-types` 0.1.3 + `sdp-types` 0.2.0 (MIT, sdroege) for the protocol; webrtc-rs `rtp` 0.17 for H.264 FU-A packetizing; `rtsp-runtime` 0.6.0 (MIT OR Apache-2.0, sans-I/O client+server state machine, single author) as the model or a fork; `shiguredo_rtsp` (Apache-2.0, pre-1.0) and `msf-rtsp` 0.3.1 (MIT) to trial. xiu has a working pure-Rust RTSP server (`protocol/rtsp/src/session/server_session.rs`, crate `xrtsp`, MIT, stale on crates.io since Aug 2024) as a reference.
 - Rejected: `oddity-ai/oddity-rtsp` (links ffmpeg via `video-rs`), `gstreamer-rtsp-server` (LGPL C), `webrtc-sdp` (MPL-2.0), `rtp-rs` (no license).
 - **Plan:** no gortsplib port. Glue `rtsp-types` + `sdp-types` + `rtp`, modelled on `rtsp-runtime`.
+- **18 Sep 2026 (Saul's MediaMTX-gap batch): RTSP over UDP unicast + RTSPS.** Checked before writing:
+  - `retina` (already a dependency, pull-only): its packetizing lives on the depacketizing side (`retina::codec`), nothing server-side to reuse for building outgoing RTP.
+  - `rtcp` (webrtc-rs, MIT): considered for the Sender Report the UDP path now sends periodically. Not pulled in: a compound SR+SDES packet is ~40 bytes of fixed-layout fields (`crates/caudal-rtsp/src/rtcp.rs`), smaller than the dependency, and `caudal-rtsp` already hand-rolls RTP the same way (`rtp.rs`'s doc comment explains why: `caudal_core::Frame` is AVCC, `webrtc-rs`'s `rtp::codecs::h264` payloader expects Annex B).
+  - **No gortsplib port was needed.** `caudal-rtsp/src/server.rs` already had the RTSP state machine and TCP interleaved transport; UDP unicast SETUP and RTSPS are additions to it (a `udp::UdpPortPool` for RTP/RTCP port-pair allocation, and TLS via `caudal-tls`'s new `raw_tls_acceptor`), not a rewrite from a Go reference.
+  - RTSPS reuses `crates/caudal-tls` (rustls + `ring`, hot-reloaded cert files) instead of a second TLS stack: `caudal_tls::raw_tls_acceptor(cert, key)` is a small additive export (no ALPN, no axum `Router` — RTSP is a text protocol over the raw TLS stream, not HTTP) alongside the existing `CertSource`/`serve` used for HTTPS.
 
 ### M10 · Clustering
 - `moq-relay`'s `cluster.rs`: full mesh with hop-cost routing, static peers, an HTTP/file peer list, or gossip; JWT per peer.

@@ -180,13 +180,41 @@ pub struct ChannelEntry {
     pub shuffle: bool,
 }
 
-/// RTSP: pull cameras in (`[[rtsp.pull]]`), serve streams out (`bind`).
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+fn default_rtsp_udp_port_range() -> (u16, u16) {
+    (8000, 8999)
+}
+
+/// RTSP: pull cameras in (`[[rtsp.pull]]`), serve streams out (`bind`),
+/// optionally RTSPS alongside it (`tls_bind` + `tls_cert`/`tls_key`). UDP
+/// unicast SETUPs allocate an RTP/RTCP port pair from `udp_port_range`;
+/// RTSPS never offers UDP (media stays inside the TLS tunnel, interleaved
+/// over the same TCP connection as the control channel).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct RtspSection {
     /// e.g. "0.0.0.0:8554"; absent = no RTSP server.
     pub bind: Option<SocketAddr>,
     pub pull: Vec<RtspPullEntry>,
+    /// e.g. `[8000, 8999]`.
+    #[serde(default = "default_rtsp_udp_port_range")]
+    pub udp_port_range: (u16, u16),
+    /// e.g. "0.0.0.0:322" (rtsps' IANA port); absent = no RTSPS.
+    pub tls_bind: Option<SocketAddr>,
+    pub tls_cert: Option<std::path::PathBuf>,
+    pub tls_key: Option<std::path::PathBuf>,
+}
+
+impl Default for RtspSection {
+    fn default() -> Self {
+        Self {
+            bind: None,
+            pull: Vec::new(),
+            udp_port_range: default_rtsp_udp_port_range(),
+            tls_bind: None,
+            tls_cert: None,
+            tls_key: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -194,6 +222,22 @@ pub struct RtspSection {
 pub struct RtspPullEntry {
     pub stream: String,
     pub url: String,
+}
+
+impl RtspSection {
+    /// `Ok(None)` when RTSPS is off; an error names what is missing.
+    pub fn to_tls_config(&self) -> Result<Option<caudal_rtsp::RtspTlsConfig>, String> {
+        let Some(bind) = self.tls_bind else {
+            if self.tls_cert.is_some() || self.tls_key.is_some() {
+                return Err("[rtsp] has tls_cert/tls_key but no tls_bind address".into());
+            }
+            return Ok(None);
+        };
+        let (Some(cert), Some(key)) = (self.tls_cert.clone(), self.tls_key.clone()) else {
+            return Err("[rtsp] tls_bind needs both tls_cert and tls_key".into());
+        };
+        Ok(Some(caudal_rtsp::RtspTlsConfig { bind, cert, key }))
+    }
 }
 
 /// Transcoding ladders: `[[transcode.ladder]]` with `streams` and
@@ -521,6 +565,7 @@ impl Config {
         self.hooks.to_hooks_config()?;
         self.moq.to_moq_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
+        self.rtsp.to_tls_config()?;
         Ok(())
     }
 }

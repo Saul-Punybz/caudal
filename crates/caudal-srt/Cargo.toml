@@ -11,3 +11,15 @@ repository.workspace = true
 caudal-core.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+rsrt = "0.3.6"
+mpeg2ts = "0.6"
+mp4-atom = "0.15"
+scuffle-h264 = "0.2.2"
+scuffle-h265 = "0.2.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "process"] }
+caudal-hls.workspace = true
+axum.workspace = true

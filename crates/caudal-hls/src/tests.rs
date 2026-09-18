@@ -22,6 +22,12 @@ fn fixture() -> Demuxed {
     demux(include_bytes!("../tests/fixtures/av.mp4"))
 }
 
+/// 256x144, 30 fps, GOP 60, H.264 + Opus (48 kHz mono), ffmpeg's WHIP-style
+/// output for a WebRTC publisher.
+fn fixture_opus() -> Demuxed {
+    demux(include_bytes!("../tests/fixtures/av_opus.mp4"))
+}
+
 struct Reply {
     status: StatusCode,
     headers: axum::http::HeaderMap,
@@ -148,6 +154,72 @@ async fn init_segment_is_decodable_cmaf() {
         c => panic!("audio sample entry is {c:?}"),
     }
     assert_eq!(moov.trak[1].mdia.mdhd.timescale, 48_000);
+}
+
+#[tokio::test]
+async fn h264_opus_init_segment_and_multivariant() {
+    let fx = fixture_opus();
+    let reg = Registry::new();
+    let app = router(reg.clone(), CFG);
+    let p = publish(&reg, "opus", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..1);
+    wait_playlist(&app, "opus", |pl| pl.contains("#EXT-X-PART:")).await;
+
+    let r = get(&app, "/hls/opus/init.mp4").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.windows(4).any(|w| w == b"Opus"), "no Opus sample entry:\n{:?}", r.body);
+    assert!(r.body.windows(4).any(|w| w == b"dOps"), "no dOps box:\n{:?}", r.body);
+
+    let mut buf = &r.body[..];
+    Ftyp::decode(&mut buf).unwrap();
+    let moov = Moov::decode(&mut buf).unwrap();
+    assert!(buf.is_empty());
+    match &moov.trak[1].mdia.minf.stbl.stsd.codecs[0] {
+        mp4_atom::Codec::Opus(o) => {
+            assert_eq!(o.audio.channel_count, fx.tracks[1].audio.unwrap().channels as u16);
+            assert_eq!(o.dops.input_sample_rate, 48_000);
+        }
+        c => panic!("audio sample entry is {c:?}"),
+    }
+    assert_eq!(moov.trak[1].mdia.mdhd.timescale, 48_000);
+
+    let master = get(&app, "/hls/opus/master.m3u8").await;
+    assert_eq!(master.status, StatusCode::OK);
+    assert!(master.text().contains("opus"), "{}", master.text());
+    drop(p);
+}
+
+/// An Opus-only publish (no video track at all): Opus becomes the primary
+/// track and still cuts segments and parts on its own clock.
+#[tokio::test]
+async fn audio_only_opus_stream() {
+    let fx = fixture_opus();
+    let audio_track = fx.tracks[1].clone();
+    assert_eq!(audio_track.codec, caudal_core::Codec::Opus);
+    let reg = Registry::new();
+    let app = router(reg.clone(), CFG);
+    let p = reg.publish("opus-only", BufferConfig::default()).unwrap();
+    p.set_tracks(vec![audio_track]).unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    for n in 0..2 {
+        for f in fx.looped(n).filter(|f| f.track == fx.tracks[1].id) {
+            p.push(f).unwrap();
+        }
+    }
+    let pl = wait_playlist(&app, "opus-only", |pl| pl.contains("#EXTINF")).await;
+    assert!(pl.contains("#EXT-X-PART:"), "{pl}");
+
+    let r = get(&app, "/hls/opus-only/init.mp4").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let mut buf = &r.body[..];
+    Ftyp::decode(&mut buf).unwrap();
+    let moov = Moov::decode(&mut buf).unwrap();
+    assert_eq!(moov.trak.len(), 1, "audio-only: one track");
+    assert!(matches!(moov.trak[0].mdia.minf.stbl.stsd.codecs[0], mp4_atom::Codec::Opus(_)));
+
+    let master = get(&app, "/hls/opus-only/master.m3u8").await;
+    assert!(master.text().contains("CODECS=\"opus\""), "{}", master.text());
+    drop(p);
 }
 
 #[tokio::test]
@@ -396,4 +468,11 @@ fn codec_strings() {
     // HEVC Main, Main tier, level 3.1 (93), progressive-source constraint.
     let hvcc: &[u8] = &[1, 0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 93, 0xf0];
     assert_eq!(crate::packager::codec_string(&t(Codec::H265, hvcc)).unwrap(), "hvc1.1.6.L93.90");
+    // OpusHead, stereo, 48 kHz, no pre-skip/gain: RFC 6381 codec string is
+    // just "opus".
+    const OPUS_HEAD: &[u8] = b"OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x00";
+    assert_eq!(crate::packager::codec_string(&t(Codec::Opus, OPUS_HEAD)).unwrap(), "opus");
+    // A malformed OpusHead (bad magic) yields no codec string, same as a
+    // config record that fails to parse for the other codecs.
+    assert!(crate::packager::codec_string(&t(Codec::Opus, b"not-an-opus-head!!!")).is_none());
 }

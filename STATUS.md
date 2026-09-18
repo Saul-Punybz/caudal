@@ -64,7 +64,9 @@ Names below are fixed. Agents consume them; they do not invent new ones.
 - Config (TOML): `[server] http_bind = "0.0.0.0:8080"`, `[rtmp] bind = "0.0.0.0:1935"`, `[rtmp] app = "live"`, `[hls] part_ms = 200`, `[hls] segment_ms = 2000`, `[buffer] window_secs = 50`, `[buffer] max_mb = 256`.
 - HTTP: `GET /api/v1/streams`, `GET /api/v1/streams/{name}`, `GET /hls/{name}/index.m3u8`, `GET /hls/{name}/init.mp4`, `GET /hls/{name}/{segment}.m4s`, `GET /play/{name}`, `GET /metrics`, `GET /healthz`, `GET /readyz`.
 - Seam: every protocol crate takes `Arc<caudal_core::Registry>` and nothing else from the server.
-- Each crate exposes one entry point: `caudal_rtmp::serve(bind, app, registry) -> impl Future`, `caudal_hls::router(registry, HlsConfig) -> axum::Router`.
+- Each crate exposes one entry point, already stubbed in `main` (commit 00f35c0): `caudal_rtmp::serve(RtmpConfig { bind, app, buffer }, registry) -> io::Result<()>`, `caudal_hls::router(registry, HlsConfig { part_ms, segment_ms }) -> axum::Router`.
+- Core additions for batch 1: `Codec::as_str()`, `TrackKind::as_str()`, `Registry::subscribe_publishes()`.
+- API JSON shape for a stream is fixed in agent A's brief: `{name, tracks:[{id,kind,codec,timescale,width,height,fps,sample_rate,channels,lang}], stats:{frames_in,bytes_in,frames_buffered,bytes_buffered,buffered_ms,viewers}}`.
 
 **Budget, said aloud:** batch 1 ≈ $12 in agents + ≈ $8 orchestrator over ~1.5 h ≈ **$20 API-price equivalent**, plus a third unassigned for the fix round ⇒ **≈ $30, two batches** (build, then fix + close). On the $100 membership these are token equivalences, not charges. Out of scope: everything in "Not built in batch 1".
 
@@ -76,7 +78,7 @@ Names below are fixed. Agents consume them; they do not invent new ones.
 3. **End-to-end:** `crates/caudal/tests/e2e.rs` + `tests/support/mod.rs`, written 18 Sep before batch 1. Drives the real binary with ffmpeg over RTMP, asserts the API, the LL-HLS playlist tags, blocking reload, fMP4 parts, the `/play` page, and runs Apple's `mediastreamvalidator` when installed. Run: `CAUDAL_E2E=1 cargo test -p caudal --test e2e -- --test-threads=1`. **Red today (5/5 fail: binary has no `/healthz`)**; batch 1 is done only when it is green and step 6 (a person with OBS) confirms it.
 
 ## Next
-Launch batch 1 (A, B, C, D in parallel), merge, then step 6 with OBS.
+**Batch 1 launched 18 Sep 2026** from commit 00f35c0: A (Sonnet), B (Sonnet), C (Opus), D (Haiku), each in its own worktree. Orchestrator merges branch by branch, running the e2e harness between merges. Step 6 is automated (ffmpeg publishes, Chrome opens `/play`, screenshot with the latency number); OBS is optional.
 
 ## Decisions
 - Name **Caudal** (free on crates.io as of 17 Sep 2026).

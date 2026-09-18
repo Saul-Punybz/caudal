@@ -19,7 +19,8 @@ another language; write it only if nothing exists.
 | MoQ transport | `moq-net` (was `moq-lite`) | 0.2.22 | MIT OR Apache-2.0 | github.com/moq-dev/moq | Sep 2026 | dependency |
 | MoQ media | `hang` | 0.20.13 | MIT OR Apache-2.0 | same | Sep 2026 | dependency |
 | MoQ relay + clustering | `moq-relay` | 0.14.18 | MIT OR Apache-2.0 | same | Sep 2026 | dependency or reference; already does cluster mesh and path-scoped JWT |
-| SRT | `srt-tokio` | 0.4.4 | Apache-2.0 | github.com/rosalyntg/srt-rs | May 2024 | trial; calls itself "not production ready" |
+| SRT | `rsrt` | 0.3.6 | Apache-2.0 | github.com/cesbo/rsrt | Sep 2026 | dependency. Pure Rust, tokio, HaiCrypt AES. Verified 17 Sep 2026: 668 tests pass incl. 101 interop tests against libsrt 1.5.6 in both directions; manual libsrt→rsrt: 700 pkts, 0 lost. Fallbacks: `shiguredo_srt` (sans-I/O, Apache-2.0), `srt-tokio` (stale 2024) |
+| RIST | `rist-core` + `rist-mio` | 0.1.0 | MIT | github.com/wavey-ai/rist-rs | Aug 2026 | trial. Pure-Rust sans-I/O engine with a C-parity checklist: Simple + Main profiles, SRP/PSK, NACK/recovery, IPv4/6 done; multicast, multipath, Advanced profile not. 210 tests, interop suite vs librist. Repo also ships `rist-sys` (C bindings): not used |
 | RTSP client (pull) | `retina` | 0.4.20 | MIT/Apache-2.0 | github.com/scottlamb/retina | Aug 2026 | dependency |
 | JWT | `jsonwebtoken` | 11.1.0 | MIT | github.com/Keats/jsonwebtoken | Sep 2026 | dependency |
 | Signed webhooks | `standardwebhooks` | 1.0.1 | MIT | github.com/standard-webhooks/standard-webhooks | Sep 2026 | dependency |
@@ -37,7 +38,6 @@ No usable Rust version exists for these. All three Go sources are MIT, so portin
 | What | Go source | Why |
 |---|---|---|
 | RTSP **server** | github.com/bluenviron/gortsplib | Rust only has clients (`retina`) |
-| SRT (if `srt-tokio` falls short) | github.com/datarhei/gosrt | active, readable, spec-complete |
 | LL-HLS server behavior | github.com/bluenviron/gohlslib + mediamtx's HLS muxer | blocking playlist reload, parts, preload hints: no Rust crate does this turnkey |
 
 ## Reference only (read, don't depend)
@@ -69,8 +69,8 @@ sources above are read as specifications only.
 |---|---|---|---|
 | 1 | **LL-HLS packager** (parts, blocking reload, preload hints) | no Rust crate does the server side | large |
 | 2 | **RTSP server** | Rust only has clients (`retina`); port from gortsplib | large |
-| 3 | **RIST** | no pure-Rust implementation; port from libRIST (C, BSD-2) | large |
-| 4 | **Production-grade SRT** | `srt-tokio` exists but is not production ready and stale since 2024; finish it upstream or port from gosrt | medium–large |
+| 3 | **RIST gaps** | `rist-core` covers Simple + Main; we add what its checklist marks ❌ if we need it (multicast, multipath) | medium |
+| 4 | **SRT gaps** | `rsrt` covers live mode; out of scope upstream: rendezvous, FEC filter, AES-GCM, bonding, IPv6. Add IPv6 first | small–medium |
 | 5 | **Clustering for RTMP/HLS/SRT/WebRTC** | `moq-relay` only clusters MoQ; glue on chitchat + hashring | medium |
 | 6 | **MistServer config import** | nobody has it | small |
 | 7 | **JWKS cache** | existing crates are stale | small |
@@ -86,6 +86,10 @@ AV1 transcoding in Rust via `rav1e`, and everything else via an ffmpeg
 **external process**, never linked. Caudal itself stays 100% Rust.
 
 ## Checked and rejected
+
+- `srt-tokio`: superseded by `rsrt` (verified against libsrt).
+- `jonasohland/rist-rs`: no license, dead since Jan 2024.
+- `fishloa/rust-broadcast` (`rist-runtime`): 476K lines, one author, only RTCP message types for RIST; too big and too thin at once.
 
 - **Forking xiu:** stale, and retrofitting CMAF, LL-HLS and MoQ onto its FLV model costs more than building on crates.
 - `moq-karp`: dead since Mar 2025, replaced by `hang`.

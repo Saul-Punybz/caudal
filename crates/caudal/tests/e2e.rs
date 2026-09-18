@@ -423,3 +423,28 @@ fn https_speaks_http2() {
     };
     assert_eq!(version, "2", "HTTPS must negotiate HTTP/2 via ALPN");
 }
+
+/// WHIP in (ffmpeg's WHIP muxer, H.264 + Opus), LL-HLS out. Red until batch
+/// 4 lands WHIP ingest (caudal-webrtc) and Opus in fMP4 (caudal-hls).
+#[test]
+fn whip_publish_plays_as_ll_hls() {
+    if !enabled() {
+        return;
+    }
+    let muxers = std::process::Command::new("ffmpeg").args(["-hide_banner", "-muxers"]).output().unwrap();
+    if !String::from_utf8_lossy(&muxers.stdout).contains("whip") {
+        eprintln!("SKIP: this ffmpeg has no WHIP muxer (needs ffmpeg >= 8)");
+        return;
+    }
+    let s = Server::start();
+    let _publ = Publisher::whip(&s.whip_url("w1"), 40);
+    let body = s.wait_until("/api/v1/streams/w1", Duration::from_secs(20), |b| {
+        b.contains("\"h264\"") && b.contains("\"opus\"")
+    });
+    assert!(body.contains("\"width\":1280"), "{body}");
+    let playlist = s.wait_until("/hls/w1/index.m3u8", Duration::from_secs(20), |b| b.contains("#EXT-X-PART"));
+    assert!(playlist.contains("INDEPENDENT=YES"), "{playlist}");
+    let (code, master) = s.get("/hls/w1/master.m3u8").unwrap();
+    assert_eq!(code, 200);
+    assert!(master.contains("avc1.") && master.contains("opus"), "{master}");
+}

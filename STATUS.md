@@ -105,6 +105,22 @@ Material Design 3 with the brand palette (Orange `#F54F1B`, Space Cadet `#1E223D
 ## Next
 Batch 2: (1) headless-browser playback check in CI (Playwright or chromedriver against `/play`), plus glass-to-glass measured by decoding the burned-in clock; (2) close RTMP connections on rejection; (3) `moq-mux` spike; (4) M4 SRT via `rsrt` (done in batch 2).
 
+## Batch 4 (launched 18 Sep 2026): M5 WebRTC
+**Goal:** publish from a browser or ffmpeg over WHIP and it plays everywhere (LL-HLS and WHEP); play any stream over WHEP with sub-second latency.
+
+| Agent | Model | Owns | Done when |
+|---|---|---|---|
+| M · WebRTC | **Opus** | `crates/caudal-webrtc/**` | str0m, one UDP socket; `POST /whip/{name}` → publishes H.264 + Opus into the registry (AVCC, keyframes, SPS→width/height); `POST /whep/{name}` → sends H.264 (and Opus audio when the source has it) with RTCP PLI → next keyframe; Bearer/`?token=` via `Registry::authorize`; B-frame sources flagged; tests with ffmpeg's WHIP muxer |
+| N · Opus in HLS | Sonnet | `crates/caudal-hls/**` | Opus tracks in init.mp4 (`Opus`/`dOps`) and fragments; `CODECS="opus"`; plays in Chromium/Firefox via hls.js |
+| O · UI | Sonnet | `ui/app/**`, `crates/caudal-ui/dist/**` | WebRTC row in Outputs becomes live: WHEP player toggle next to HLS with its latency; play tokens passed through; a `/publish` page that publishes the webcam over WHIP |
+| Orchestrator | Opus | core, `crates/caudal/**`, e2e | wiring (done in scaffold), e2e `whip_publish_plays_as_ll_hls` (written, red), WHEP browser test after merge |
+
+**Fixed names:** `caudal_webrtc::router(registry, WebRtcConfig { udp_bind, public_ips, buffer })`; routes `POST /whip/{name}`, `DELETE /whip/{name}/{session}`, `POST /whep/{name}`, `DELETE /whep/{name}/{session}`; config `[webrtc] udp_bind = "0.0.0.0:8189"`, `public_ips = []`; codec name `"opus"` (`Codec::Opus`), `TrackInfo::init` for Opus = the OpusHead bytes (RFC 7845 §5.1), timescale 48000.
+
+**Known limits, said aloud:** RTMP/SRT sources usually carry AAC, which WebRTC can't play without transcoding (M11): WHEP of such streams is video-only. WebRTC browsers don't decode B-frames; sources with them are flagged.
+
+**Budget:** M ≈ $5 (Opus), N ≈ $2.5, O ≈ $3.5 → ≈ $11 + orchestrator ≈ $8, a third held back ⇒ **≈ $28 API-price equivalent**. **Machine rule** as before: heavy tests one at a time, no leftover ffmpeg.
+
 ## Batch 3 result (18 Sep 2026)
 Merged K (TLS: rustls on ring, h1+h2 via ALPN, cert hot reload, ACME), J (JWT/JWKS auth, Standard Webhooks), L (steady-state latency test). Orchestrator wired it: core `Gate` + `Registry::authorize` + `subscribe_ends`; tokens read from RTMP stream keys, SRT stream ids and HLS `?token=` / Bearer; every playlist URI carries the viewer's token forward; `[tls]`, `[auth]`, `[hooks]` config with validation; HTTPS runs next to HTTP with one shutdown signal.
 

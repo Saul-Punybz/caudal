@@ -136,6 +136,27 @@ pub struct Config {
     pub tls: TlsSection,
     pub auth: AuthSection,
     pub hooks: HooksSection,
+    pub webrtc: WebRtcSection,
+}
+
+fn default_webrtc_udp() -> SocketAddr {
+    "0.0.0.0:8189".parse().unwrap()
+}
+
+/// WHIP ingest and WHEP playback over one UDP port.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct WebRtcSection {
+    #[serde(default = "default_webrtc_udp")]
+    pub udp_bind: SocketAddr,
+    /// Public addresses to advertise when behind NAT.
+    pub public_ips: Vec<std::net::IpAddr>,
+}
+
+impl Default for WebRtcSection {
+    fn default() -> Self {
+        Self { udp_bind: default_webrtc_udp(), public_ips: Vec::new() }
+    }
 }
 
 /// HTTPS next to plain HTTP. Either `cert` + `key` files, or `acme_domains`

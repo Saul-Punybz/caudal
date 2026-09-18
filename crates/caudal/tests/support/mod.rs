@@ -26,6 +26,9 @@ pub struct Server {
     pub http: u16,
     pub rtmp: u16,
     pub srt: u16,
+    /// The WebRTC UDP port (ICE); WHIP/WHEP signaling goes over `http`.
+    #[allow(dead_code)]
+    pub webrtc: u16,
     _dir: tempfile::TempDir,
 }
 
@@ -38,12 +41,12 @@ impl Server {
     /// is replaced with the server's temp directory.
     pub fn start_with(extra: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (http, rtmp, srt) = (free_port(), free_port(), free_udp_port());
+        let (http, rtmp, srt, webrtc) = (free_port(), free_port(), free_udp_port(), free_udp_port());
         let cfg = dir.path().join("caudal.toml");
         std::fs::write(
             &cfg,
             format!(
-                "[server]\nhttp_bind = \"127.0.0.1:{http}\"\n\n[rtmp]\nbind = \"127.0.0.1:{rtmp}\"\napp = \"live\"\n\n[srt]\nbind = \"127.0.0.1:{srt}\"\n\n[hls]\npart_ms = 200\nsegment_ms = 2000\n{}"
+                "[server]\nhttp_bind = \"127.0.0.1:{http}\"\n\n[rtmp]\nbind = \"127.0.0.1:{rtmp}\"\napp = \"live\"\n\n[srt]\nbind = \"127.0.0.1:{srt}\"\n\n[webrtc]\nudp_bind = \"127.0.0.1:{webrtc}\"\n\n[hls]\npart_ms = 200\nsegment_ms = 2000\n{}"
                 , extra.replace("{dir}", &dir.path().display().to_string())
             ),
         )
@@ -55,7 +58,7 @@ impl Server {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn caudal");
-        let s = Self { child, http, rtmp, srt, _dir: dir };
+        let s = Self { child, http, rtmp, srt, webrtc, _dir: dir };
         s.wait_for("/healthz", Duration::from_secs(10));
         s
     }
@@ -66,6 +69,10 @@ impl Server {
 
     pub fn srt_url(&self, name: &str) -> String {
         format!("srt://127.0.0.1:{}?streamid=publish/{name}", self.srt)
+    }
+
+    pub fn whip_url(&self, name: &str) -> String {
+        format!("http://127.0.0.1:{}/whip/{name}", self.http)
     }
 
     pub fn rtmp_url(&self, name: &str) -> String {
@@ -169,6 +176,41 @@ impl Publisher {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn ffmpeg | srt-live-transmit");
+        Self { child }
+    }
+}
+
+impl Publisher {
+    /// The test pattern as H.264 (no B-frames: WebRTC browsers cannot decode
+    /// them) + Opus over WHIP, using ffmpeg's WHIP muxer (ffmpeg >= 8).
+    pub fn whip(url: &str, secs: u32) -> Self {
+        let child = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-re"])
+            .args(["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
+            .args(["-t", &secs.to_string()])
+            .args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-tune",
+                "zerolatency",
+                "-profile:v",
+                "baseline",
+                "-bf",
+                "0",
+                "-g",
+                "60",
+                "-b:v",
+                "2M",
+            ])
+            .args(["-c:a", "libopus", "-b:a", "96k", "-ar", "48000", "-ac", "2"])
+            .args(["-f", "whip", url])
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn ffmpeg whip");
         Self { child }
     }
 }

@@ -1,0 +1,14 @@
+[package]
+name = "caudal-webrtc"
+description = "WebRTC for Caudal: WHIP ingest and WHEP playback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true

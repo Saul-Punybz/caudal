@@ -185,8 +185,17 @@ async fn run(cfg: config::Config) -> ExitCode {
     );
 
     let state = api::AppState::new(registry.clone());
+    let webrtc_router = caudal_webrtc::router(
+        registry.clone(),
+        caudal_webrtc::WebRtcConfig {
+            udp_bind: cfg.webrtc.udp_bind,
+            public_ips: cfg.webrtc.public_ips.clone(),
+            buffer: cfg.buffer.to_buffer_config(),
+        },
+    );
+
     // The UI router is a catch-all fallback, so it goes last.
-    let app = api::router(state.clone()).merge(hls_router).merge(caudal_ui::router());
+    let app = api::router(state.clone()).merge(hls_router).merge(webrtc_router).merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {
         Ok(l) => l,

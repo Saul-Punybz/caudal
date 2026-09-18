@@ -445,6 +445,7 @@ dependencies = [
  "caudal-srt",
  "caudal-tls",
  "caudal-ui",
+ "caudal-webrtc",
  "clap",
  "jsonwebtoken",
  "rcgen 0.14.10",
@@ -567,6 +568,16 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "rust-embed",
+]
+
+[[package]]
+name = "caudal-webrtc"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "caudal-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

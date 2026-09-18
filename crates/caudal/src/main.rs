@@ -3,6 +3,7 @@
 //! this crate's own HTTP surface (health, readiness, stream inventory,
 //! metrics).
 
+mod admin;
 mod api;
 mod config;
 mod metrics;
@@ -30,6 +31,9 @@ struct Cli {
 enum Command {
     /// Validates a config file and exits non-zero naming the bad key.
     Check { path: PathBuf },
+    /// Reads a password from stdin and prints its argon2id hash for
+    /// `[[admin.users]] password_hash`.
+    HashPassword,
 }
 
 fn make_filter() -> EnvFilter {
@@ -60,6 +64,9 @@ fn resolve_config(explicit: Option<PathBuf>) -> Result<config::Config, String> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    if let Some(Command::HashPassword) = &cli.command {
+        return admin::hash_password_cmd();
+    }
     if let Some(Command::Check { path }) = &cli.command {
         return match config::load(path) {
             Ok(_) => {
@@ -137,6 +144,13 @@ fn spawn_hooks(registry: &std::sync::Arc<caudal_core::Registry>, hooks: caudal_a
 }
 
 async fn run(cfg: config::Config) -> ExitCode {
+    let admin = match admin::setup(&cfg) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let registry = caudal_core::Registry::new();
 
     // Validated at load; unwraps below cannot fail.
@@ -215,9 +229,10 @@ async fn run(cfg: config::Config) -> ExitCode {
     }
 
     if let Some(tc) = cfg.transcode.to_transcode_config(cfg.buffer.to_buffer_config()).expect("validated")
-        && let Err(e) = caudal_transcode::start(registry.clone(), tc) {
-            tracing::error!(error = %e, "transcoding disabled");
-        }
+        && let Err(e) = caudal_transcode::start(registry.clone(), tc)
+    {
+        tracing::error!(error = %e, "transcoding disabled");
+    }
 
     let hls_router = caudal_hls::router(
         registry.clone(),
@@ -314,6 +329,7 @@ async fn run(cfg: config::Config) -> ExitCode {
         .merge(channel_router)
         .merge(restream_router)
         .merge(caudal_ui::router());
+    let app = admin::wrap(app, admin);
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {
         Ok(l) => l,
@@ -337,7 +353,8 @@ async fn run(cfg: config::Config) -> ExitCode {
     let tls_task = match cfg.tls.to_tls_config().expect("validated") {
         Some(tls) => {
             tracing::info!(bind = %tls.bind, "https listening (HTTP/1.1 + HTTP/2)");
-            Some(tokio::spawn(caudal_tls::serve(tls, app.clone(), stopped(stop_rx.clone()))))
+            let tls_app = app.clone().layer(axum::Extension(caudal_admin::ViaTls));
+            Some(tokio::spawn(caudal_tls::serve(tls, tls_app, stopped(stop_rx.clone()))))
         }
         None => None,
     };

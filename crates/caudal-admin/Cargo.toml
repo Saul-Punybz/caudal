@@ -1,0 +1,29 @@
+[package]
+name = "caudal-admin"
+description = "Admin login for Caudal's UI and management API: local passwords (argon2id), OIDC, API tokens, sessions, CSRF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+argon2 = "=0.6.0"
+openidconnect = { version = "=4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
+sha2 = "=0.10.9"
+subtle = "=2.6.1"
+getrandom = "=0.3.4"
+base64 = "=0.22.1"
+hex = "=0.4.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
+rcgen = "0.14"

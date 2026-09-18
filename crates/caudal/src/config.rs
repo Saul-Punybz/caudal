@@ -158,6 +158,9 @@ pub struct Config {
     /// Multistreaming: `[[restream]]` entries, each pushing one stream to an
     /// RTMP/RTMPS ingest (YouTube, Twitch, Facebook, another server).
     pub restream: Vec<RestreamEntry>,
+    /// Admin login for the UI and management API. Absent: no login, and
+    /// the server refuses to listen on a non-loopback address.
+    pub admin: Option<caudal_admin::AdminSection>,
 }
 
 /// One restream target: push `stream` to `url` (`rtmp://` or `rtmps://`,
@@ -569,6 +572,9 @@ impl Config {
         self.moq.to_moq_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         self.rtsp.to_tls_config()?;
+        if let Some(admin) = &self.admin {
+            admin.validate()?;
+        }
         Ok(())
     }
 }
@@ -635,6 +641,22 @@ mod tests {
         let ok: Config = toml::from_str("[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n[auth]\nsecret = \"0123456789abcdef0123456789abcdef\"\nplay = true").unwrap();
         assert!(ok.validate().is_ok());
         assert!(ok.auth.publish, "publish defaults to required once keys exist");
+    }
+
+    #[test]
+    fn admin_section_parses_and_validates() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.admin.is_none());
+        let src = "[admin]\nsession_ttl_secs = 3600\n[[admin.users]]\nname = \"ana\"\npassword_hash = \"$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$qjSdhc1XA4ycYYxRaDwn2Q0N+Yjwxm0KhdRLkh8i3XE\"\n[[admin.api_tokens]]\nname = \"ci\"\ntoken_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n[admin.oidc]\nissuer = \"https://idp.example\"\nclient_id = \"caudal\"\nredirect_url = \"https://caudal.example/api/v1/auth/oidc/callback\"\nallowed_groups = [\"ops\"]\n";
+        let cfg: Config = toml::from_str(src).unwrap();
+        cfg.validate().unwrap();
+        let admin = cfg.admin.unwrap();
+        assert_eq!(admin.users[0].name, "ana");
+        assert_eq!(admin.session_ttl_secs, 3600);
+        let err = toml::from_str::<Config>("[admin]\nuser = []\n").unwrap_err().to_string();
+        assert!(err.contains("user"), "unknown keys rejected: {err}");
+        let bad: Config = toml::from_str("[[admin.users]]\nname = \"a\"\npassword_hash = \"hunter2\"\n").unwrap();
+        assert!(bad.validate().unwrap_err().contains("password_hash"));
     }
 
     #[test]

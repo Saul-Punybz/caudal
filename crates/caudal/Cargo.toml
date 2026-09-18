@@ -23,6 +23,7 @@ caudal-channel.workspace = true
 caudal-restream.workspace = true
 caudal-transcode.workspace = true
 caudal-scte35.workspace = true
+caudal-admin.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -39,3 +40,5 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 rcgen = "0.14"
 serde_json.workspace = true
 tower = { version = "0.5", features = ["util"] }
+sha2 = "=0.10.9"
+hex = "=0.4.3"

@@ -5,6 +5,14 @@
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
+## RESUME HERE (paused 18 Sep 2026, night, by Saul)
+All agents stopped; `main` is pushed, clean, and verified (clippy 0, deny ok, e2e 15/15).
+1. **Multistreaming (batch 8 Z):** WIP on branch `wip/batch8-restream` (GitHub). `crates/caudal-restream` (902 lines) on `rml_rtmp` 0.8.0, compiles, **tests never run**. Resume: check out the branch, run `CARGO_BUILD_JOBS=2 cargo test -p caudal-restream`, finish the brief (loopback test against caudal-rtmp, redacted key, retry states, REUSE.md note on rtmp-rs vs rml_rtmp), then wire `[[restream]] stream, url` + `/api/v1/restreams` in `crates/caudal`.
+2. **UI screens (batch 8):** not started (agent stopped while reading). Re-launch: Channels (`/api/v1/channels`, skip), Restreams, Recordings (API since batch 6, no screen), "Copy for OBS" WHIP helper. Brief = the fixed API shapes in this file and in `crates/caudal-channel/src/http.rs`.
+3. **SCTE-35 (batch 9):** not started (no changes saved). Re-launch with the same brief: core `Cue { at_us, section, kind: CueKind::{Out{duration_us}, In, Other} }`, `Event::Cue`, `Publisher::push_cue`, `Stream::inject_cue`; crate `caudal-scte35` on `scte35-splice =2.1.0`; TS 0x86 + RTMP onCuePoint in; DATERANGE (`[hls] cue_tags`) + TS out; `POST /api/v1/streams/{name}/cues`. Research: `docs/research/SCTE35.md`.
+4. Then batch 9 rest (admin login, health alerts) and the roadmap in `PLAN.md`.
+5. RTSP backlog: UDP transport (461 today).
+
 ## Where we are (18 Sep 2026, evening)
 | Area | State |
 |---|---|

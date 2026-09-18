@@ -1,0 +1,14 @@
+[server]
+http_bind = "0.0.0.0:8080"  # HTTP server bind address
+
+[rtmp]
+bind = "0.0.0.0:1935"  # RTMP server bind address
+app = "live"  # RTMP application name
+
+[hls]
+part_ms = 200  # HLS part duration in milliseconds
+segment_ms = 2000  # HLS segment duration in milliseconds
+
+[buffer]
+window_secs = 50  # Buffer window duration in seconds
+max_mb = 256  # Maximum buffer size in megabytes

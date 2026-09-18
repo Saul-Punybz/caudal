@@ -1,6 +1,17 @@
 [package]
 name = "caudal"
-version = "0.1.0"
-edition = "2024"
+description = "Caudal media server binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
+caudal-core = { path = "../caudal-core" }
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+ureq = { version = "3", default-features = false }
+tempfile = "3"

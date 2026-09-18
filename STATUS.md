@@ -70,6 +70,11 @@ Names below are fixed. Agents consume them; they do not invent new ones.
 
 **Rules for every agent:** fresh context, the seven-item brief, report in ≤15 lines as `file:line → what`, run `cargo test -p <crate>` and `cargo clippy -- -D warnings` before answering, never touch shared files, ask for a name instead of inventing one. Worktree per agent, branch `agent/<piece>`; the orchestrator merges branch by branch with tests between each.
 
+## Tests: three layers
+1. **Component:** each crate's own tests (`caudal-core` has 13). Required in every agent brief.
+2. **Contract:** the fixed names checked in code: agent A's config parser rejects unknown keys; routes exist.
+3. **End-to-end:** `crates/caudal/tests/e2e.rs` + `tests/support/mod.rs`, written 18 Sep before batch 1. Drives the real binary with ffmpeg over RTMP, asserts the API, the LL-HLS playlist tags, blocking reload, fMP4 parts, the `/play` page, and runs Apple's `mediastreamvalidator` when installed. Run: `CAUDAL_E2E=1 cargo test -p caudal --test e2e -- --test-threads=1`. **Red today (5/5 fail: binary has no `/healthz`)**; batch 1 is done only when it is green and step 6 (a person with OBS) confirms it.
+
 ## Next
 Launch batch 1 (A, B, C, D in parallel), merge, then step 6 with OBS.
 

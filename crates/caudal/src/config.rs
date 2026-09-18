@@ -158,6 +158,7 @@ pub struct Config {
     /// Multistreaming: `[[restream]]` entries, each pushing one stream to an
     /// RTMP/RTMPS ingest (YouTube, Twitch, Facebook, another server).
     pub restream: Vec<RestreamEntry>,
+    pub health: HealthSection,
 }
 
 /// One restream target: push `stream` to `url` (`rtmp://` or `rtmps://`,
@@ -560,6 +561,144 @@ impl HooksSection {
     }
 }
 
+/// Stream health alerts: no keyframes, bitrate below a floor, publisher
+/// lost, optionally no audio. Signed webhooks on the same wire format as
+/// `[hooks]` (Standard Webhooks); a Slack incoming-webhook URL also works
+/// (the payload carries a `text` field).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct HealthSection {
+    /// No keyframe for this long: alert. `0` disables the rule.
+    #[serde(default = "default_no_keyframe_secs")]
+    pub no_keyframe_secs: u64,
+    /// Bitrate floor in kbps; unset disables the rule.
+    pub min_bitrate_kbps: Option<u32>,
+    /// How long the bitrate must stay under the floor before it counts.
+    #[serde(default = "default_min_bitrate_for_secs")]
+    pub min_bitrate_for_secs: u64,
+    /// No audio frame for this long; unset disables the rule. Only ever
+    /// evaluated for streams that declare an audio track.
+    pub no_audio_secs: Option<u64>,
+    #[serde(default = "default_true")]
+    pub publisher_lost: bool,
+    /// Grace window for a republish under the same name before
+    /// `publisher_lost` counts a disconnect as real. `caudal-core` has no
+    /// signal distinguishing a clean unpublish from a dropped connection
+    /// (see `caudal-health`'s crate docs), so this grace window is the
+    /// whole decision: back in time, no alert; not back, alert.
+    #[serde(default = "default_publisher_lost_grace_secs")]
+    pub publisher_lost_grace_secs: u64,
+    /// Hysteresis: how long a rule must be continuously good before its
+    /// `resolved` fires. Keeps a value bouncing near a threshold from
+    /// flapping alert/resolved.
+    #[serde(default = "default_health_min_hold_secs")]
+    pub min_hold_secs: u64,
+    pub webhooks: Vec<String>,
+    /// `whsec_...`
+    pub secret: Option<String>,
+    #[serde(rename = "stream")]
+    pub streams: Vec<HealthStreamOverride>,
+}
+
+impl Default for HealthSection {
+    fn default() -> Self {
+        Self {
+            no_keyframe_secs: default_no_keyframe_secs(),
+            min_bitrate_kbps: None,
+            min_bitrate_for_secs: default_min_bitrate_for_secs(),
+            no_audio_secs: None,
+            publisher_lost: true,
+            publisher_lost_grace_secs: default_publisher_lost_grace_secs(),
+            min_hold_secs: default_health_min_hold_secs(),
+            webhooks: Vec::new(),
+            secret: None,
+            streams: Vec::new(),
+        }
+    }
+}
+
+fn default_no_keyframe_secs() -> u64 {
+    10
+}
+
+fn default_min_bitrate_for_secs() -> u64 {
+    10
+}
+
+fn default_publisher_lost_grace_secs() -> u64 {
+    5
+}
+
+fn default_health_min_hold_secs() -> u64 {
+    5
+}
+
+/// `[[health.stream]]`: overrides the matching default for one stream name.
+/// A field left unset inherits the `[health]` default.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HealthStreamOverride {
+    pub name: String,
+    #[serde(default)]
+    pub no_keyframe_secs: Option<u64>,
+    #[serde(default)]
+    pub min_bitrate_kbps: Option<u32>,
+    #[serde(default)]
+    pub min_bitrate_for_secs: Option<u64>,
+    #[serde(default)]
+    pub no_audio_secs: Option<u64>,
+    #[serde(default)]
+    pub publisher_lost: Option<bool>,
+    #[serde(default)]
+    pub publisher_lost_grace_secs: Option<u64>,
+    #[serde(default)]
+    pub min_hold_secs: Option<u64>,
+}
+
+impl HealthSection {
+    pub fn to_health_config(&self) -> Result<Option<caudal_health::HealthConfig>, String> {
+        if self.webhooks.is_empty() {
+            return Ok(None);
+        }
+        let secret = self
+            .secret
+            .clone()
+            .ok_or_else(|| "[health] `webhooks` need a `secret` (whsec_...) to sign with".to_string())?;
+        let mut seen = std::collections::HashSet::new();
+        let mut overrides = Vec::with_capacity(self.streams.len());
+        for o in &self.streams {
+            if !caudal_core::media::valid_stream_name(&o.name) {
+                return Err(format!("[[health.stream]] name `{}` is not a valid stream name", o.name));
+            }
+            if !seen.insert(o.name.clone()) {
+                return Err(format!("[[health.stream]] duplicate name `{}`", o.name));
+            }
+            overrides.push(caudal_health::StreamOverride {
+                name: o.name.clone(),
+                no_keyframe_secs: o.no_keyframe_secs,
+                min_bitrate_kbps: o.min_bitrate_kbps,
+                min_bitrate_for_secs: o.min_bitrate_for_secs,
+                no_audio_secs: o.no_audio_secs,
+                publisher_lost: o.publisher_lost,
+                publisher_lost_grace_secs: o.publisher_lost_grace_secs,
+                min_hold_secs: o.min_hold_secs,
+            });
+        }
+        Ok(Some(caudal_health::HealthConfig {
+            no_keyframe_secs: (self.no_keyframe_secs > 0).then_some(self.no_keyframe_secs),
+            min_bitrate_kbps: self.min_bitrate_kbps,
+            min_bitrate_for_secs: self.min_bitrate_for_secs.max(1),
+            no_audio_secs: self.no_audio_secs,
+            publisher_lost: self.publisher_lost,
+            publisher_lost_grace_secs: self.publisher_lost_grace_secs,
+            min_hold_secs: self.min_hold_secs.max(1),
+            webhooks: self.webhooks.clone(),
+            secret,
+            overrides,
+        }))
+    }
+}
+
 impl Config {
     /// Checks that cut across keys; run by `load` and `caudal check`.
     pub fn validate(&self) -> Result<(), String> {
@@ -569,6 +708,7 @@ impl Config {
         self.moq.to_moq_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         self.rtsp.to_tls_config()?;
+        self.health.to_health_config()?;
         Ok(())
     }
 }
@@ -641,5 +781,42 @@ mod tests {
     fn load_missing_file_is_an_error_not_a_panic() {
         let err = load(Path::new("/nonexistent/caudal.toml")).unwrap_err();
         assert!(err.contains("nonexistent"), "{err}");
+    }
+
+    #[test]
+    fn health_section_defaults_and_disabled_without_webhooks() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.health.no_keyframe_secs, 10);
+        assert!(cfg.health.publisher_lost);
+        assert!(cfg.health.to_health_config().unwrap().is_none(), "no webhooks configured => off");
+    }
+
+    #[test]
+    fn health_section_needs_a_secret_and_valid_stream_names() {
+        let err = toml::from_str::<Config>("[health]\nwebhooks = [\"https://x\"]").unwrap().validate().unwrap_err();
+        assert!(err.contains("secret"), "{err}");
+
+        let cfg: Config = toml::from_str(
+            "[health]\nwebhooks = [\"https://x\"]\nsecret = \"whsec_abc\"\n[[health.stream]]\nname = \"a-b\"\nno_keyframe_secs = 3\n",
+        )
+        .unwrap();
+        let hc = cfg.health.to_health_config().unwrap().unwrap();
+        assert_eq!(hc.overrides.len(), 1);
+        assert_eq!(hc.overrides[0].no_keyframe_secs, Some(3));
+
+        let bad = toml::from_str::<Config>(
+            "[health]\nwebhooks = [\"https://x\"]\nsecret = \"whsec_abc\"\n[[health.stream]]\nname = \"not a valid name\"\n",
+        )
+        .unwrap();
+        assert!(bad.health.to_health_config().unwrap_err().contains("valid stream name"));
+    }
+
+    #[test]
+    fn health_no_keyframe_secs_zero_disables_the_rule() {
+        let cfg: Config =
+            toml::from_str("[health]\nno_keyframe_secs = 0\nwebhooks = [\"https://x\"]\nsecret = \"whsec_abc\"\n")
+                .unwrap();
+        let hc = cfg.health.to_health_config().unwrap().unwrap();
+        assert_eq!(hc.no_keyframe_secs, None);
     }
 }

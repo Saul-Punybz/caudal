@@ -215,9 +215,10 @@ async fn run(cfg: config::Config) -> ExitCode {
     }
 
     if let Some(tc) = cfg.transcode.to_transcode_config(cfg.buffer.to_buffer_config()).expect("validated")
-        && let Err(e) = caudal_transcode::start(registry.clone(), tc) {
-            tracing::error!(error = %e, "transcoding disabled");
-        }
+        && let Err(e) = caudal_transcode::start(registry.clone(), tc)
+    {
+        tracing::error!(error = %e, "transcoding disabled");
+    }
 
     let hls_router = caudal_hls::router(
         registry.clone(),
@@ -305,6 +306,28 @@ async fn run(cfg: config::Config) -> ExitCode {
         caudal_restream::router(handle)
     };
 
+    // Stream health alerts: no keyframes, bitrate floor, publisher lost.
+    // Disabled (no router, no background task) unless `[health]` names at
+    // least one webhook.
+    let health_router = match cfg.health.to_health_config().expect("validated") {
+        Some(hc) => {
+            let webhooks = hc.webhooks.len();
+            match caudal_health::start(registry.clone(), hc) {
+                Ok(svc) => {
+                    tracing::info!(webhooks, "stream health alerts enabled");
+                    let svc = std::sync::Arc::new(svc);
+                    state.set_health(svc.clone());
+                    svc.router()
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "stream health alerts disabled");
+                    axum::Router::new()
+                }
+            }
+        }
+        None => axum::Router::new(),
+    };
+
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
         .merge(hls_router)
@@ -313,6 +336,7 @@ async fn run(cfg: config::Config) -> ExitCode {
         .merge(record_router)
         .merge(channel_router)
         .merge(restream_router)
+        .merge(health_router)
         .merge(caudal_ui::router());
 
     let listener = match tokio::net::TcpListener::bind(cfg.server.http_bind).await {

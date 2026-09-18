@@ -23,6 +23,7 @@ caudal-channel.workspace = true
 caudal-restream.workspace = true
 caudal-transcode.workspace = true
 caudal-scte35.workspace = true
+caudal-health.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -158,6 +158,19 @@ impl TsDemux {
         }
     }
 
+    /// End of input (a file, not a live connection): hands out every PES
+    /// still in flight. A video PES has no length, so without this the last
+    /// access unit of each PID would never be emitted.
+    pub fn flush(&mut self, out: &mut Vec<EsUnit>) {
+        let mut pids: Vec<Pid> = self.partial.keys().copied().collect();
+        pids.sort();
+        for pid in pids {
+            if let Some(partial) = self.partial.remove(&pid) {
+                out.push(partial.finish());
+            }
+        }
+    }
+
     fn handle_pmt(&mut self, pmt: Pmt) {
         for es in pmt.es_info {
             if let Some(kind) = es_kind(es.stream_type) {

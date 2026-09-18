@@ -40,6 +40,7 @@ async fn rusty_h264_rendition() {
             Ok(Event::TracksChanged) => tracks = sub.tracks(),
             Ok(Event::Frame(f)) => got.push((*f).clone()),
             Ok(Event::Lagged { .. }) => panic!("lagged"),
+            Ok(Event::Cue(_)) => {}
         }
     };
     source.await.unwrap();

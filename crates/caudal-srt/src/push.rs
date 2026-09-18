@@ -104,6 +104,7 @@ async fn run_push_session(socket: SrtSocket, stream: &Arc<Stream>) -> bool {
                 }
             }
             Event::Lagged { .. } => {}
+            Event::Cue(cue) => mux.push_cue(&cue),
             Event::End => return sent_any,
         }
         let out = mux.take_output();

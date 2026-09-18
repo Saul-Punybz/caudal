@@ -86,6 +86,7 @@ pub(crate) async fn run(shared: Arc<Shared>, stream: Arc<Stream>, mut sub: Subsc
                 let outs = seg.take();
                 apply(&shared, &name, &seg, &mut rec, outs).await
             }
+            Event::Cue(_) => Ok(()),
             Event::End => {
                 seg.end();
                 let outs = seg.take();

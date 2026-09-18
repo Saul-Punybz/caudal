@@ -1,0 +1,20 @@
+[package]
+name = "caudal-scte35"
+description = "SCTE-35 splice_info_section parse/build for Caudal, behind one small API"
+version.workspace = true
+edition.workspace = true
+# scte35-splice 2.1.0 needs rustc 1.95.
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+# Pinned: one author, repo created Jun 2026, already at v2. Wrapped here so
+# it can be swapped for scte35-reader (parse only) without touching callers.
+scte35-splice = { version = "=2.1.0", default-features = false, features = ["std"] }
+broadcast-common = { version = "=9.3.0", default-features = false, features = ["std"] }
+hex = "=0.4.3"
+base64 = "=0.22.1"

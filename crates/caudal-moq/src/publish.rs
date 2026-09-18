@@ -102,6 +102,7 @@ async fn run(origin: moq_net::origin::Producer, stream: Arc<Stream>) -> Result<(
                 tracing::debug!(stream = %stream.name(), skipped, "moq: lagged; next group starts at a keyframe");
                 out.cut_all();
             }
+            Event::Cue(_) => {}
             Event::End => break Ok(()),
         }
     };

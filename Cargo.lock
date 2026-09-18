@@ -488,6 +488,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "broadcast-common"
+version = "9.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efe6c1fb25508fc1d004ff39882afdfe626fcb294af74cc89378c3613e41db00"
+dependencies = [
+ "chrono",
+ "libm",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -555,6 +565,7 @@ dependencies = [
  "caudal-restream",
  "caudal-rtmp",
  "caudal-rtsp",
+ "caudal-scte35",
  "caudal-srt",
  "caudal-tls",
  "caudal-transcode",
@@ -641,6 +652,7 @@ dependencies = [
  "bytes",
  "caudal-cmaf",
  "caudal-core",
+ "caudal-scte35",
  "mp4-atom",
  "tokio",
  "tower",
@@ -722,6 +734,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "caudal-core",
+ "caudal-scte35",
  "parking_lot",
  "scuffle-aac",
  "scuffle-amf0",
@@ -755,6 +768,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "caudal-scte35"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "broadcast-common",
+ "bytes",
+ "caudal-core",
+ "hex",
+ "scte35-splice",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "caudal-srt"
 version = "0.1.0"
 dependencies = [
@@ -762,6 +788,7 @@ dependencies = [
  "bytes",
  "caudal-core",
  "caudal-hls",
+ "caudal-scte35",
  "caudal-ts",
  "mp4-atom",
  "mpeg2ts",
@@ -813,6 +840,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "caudal-core",
+ "caudal-scte35",
  "mp4-atom",
  "mpeg2ts",
  "parking_lot",
@@ -4444,6 +4472,16 @@ dependencies = [
  "pbkdf2 0.12.2",
  "salsa20",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "scte35-splice"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67fbdb5d5a85924e4ceccb7900ee7bb7c57f3ce4ed210557d547a9a4a6cd80a3"
+dependencies = [
+ "broadcast-common",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

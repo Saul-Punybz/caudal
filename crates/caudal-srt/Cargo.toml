@@ -23,4 +23,5 @@ scuffle-h265 = "0.2.2"
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util", "process"] }
 caudal-hls.workspace = true
+caudal-scte35.workspace = true
 axum.workspace = true

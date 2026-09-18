@@ -58,6 +58,7 @@ pub(crate) async fn handle(
                 // itself the resync point.
                 tracing::debug!(%peer, stream = %name, skipped, "srt play lagged; resuming at next keyframe");
             }
+            Event::Cue(cue) => mux.push_cue(&cue),
             Event::End => break,
         }
         let out = mux.take_output();

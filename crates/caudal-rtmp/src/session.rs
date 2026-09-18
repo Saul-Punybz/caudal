@@ -246,8 +246,15 @@ impl SessionHandler for Handler {
                 }
                 None => {}
             },
-            SessionData::Amf0 { data, .. } => {
-                if let Some(fps) = demux::parse_metadata_fps(data) {
+            SessionData::Amf0 { timestamp, data } => {
+                // The event id only has to be unique per stream; the
+                // message timestamp is.
+                if let Some(cue) = demux::parse_cue_point(timestamp, data.clone(), timestamp) {
+                    tracing::debug!(at_us = cue.at_us, kind = cue.kind.as_str(), "rtmp scte-35 cue in");
+                    if let Err(err) = shared.publisher.push_cue(cue) {
+                        tracing::trace!(%err, "dropped cue");
+                    }
+                } else if let Some(fps) = demux::parse_metadata_fps(data) {
                     shared.update_fps(fps);
                 }
             }

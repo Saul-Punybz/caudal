@@ -20,21 +20,27 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use caudal_core::{Codec, Frame, TrackInfo, TrackKind};
+use caudal_core::{Codec, Cue, Frame, TrackInfo, TrackKind};
 use mp4_atom::{Atom, Avcc, Hvcc};
 use mpeg2ts::es::{StreamId, StreamType};
 use mpeg2ts::pes::PesHeader;
 use mpeg2ts::time::{ClockReference, Timestamp as MpegTimestamp};
 use mpeg2ts::ts::payload::{Bytes as TsBytes, Pat, Pes, Pmt};
 use mpeg2ts::ts::{
-    AdaptationField, ContinuityCounter, EsInfo, Pid, ProgramAssociation, TransportScramblingControl, TsHeader,
-    TsPacket, TsPacketWriter, TsPayload, VersionNumber, WriteTsPacket,
+    AdaptationField, ContinuityCounter, Descriptor, EsInfo, Pid, ProgramAssociation, TransportScramblingControl,
+    TsHeader, TsPacket, TsPacketWriter, TsPayload, VersionNumber, WriteTsPacket,
 };
 
 const PAT_PID: u16 = 0;
 const PMT_PID: u16 = 0x1000;
 const VIDEO_PID: u16 = 0x101;
 const AUDIO_PID: u16 = 0x102;
+/// SCTE-35 cues (stream_type 0x86), declared in the PMT from the first cue
+/// on, so outputs of streams without cues are unchanged.
+const SCTE35_PID: u16 = 0x103;
+/// `registration_descriptor` (ISO/IEC 13818-1 2.6.8) with format_identifier
+/// "CUEI": SCTE 35 §8.1 marks a program carrying cues this way.
+const REGISTRATION_DESCRIPTOR: u8 = 0x05;
 
 /// Re-emit PAT/PMT at least this often for mid-stream tune-in.
 const PSI_INTERVAL: Duration = Duration::from_millis(100);
@@ -152,6 +158,11 @@ pub struct TsMux {
     last_psi: Option<Instant>,
     last_pcr: Option<Instant>,
     warned_opus: bool,
+    /// True once a cue went out: the PMT lists the SCTE-35 PID from then on.
+    cues: bool,
+    /// PMT version_number (5 bits), bumped when the PID list changes so
+    /// demuxers already tuned in re-read it.
+    pmt_version: u8,
 }
 
 impl Default for TsMux {
@@ -171,7 +182,58 @@ impl TsMux {
             last_psi: None,
             last_pcr: None,
             warned_opus: false,
+            cues: false,
+            pmt_version: 0,
         }
+    }
+
+    /// Writes an SCTE-35 cue on its own PID. The section's splice time is
+    /// moved onto this muxer's clock (via `pts_adjustment`, CRC recomputed)
+    /// so it names the PTS this muxer gives the frame at `cue.at_us`;
+    /// a section that cannot be re-timed goes out as received.
+    pub fn push_cue(&mut self, cue: &Cue) {
+        if self.video.is_none() && self.audio.is_none() {
+            // No program to attach it to yet.
+            return;
+        }
+        if !self.cues {
+            self.cues = true;
+            self.pmt_version = (self.pmt_version + 1) & 0x1F;
+            self.psi_written = false;
+        }
+        self.maybe_write_psi(false);
+        let target = (caudal_scte35::us_to_ticks(cue.at_us) as u64) & TS_TIMESTAMP_MASK;
+        let section = caudal_scte35::retime(&cue.section, target).unwrap_or_else(|_| cue.section.clone());
+        self.write_section(SCTE35_PID, &section);
+    }
+
+    /// Packetizes one PSI section: `pointer_field` 0 in the first packet,
+    /// 0xFF stuffing after the section's end (ISO/IEC 13818-1 2.4.4).
+    fn write_section(&mut self, pid: u16, section: &[u8]) {
+        let mut packets = Vec::with_capacity(188 * (section.len() / 183 + 1));
+        let mut rest = section;
+        let mut first = true;
+        while first || !rest.is_empty() {
+            let cc = self.next_cc(pid).as_u8();
+            let mut pkt = [0xFFu8; 188];
+            pkt[0] = 0x47;
+            pkt[1] = (if first { 0x40 } else { 0 }) | ((pid >> 8) as u8 & 0x1F);
+            pkt[2] = pid as u8;
+            pkt[3] = 0x10 | cc;
+            let mut at = 4;
+            if first {
+                pkt[4] = 0;
+                at = 5;
+            }
+            let take = rest.len().min(188 - at);
+            pkt[at..at + take].copy_from_slice(&rest[..take]);
+            rest = &rest[take..];
+            first = false;
+            packets.extend_from_slice(&pkt);
+        }
+        let mut out = std::mem::replace(&mut self.writer, TsPacketWriter::new(Vec::new())).into_stream();
+        out.extend_from_slice(&packets);
+        self.writer = TsPacketWriter::new(out);
     }
 
     /// Takes every TS byte muxed so far, leaving the muxer's own state
@@ -276,6 +338,16 @@ impl TsMux {
                 descriptors: Vec::new(),
             });
         }
+        let mut program_info = Vec::new();
+        if self.cues {
+            es_info.push(EsInfo {
+                // 0x86; `mpeg2ts` names the value after its Blu-ray meaning.
+                stream_type: StreamType::Dts8ChannelLosslessAudio,
+                elementary_pid: Pid::new(SCTE35_PID).expect("in range"),
+                descriptors: Vec::new(),
+            });
+            program_info.push(Descriptor { tag: REGISTRATION_DESCRIPTOR, data: b"CUEI".to_vec() });
+        }
         let pcr_pid = if self.video.is_some() {
             VIDEO_PID
         } else if self.audio.is_some() {
@@ -286,8 +358,8 @@ impl TsMux {
         let pmt = Pmt {
             program_num: 1,
             pcr_pid: Some(Pid::new(pcr_pid).expect("in range")),
-            version_number: VersionNumber::new(),
-            program_info: Vec::new(),
+            version_number: VersionNumber::from_u8(self.pmt_version).unwrap_or_default(),
+            program_info,
             es_info,
         };
         self.write_psi_packet(PMT_PID, TsPayload::Pmt(pmt));

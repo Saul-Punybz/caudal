@@ -3,15 +3,16 @@
 //! `caudal_hls::router` (agent C).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use caudal_core::{Registry, Stream};
-use serde::Serialize;
+use caudal_core::{Cue, CueKind, Registry, Stream};
+use serde::{Deserialize, Serialize};
 
 use crate::metrics;
 
@@ -20,11 +21,13 @@ pub struct AppState {
     pub registry: Arc<Registry>,
     /// Flips to `true` once the RTMP and HTTP listeners are both up.
     pub ready: AtomicBool,
+    /// splice/segmentation event ids for cues inserted over the API.
+    cue_seq: AtomicU32,
 }
 
 impl AppState {
     pub fn new(registry: Arc<Registry>) -> Arc<Self> {
-        Arc::new(Self { registry, ready: AtomicBool::new(false) })
+        Arc::new(Self { registry, ready: AtomicBool::new(false), cue_seq: AtomicU32::new(1) })
     }
 
     pub fn mark_ready(&self) {
@@ -119,6 +122,91 @@ async fn get_stream(State(state): State<Arc<AppState>>, Path(name): Path<String>
     }
 }
 
+/// Body of `POST /api/v1/streams/{name}/cues`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CueRequest {
+    /// `"out"` or `"in"`. Optional when `section_hex` is given (the
+    /// section says what it is); when both are given they must agree.
+    kind: Option<String>,
+    /// Planned break length, for `"out"` without a section.
+    duration_ms: Option<i64>,
+    /// A whole `splice_info_section`, hex, sent on as is.
+    section_hex: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CueJson {
+    kind: &'static str,
+    /// Media time the cue was placed at: the stream's newest frame.
+    at_us: i64,
+    duration_ms: Option<i64>,
+    section_hex: String,
+}
+
+fn bad_request(msg: &str) -> Response {
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg }))).into_response()
+}
+
+/// Inserts an SCTE-35 cue at the stream's live edge. Without a section,
+/// one is built (`time_signal` + `segmentation_descriptor`) whose splice
+/// time is that same media time.
+async fn post_cue(State(state): State<Arc<AppState>>, Path(name): Path<String>, body: Bytes) -> Response {
+    let Some(stream) = state.registry.get(&name) else { return StatusCode::NOT_FOUND.into_response() };
+    let req: CueRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return bad_request(&format!("invalid body: {e}")),
+    };
+    let at_us = stream.newest_micros().unwrap_or(0);
+    let (section, kind) = match (&req.section_hex, req.kind.as_deref()) {
+        (Some(hex), want) => {
+            let Ok(bytes) = caudal_scte35::from_hex(hex) else { return bad_request("section_hex is not hex") };
+            let splice = match caudal_scte35::parse(&bytes) {
+                Ok(s) => s,
+                Err(e) => return bad_request(&e.to_string()),
+            };
+            if want.is_some_and(|w| w != splice.kind.as_str()) {
+                return bad_request("kind does not match the section");
+            }
+            if req.duration_ms.is_some() {
+                return bad_request("duration_ms comes from the section when section_hex is given");
+            }
+            (Bytes::from(bytes), splice.kind)
+        }
+        (None, Some(k)) => {
+            let kind = match (k, req.duration_ms) {
+                ("out", Some(ms)) if ms <= 0 => return bad_request("duration_ms must be positive"),
+                ("out", ms) => CueKind::Out { duration_us: ms.map(|ms| ms.saturating_mul(1000)) },
+                ("in", None) => CueKind::In,
+                ("in", Some(_)) => return bad_request("duration_ms only applies to \"out\""),
+                _ => return bad_request("kind must be \"out\" or \"in\""),
+            };
+            let pts = (caudal_scte35::us_to_ticks(at_us) as u64) & caudal_scte35::PTS_MASK;
+            let id = state.cue_seq.fetch_add(1, Ordering::Relaxed);
+            match caudal_scte35::build(kind, Some(pts), id, caudal_scte35::Command::TimeSignal) {
+                Ok(s) => (s, kind),
+                Err(e) => return bad_request(&e.to_string()),
+            }
+        }
+        (None, None) => return bad_request("kind or section_hex is required"),
+    };
+    let json = CueJson {
+        kind: kind.as_str(),
+        at_us,
+        duration_ms: match kind {
+            CueKind::Out { duration_us } => duration_us.map(|us| us / 1000),
+            _ => None,
+        },
+        section_hex: caudal_scte35::to_hex(&section),
+    };
+    if stream.inject_cue(Cue { at_us, section, kind }).is_err() {
+        // Ended between the lookup and the insert.
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    tracing::info!(stream = %name, kind = json.kind, at_us, "scte-35 cue inserted over the API");
+    (StatusCode::ACCEPTED, Json(json)).into_response()
+}
+
 async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let body = metrics::render(&state.registry);
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
@@ -131,6 +219,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/readyz", get(readyz))
         .route("/api/v1/streams", get(list_streams))
         .route("/api/v1/streams/{name}", get(get_stream))
+        .route("/api/v1/streams/{name}/cues", post(post_cue))
         .route("/metrics", get(metrics_endpoint))
         .with_state(state)
 }
@@ -211,6 +300,98 @@ mod tests {
         // Silence unused-import/variable warnings for AudioParams in case a
         // future edit stops constructing an audio track here.
         let _ = std::mem::size_of::<AudioParams>();
+    }
+
+    async fn post_cue_req(app: &Router, stream: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let req = Request::post(format!("/api/v1/streams/{stream}/cues"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn cues_are_inserted_at_the_live_edge() {
+        use caudal_core::{BufferConfig, Codec, Event, Frame, StartAt, TrackId, TrackInfo, VideoParams};
+
+        let (app, state) = app();
+        let publisher = state.registry.publish("live", BufferConfig::default()).unwrap();
+        publisher
+            .set_tracks(vec![TrackInfo {
+                id: TrackId(0),
+                codec: Codec::H264,
+                timescale: 90_000,
+                init: Default::default(),
+                lang: None,
+                video: Some(VideoParams { width: 16, height: 16, fps: None }),
+                audio: None,
+            }])
+            .unwrap();
+        let mut sub = publisher.stream().subscribe(StartAt::LiveEdge);
+        for n in 0..3 {
+            let f = Frame { track: TrackId(0), dts: n * 3000, pts: n * 3000, keyframe: n == 0, data: Bytes::new() };
+            publisher.push(f).unwrap();
+        }
+
+        let (status, json) = post_cue_req(&app, "live", r#"{"kind":"out","duration_ms":30000}"#).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["kind"], "out");
+        assert_eq!(json["duration_ms"], 30000);
+        assert_eq!(json["at_us"], 66_666, "the newest frame (dts 6000)");
+        let hex = json["section_hex"].as_str().unwrap();
+        let parsed = caudal_scte35::parse(&caudal_scte35::from_hex(hex).unwrap()).unwrap();
+        assert_eq!(parsed.kind, CueKind::Out { duration_us: Some(30_000_000) });
+        assert_eq!(parsed.pts_90k, Some(6000));
+
+        // The cue reaches viewers, after the frames already pushed.
+        let mut got = None;
+        while let Some(ev) = sub.try_recv() {
+            if let Event::Cue(c) = ev {
+                got = Some(c);
+            }
+        }
+        let cue = got.expect("viewer saw the cue");
+        assert_eq!(cue.at_us, 66_666);
+        assert_eq!(caudal_scte35::to_hex(&cue.section), hex);
+
+        // A caller-supplied section is passed through unchanged.
+        let (status, json) = post_cue_req(&app, "live", &format!(r#"{{"section_hex":"{hex}"}}"#)).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["section_hex"], hex);
+        assert_eq!(json["kind"], "out");
+        let (status, json) = post_cue_req(&app, "live", r#"{"kind":"in"}"#).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+        assert_eq!(json["duration_ms"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn bad_cue_requests() {
+        use caudal_core::BufferConfig;
+        let (app, state) = app();
+        assert_eq!(post_cue_req(&app, "nope", r#"{"kind":"out"}"#).await.0, StatusCode::NOT_FOUND);
+        let _p = state.registry.publish("live", BufferConfig::default()).unwrap();
+        for body in [
+            "",
+            "not json",
+            "{}",
+            r#"{"kind":"sideways"}"#,
+            r#"{"kind":"out","duration_ms":-5}"#,
+            r#"{"kind":"in","duration_ms":5}"#,
+            r#"{"kind":"out","extra":1}"#,
+            r#"{"section_hex":"0xZZ"}"#,
+            r#"{"section_hex":"0xFC3000"}"#,
+        ] {
+            let (status, json) = post_cue_req(&app, "live", body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body} -> {json}");
+            assert!(json["error"].is_string(), "{body}");
+        }
+        // kind contradicting the section.
+        let out = caudal_scte35::build(CueKind::Out { duration_us: None }, None, 1, Default::default()).unwrap();
+        let body = format!(r#"{{"kind":"in","section_hex":"{}"}}"#, caudal_scte35::to_hex(&out));
+        assert_eq!(post_cue_req(&app, "live", &body).await.0, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

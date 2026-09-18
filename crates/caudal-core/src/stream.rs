@@ -19,7 +19,7 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use tokio::sync::watch;
 
-use crate::media::{Frame, TrackId, TrackInfo, TrackKind};
+use crate::media::{Cue, Frame, TrackId, TrackInfo, TrackKind};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BufferConfig {
@@ -63,6 +63,9 @@ pub enum Event {
     Lagged {
         skipped: u64,
     },
+    /// An SCTE-35 cue, delivered in the order it was pushed relative to
+    /// frames. Outputs that cannot carry cues ignore it.
+    Cue(Cue),
     /// The publisher is gone and every buffered frame has been delivered.
     End,
 }
@@ -78,8 +81,35 @@ pub struct StreamStats {
     pub viewers: usize,
 }
 
+/// What one ring slot holds. Cues ride in the same ring as frames so every
+/// viewer sees them in push order, and they age out with the GOP around
+/// them.
+enum Item {
+    Frame(Arc<Frame>),
+    Cue(Cue),
+}
+
+impl Item {
+    fn len(&self) -> usize {
+        match self {
+            Item::Frame(f) => f.data.len(),
+            Item::Cue(c) => c.section.len(),
+        }
+    }
+
+    fn event(&self) -> Event {
+        match self {
+            Item::Frame(f) => Event::Frame(f.clone()),
+            Item::Cue(c) => Event::Cue(c.clone()),
+        }
+    }
+}
+
 struct Entry {
-    frame: Arc<Frame>,
+    item: Item,
+    /// Frames: the frame's decode time. Cues: the newest frame time when
+    /// the cue was pushed (its own `at_us` may lie ahead), so a cue never
+    /// moves the eviction clock.
     micros: i64,
 }
 
@@ -110,7 +140,7 @@ impl Ring {
     fn evict_to(&mut self, seq: u64) {
         while self.base < seq {
             let e = self.frames.pop_front().expect("evicting past the end");
-            self.bytes -= e.frame.data.len();
+            self.bytes -= e.item.len();
             self.base += 1;
         }
         while self.keys.front().is_some_and(|&k| k < self.base) {
@@ -263,13 +293,40 @@ impl Stream {
             }
             r.newest_micros = r.newest_micros.max(micros);
             r.bytes += len;
-            r.frames.push_back(Entry { frame: Arc::new(frame), micros });
+            r.frames.push_back(Entry { item: Item::Frame(Arc::new(frame)), micros });
             r.evict(&self.cfg);
         }
         self.frames_in.fetch_add(1, Ordering::Relaxed);
         self.bytes_in.fetch_add(len as u64, Ordering::Relaxed);
         self.wake();
         Ok(())
+    }
+
+    /// Inserts an SCTE-35 cue into the stream, for cues that do not come
+    /// from the publisher (the HTTP API). Viewers get it as [`Event::Cue`]
+    /// right after the newest frame pushed so far. A cue pushed before the
+    /// first keyframe is dropped with the frames around it: nobody can have
+    /// joined yet to receive it.
+    pub fn inject_cue(&self, cue: Cue) -> Result<(), PushError> {
+        {
+            let mut r = self.ring.write();
+            if r.ended {
+                return Err(PushError::Ended);
+            }
+            let micros = if r.newest_micros == i64::MIN { cue.at_us } else { r.newest_micros };
+            r.bytes += cue.section.len();
+            r.frames.push_back(Entry { item: Item::Cue(cue), micros });
+            r.evict(&self.cfg);
+        }
+        self.wake();
+        Ok(())
+    }
+
+    /// Media time of the newest frame pushed, in microseconds on the
+    /// [`crate::Cue::at_us`] clock. `None` before the first frame.
+    pub fn newest_micros(&self) -> Option<i64> {
+        let n = self.ring.read().newest_micros;
+        (n != i64::MIN).then_some(n)
     }
 
     pub(crate) fn end(&self) {
@@ -346,9 +403,9 @@ impl Subscriber {
             return Some(Event::Lagged { skipped });
         }
         if self.next < r.end_seq() {
-            let frame = r.frames[(self.next - r.base) as usize].frame.clone();
+            let ev = r.frames[(self.next - r.base) as usize].item.event();
             self.next += 1;
-            return Some(Event::Frame(frame));
+            return Some(ev);
         }
         r.ended.then_some(Event::End)
     }

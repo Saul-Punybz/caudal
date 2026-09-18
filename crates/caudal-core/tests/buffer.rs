@@ -283,3 +283,58 @@ async fn gate_decides_and_ends_are_announced() {
     drop(reg.publish("live", cfg(1)).unwrap());
     assert_eq!(&*ends.try_recv().unwrap(), "live");
 }
+
+fn cue(at_us: i64) -> Cue {
+    Cue {
+        at_us,
+        section: Bytes::from_static(&[0xFC, 0x30, 0x11]),
+        kind: CueKind::Out { duration_us: Some(30_000_000) },
+    }
+}
+
+#[test]
+fn cues_arrive_in_push_order_between_frames() {
+    let reg = Registry::new();
+    let publ = reg.publish("live", cfg(50)).unwrap();
+    publ.set_tracks(vec![video()]).unwrap();
+    let mut sub = reg.subscribe("live", StartAt::LiveEdge).unwrap();
+    assert_eq!(sub.try_recv(), Some(Event::TracksChanged));
+    publ.push(vframe(0, 10)).unwrap();
+    publ.push_cue(cue(33_333)).unwrap();
+    // The API path: same ring, same order.
+    publ.stream().inject_cue(cue(66_666)).unwrap();
+    publ.push(vframe(1, 10)).unwrap();
+
+    assert_eq!(next_frame(&mut sub).dts, 0);
+    assert_eq!(sub.try_recv(), Some(Event::Cue(cue(33_333))));
+    assert_eq!(sub.try_recv(), Some(Event::Cue(cue(66_666))));
+    assert_eq!(next_frame(&mut sub).dts, 3000);
+    assert_eq!(sub.try_recv(), None);
+    assert_eq!(publ.stream().newest_micros(), Some(33_333));
+    // Cues are not frames.
+    assert_eq!(publ.stream().stats().frames_in, 2);
+    assert_eq!(CueKind::Out { duration_us: None }.as_str(), "out");
+}
+
+#[test]
+fn a_future_cue_does_not_evict_the_window() {
+    let reg = Registry::new();
+    let publ = reg.publish("live", cfg(2)).unwrap();
+    publ.set_tracks(vec![video()]).unwrap();
+    for n in 0..45 {
+        publ.push(vframe(n, 10)).unwrap();
+    }
+    let before = publ.stream().stats().frames_buffered;
+    // A cue scheduled an hour ahead must not look like an hour of media.
+    publ.push_cue(cue(3_600_000_000)).unwrap();
+    assert_eq!(publ.stream().stats().frames_buffered, before + 1);
+}
+
+#[test]
+fn cue_after_end_is_rejected() {
+    let reg = Registry::new();
+    let publ = reg.publish("live", cfg(50)).unwrap();
+    let stream = publ.stream().clone();
+    drop(publ);
+    assert_eq!(stream.inject_cue(cue(0)), Err(PushError::Ended));
+}

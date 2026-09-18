@@ -73,6 +73,7 @@ pub(crate) async fn run(registry: &Arc<Registry>, mut sub: Subscriber, src: Sour
     loop {
         let item = match sub.recv().await {
             Event::End => break,
+            Event::Cue(_) => continue,
             Event::Lagged { .. } => {
                 resync = true;
                 continue;

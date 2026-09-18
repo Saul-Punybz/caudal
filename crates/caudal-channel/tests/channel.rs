@@ -75,6 +75,7 @@ async fn read(stream: &Arc<Stream>, mut stop: impl FnMut(&Received) -> bool) -> 
                 }
             }
             Event::Lagged { skipped } => panic!("lagged {skipped}"),
+            Event::Cue(_) => {}
             Event::End => {
                 r.ended = true;
                 return r;

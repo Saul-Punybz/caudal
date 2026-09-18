@@ -294,7 +294,7 @@ async fn play_task(
                     }
                 }
             }
-            Event::TracksChanged | Event::Lagged { .. } => continue,
+            Event::TracksChanged | Event::Lagged { .. } | Event::Cue(_) => continue,
             Event::End => {
                 tracing::debug!("rtsp play_task: source stream ended, closing connection");
                 // The source is gone: close our side so the client (a

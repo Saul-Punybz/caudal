@@ -34,6 +34,8 @@ pub struct HlsConfig {
     pub part_ms: u32,
     /// Target full-segment duration.
     pub segment_ms: u32,
+    /// Write SCTE-35 cues as `EXT-X-DATERANGE` (`SCTE35-OUT`/`IN`/`CMD`).
+    pub cue_tags: bool,
 }
 
 /// A player that has not asked for a playlist in this long has left. LL-HLS
@@ -53,7 +55,11 @@ const PLAY_HTML: &str = include_str!("../static/play.html");
 /// Must be called inside a tokio runtime: it spawns the task that starts a
 /// packager for every stream that gets published.
 pub fn router(registry: Arc<Registry>, cfg: HlsConfig) -> axum::Router {
-    let cfg = HlsConfig { part_ms: cfg.part_ms.max(10), segment_ms: cfg.segment_ms.max(cfg.part_ms.max(10)) };
+    let cfg = HlsConfig {
+        part_ms: cfg.part_ms.max(10),
+        segment_ms: cfg.segment_ms.max(cfg.part_ms.max(10)),
+        cue_tags: cfg.cue_tags,
+    };
     let hls = Arc::new(Hls { registry: registry.clone(), cfg, streams: Mutex::default() });
     match Handle::try_current() {
         Ok(rt) => {
@@ -210,6 +216,7 @@ async fn run(hls: Arc<Hls>, entry: Arc<Entry>, mut sub: Subscriber) {
                     tracing::warn!(stream = %entry.stream.name(), skipped, "ll-hls packager lagged");
                     pkg.lagged();
                 }
+                Event::Cue(cue) => pkg.push_cue(cue),
                 Event::End => pkg.end(),
             }
             pkg.ended || before != (pkg.last_part(), pkg.segments.len(), pkg.init.is_some())

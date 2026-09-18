@@ -422,6 +422,8 @@ impl Source for TsSource {
                         return Ok(Some(f));
                     }
                 }
+                // Cues in playlist files are not played out (yet).
+                DemuxEvent::Cue(_) => {}
             }
         }
     }

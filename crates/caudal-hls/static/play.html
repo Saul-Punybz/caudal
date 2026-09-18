@@ -50,7 +50,10 @@
     // maxLiveSyncPlaybackRate: when a player starts or drifts behind the live
     // target, hls.js plays up to 1.5x until it catches up (measured 18 Sep:
     // Firefox sat at 3.1 s and Chromium at 2.4 s without it).
-    hls = new Hls({ lowLatencyMode: true, backBufferLength: 30, liveSyncDurationCount: 1, maxLiveSyncPlaybackRate: 1.5 });
+    // No liveSyncDuration/liveSyncDurationCount: either one overrides the
+    // low-latency target (PART-HOLD-BACK, 0.6 s) with N x segment length.
+    // liveSyncDurationCount: 1 pinned every hls.js player at 2 s (18 Sep).
+    hls = new Hls({ lowLatencyMode: true, backBufferLength: 30, maxLiveSyncPlaybackRate: 1.5 });
     hls.on(Hls.Events.ERROR, function (_e, data) {
       if (!data.fatal) return;
       if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }

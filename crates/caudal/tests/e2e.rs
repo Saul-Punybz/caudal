@@ -152,7 +152,14 @@ fn ll_hls_plays_and_validates() {
 
     // Apple's validator, when installed (macOS with Xcode tools).
     let dir = tempfile::tempdir().unwrap();
-    match support::validate_hls(&s.url("/hls/e2e/index.m3u8"), dir.path(), "ll_hls") {
+    // Players and the validator enter through the multivariant playlist.
+    let (code, master) = s.get("/hls/e2e/master.m3u8").unwrap();
+    assert_eq!(code, 200);
+    assert!(
+        master.contains("CODECS=\"avc1.") && master.contains("mp4a.40.2") && master.contains("index.m3u8"),
+        "{master}"
+    );
+    match support::validate_hls(&s.url("/hls/e2e/master.m3u8"), dir.path(), "ll_hls") {
         Some(Ok(())) => {}
         Some(Err(report)) => panic!("mediastreamvalidator reported errors:\n{report}"),
         None => {
@@ -204,4 +211,28 @@ fn validator_rejects_a_broken_playlist() {
         Some(Ok(())) => panic!("mediastreamvalidator accepted a broken playlist; it is not really validating"),
         None => unreachable!("have_validator() was true"),
     }
+}
+
+/// The parser must read Apple's real output format. Fixture is a trimmed
+/// copy of an actual mediastreamvalidator 1.26 log.
+#[test]
+fn validator_output_parser() {
+    let log = "\
+----------------------------------------------------------------------------------------------------
+                                          CRITICAL Errors
+----------------------------------------------------------------------------------------------------
+-12642: Max EXTINF duration mroe than twice target duration
+----------------------------------------------------------------------------------------------------
+                                      MUST Fix HLS Spec Issues
+----------------------------------------------------------------------------------------------------
+-50120: Content not delivered via HTTP/2
+-50125: Low-latency playlist MUST declare EXT-X-RENDITION-REPORT tags
+----------------------------------------------------------------------------------------------------
+                                     SHOULD Fix HLS Spec Issues
+----------------------------------------------------------------------------------------------------
+-50102: PART-HOLD-BACK SHOULD be at least three times the Part Target Duration
+";
+    let got = support::validator_blocking_issues(log);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].starts_with("-12642"), "critical errors block; allow-listed MUSTs and SHOULDs do not");
 }

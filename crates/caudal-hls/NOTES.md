@@ -29,3 +29,10 @@
 
 ## e2e test issue (crates/caudal/tests/e2e.rs, not mine to edit)
 The blocking check requests `_HLS_msn = MEDIA-SEQUENCE + count(EXTINF)`, `_HLS_part=0`. That is the *open* segment. Its part 0 usually already exists once the playlist shows parts, so a spec-correct server answers at once (RFC 8216bis §6.2.5.2), and the `>= 100 ms` assertion fails except by timing luck. Fix: request the preload-hinted part (parse `#EXT-X-PRELOAD-HINT` URI `s{m}.p{p}.m4s` → `_HLS_msn=m&_HLS_part=p`), or use `_HLS_part = <number of EXT-X-PART lines after the last EXTINF>`.
+
+
+## Apple validator findings (orchestrator, 18 Sep 2026)
+- Players enter through `master.m3u8` (multivariant, one variant with RFC 6381 `CODECS`, `RESOLUTION`, peak `BANDWIDTH`). The `/play` page loads it.
+- `PART-HOLD-BACK` is 3 × part target + 1 ms; exactly 3× tripped -50102 through float rounding.
+- A media playlist must not carry a rendition report about itself (-50099). With a single rendition, -50125 cannot be satisfied; see `KNOWN_MUST` in the e2e support.
+- gohlslib (MediaMTX) writes no rendition reports and uses 2.5× hold-back, so it would fail the same checks.

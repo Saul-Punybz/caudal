@@ -35,7 +35,7 @@
 (function () {
   "use strict";
   var name = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
-  var src = "/hls/" + encodeURIComponent(name) + "/index.m3u8";
+  var src = "/hls/" + encodeURIComponent(name) + "/master.m3u8";
   var video = document.getElementById("v");
   var $ = function (id) { return document.getElementById(id); };
   $("name").textContent = name;

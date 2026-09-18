@@ -90,7 +90,8 @@ Merged A (shell), B (RTMP, on scuffle-rtmp 0.2.3 + scuffle-flv), C (LL-HLS on mp
 **Not verified (said aloud)**
 - **Playback in a real browser.** Chrome under automation keeps the tab `hidden` and throttles timers, so hls.js never attaches (same for agent C). Needs a person to open `http://127.0.0.1:8080/play/demo` once, or a headless-Chrome check in CI (batch 2).
 - **Glass-to-glass latency.** Estimated ~1–1.5 s from the numbers above; not measured end to end.
-- **Apple mediastreamvalidator.** Not installed on this Mac; the macOS CI job will run it.
+- **Apple mediastreamvalidator: now VERIFIED locally** (18 Sep 2026, v1.26.143, installed at `/usr/local/bin`). Run with `CAUDAL_E2E=1 CAUDAL_REQUIRE_HLS_VALIDATOR=1 just e2e`. Result on `master.m3u8`: multivariant + LIVE media playlist, 0 parse errors, 0 critical errors, avc1 + aac; the -50102 hold-back SHOULD is fixed. Two MUSTs remain, allow-listed with reasons in `crates/caudal/tests/support/mod.rs` (`KNOWN_MUST`): -50120 HTTP/2 (removed by M7 TLS), -50125 rendition report (unsatisfiable with one rendition: the validator also rejects a self-report, -50099; removed by ABR in M11). **GitHub's macOS runner does not have the tool**; CI shows a NOT VERIFIED warning banner and requires it automatically when present.
+- The first validator run exposed a false green: the old detector looked for the word `ERROR`, which Apple's tool never prints (it exits 0 and labels issues CRITICAL / MUST). The canary test (`validator_rejects_a_broken_playlist`) caught it. The parser now reads the real sections and is covered by `validator_output_parser`.
 - **CI on GitHub: green** (18 Sep 2026): test, deny, validate-hls (macOS), static builds for x86_64 and aarch64 musl. The first run caught a race in the e2e blocking-reload check on slow runners; the check now asks one segment ahead and verifies the answer. **Docker image** not built (Docker daemon off).
 
 **Known issues from the agents' notes**

@@ -38,7 +38,7 @@ const LINGER: Duration = Duration::from_secs(30);
 
 const PLAY_HTML: &str = include_str!("../static/play.html");
 
-/// Serves `/hls/{name}/index.m3u8`, `/hls/{name}/init.mp4`,
+/// Serves `/hls/{name}/master.m3u8` (players enter here), `/hls/{name}/index.m3u8`, `/hls/{name}/init.mp4`,
 /// `/hls/{name}/{segment}.m4s` and `/play/{name}`. Mounted at the root by
 /// the server; paths are absolute.
 ///
@@ -209,6 +209,13 @@ async fn hls_file(
     let Some(entry) = hls.get(&name) else { return error(StatusCode::NOT_FOUND) };
     match file.as_str() {
         "index.m3u8" => playlist(&entry, query.as_deref().unwrap_or("")).await,
+        "master.m3u8" => {
+            let wait = entry.block_timeout();
+            match entry.wait(wait, |p| p.multivariant()).await {
+                Some(m) => respond(StatusCode::OK, PLAYLIST, "no-cache", m),
+                None => error(StatusCode::NOT_FOUND),
+            }
+        }
         "init.mp4" => {
             let wait = entry.block_timeout();
             match entry.wait(wait, |p| p.init.clone()).await {

@@ -182,8 +182,44 @@ pub fn validate_hls(playlist_url: &str, out_dir: &Path, label: &str) -> Option<R
     let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     std::fs::write(dir.join(format!("{label}.log")), &text).ok();
     assert!(report.exists(), "mediastreamvalidator ran but wrote no report at {}", report.display());
-    let errors = text.lines().filter(|l| l.contains("ERROR")).count();
-    Some(if out.status.success() && errors == 0 { Ok(()) } else { Err(text) })
+    let blocking = validator_blocking_issues(&text);
+    Some(if blocking.is_empty() { Ok(()) } else { Err(format!("{}\n\n{text}", blocking.join("\n"))) })
+}
+
+/// MUST-level issues that are known and scheduled, each with the milestone
+/// that removes it. Keep this list short and dated.
+const KNOWN_MUST: &[(&str, &str)] = &[
+    // Apple requires HTTP/2 for LL-HLS; in practice that needs TLS + ALPN h2.
+    // Removed by M7 (TLS/ACME). Added 18 Sep 2026.
+    ("-50120", "Content not delivered via HTTP/2"),
+    // With a single rendition Apple's validator demands EXT-X-RENDITION-REPORT
+    // yet rejects a report that references the playlist itself (-50099;
+    // tried 18 Sep 2026, also with a multivariant playlist in front). Only a
+    // second rendition satisfies it: removed by ABR (M11) or demuxed audio.
+    ("-50125", "Low-latency playlist MUST declare EXT-X-RENDITION-REPORT tags"),
+];
+
+/// Issue lines under the "CRITICAL Errors" and "MUST Fix HLS Spec Issues"
+/// sections of mediastreamvalidator's output, minus `KNOWN_MUST`. The tool
+/// exits 0 even with critical errors and never prints the word "ERROR", so
+/// the exit code alone proves nothing (the canary test caught this).
+pub fn validator_blocking_issues(text: &str) -> Vec<String> {
+    let mut section = "";
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.ends_with("CRITICAL Errors") || t.starts_with("MUST Fix") {
+            section = "blocking";
+        } else if t.starts_with("SHOULD Fix") || t == "CAUTION" || t.ends_with("Summary") {
+            section = "";
+        } else if section == "blocking" && t.starts_with('-') && t.contains(':') && !t.starts_with("---") {
+            let code = t.split(':').next().unwrap_or("");
+            if !KNOWN_MUST.iter().any(|(c, _)| *c == code) {
+                found.push(t.to_string());
+            }
+        }
+    }
+    found
 }
 
 /// Serves one fixed body at `/bad.m3u8` on a local port, for canary tests.

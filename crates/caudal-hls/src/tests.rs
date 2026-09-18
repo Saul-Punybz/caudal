@@ -168,9 +168,10 @@ async fn parts_and_segments_follow_the_config() {
     ] {
         assert!(pl.contains(tag), "missing {tag}:\n{pl}");
     }
-    assert!(pl.contains("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.600"), "{pl}");
+    assert!(pl.contains("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=0.601"), "{pl}");
     assert!(pl.contains("#EXT-X-PART-INF:PART-TARGET=0.200"), "{pl}");
-    assert!(pl.lines().last().unwrap().starts_with("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"s5.p"), "{pl}");
+    assert!(pl.contains("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"s5.p"), "{pl}");
+    assert!(!pl.contains("RENDITION-REPORT"), "a media playlist never reports on itself: {pl}");
     assert_eq!(tag_values(&pl, "#EXT-X-PROGRAM-DATE-TIME:").len(), 6, "one PDT per segment:\n{pl}");
 
     // Segments: 2 s each, cut on keyframes.
@@ -373,4 +374,26 @@ async fn play_page() {
     assert!(page.contains("lowLatencyMode: true"));
     assert!(page.contains("latency"));
     assert_eq!(get(&app, "/play/nobody").await.status, StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn codec_strings() {
+    use bytes::Bytes;
+    use caudal_core::{Codec, TrackId, TrackInfo};
+    let t = |codec, init: &'static [u8]| TrackInfo {
+        id: TrackId(0),
+        codec,
+        timescale: 90_000,
+        init: Bytes::from_static(init),
+        lang: None,
+        video: None,
+        audio: None,
+    };
+    // High profile, level 3.1.
+    assert_eq!(crate::packager::codec_string(&t(Codec::H264, &[1, 0x64, 0x00, 0x1f, 0xff])).unwrap(), "avc1.64001f");
+    // AAC-LC, 48 kHz stereo.
+    assert_eq!(crate::packager::codec_string(&t(Codec::Aac, &[0x11, 0x90])).unwrap(), "mp4a.40.2");
+    // HEVC Main, Main tier, level 3.1 (93), progressive-source constraint.
+    let hvcc: &[u8] = &[1, 0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 93, 0xf0];
+    assert_eq!(crate::packager::codec_string(&t(Codec::H265, hvcc)).unwrap(), "hvc1.1.6.L93.90");
 }

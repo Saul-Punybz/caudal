@@ -135,6 +135,9 @@ pub(crate) struct Packager {
     pub discontinuity_seq: u64,
     target: u64,
     pub ended: bool,
+    /// `CODECS` and `RESOLUTION` for the multivariant playlist.
+    codecs: Vec<String>,
+    resolution: Option<(u32, u32)>,
 }
 
 impl Packager {
@@ -158,6 +161,8 @@ impl Packager {
             discontinuity_seq: 0,
             target: u64::from(cfg.segment_ms).div_ceil(1000).max(1),
             ended: false,
+            codecs: Vec::new(),
+            resolution: None,
         }
     }
 
@@ -206,6 +211,9 @@ impl Packager {
         self.floor = None;
         self.waiting_key = true;
         self.init = init;
+        self.codecs = mp4.iter().filter_map(|t| codec_string(&t.info)).collect();
+        self.resolution =
+            mp4.iter().find_map(|t| t.info.video.map(|v| (v.width, v.height))).filter(|&(w, h)| w > 0 && h > 0);
         let mut lanes = mp4.iter().map(|t| Lane::new(t.track_id, &t.info));
         self.primary = lanes.next();
         self.secondary = lanes.next();
@@ -484,7 +492,10 @@ impl Packager {
         let mut o = String::with_capacity(4096);
         o.push_str("#EXTM3U\n#EXT-X-VERSION:9\n");
         let _ = writeln!(o, "#EXT-X-TARGETDURATION:{}", self.target);
-        let _ = writeln!(o, "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK={:.3}", pt * 3.0);
+        // At least 3x the part target (RFC 8216bis 4.4.3.8); the extra
+        // millisecond keeps float rounding from landing a hair under it,
+        // which Apple's validator flags (-50102).
+        let _ = writeln!(o, "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK={:.3}", pt * 3.0 + 0.001);
         let _ = writeln!(o, "#EXT-X-PART-INF:PART-TARGET={pt:.3}");
         let first = self.segments.front().map_or(self.next_msn, |s| s.msn);
         let _ = writeln!(o, "#EXT-X-MEDIA-SEQUENCE:{first}");
@@ -518,6 +529,58 @@ impl Packager {
             let _ = writeln!(o, "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"s{m}.p{p}.m4s\"");
         }
         o
+    }
+}
+
+impl Packager {
+    /// Multivariant playlist with this stream's single variant. Players enter
+    /// here: a low-latency media playlist on its own must carry rendition
+    /// reports but may not report on itself (Apple -50125 / -50099), so the
+    /// only conformant single-rendition shape is multivariant + media.
+    pub fn multivariant(&self) -> Option<String> {
+        if self.codecs.is_empty() {
+            return None;
+        }
+        // Peak bits per second over the completed segments, with a floor so a
+        // fresh stream still advertises something sane.
+        let peak = self
+            .segments
+            .iter()
+            .filter_map(|s| s.full.as_ref().map(|b| (b.len() as f64 * 8.0 / s.duration().max(0.001)) as u64))
+            .max()
+            .unwrap_or(0)
+            .max(64_000);
+        let mut o = String::from("#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+        let _ = write!(o, "#EXT-X-STREAM-INF:BANDWIDTH={peak},CODECS=\"{}\"", self.codecs.join(","));
+        if let Some((w, h)) = self.resolution {
+            let _ = write!(o, ",RESOLUTION={w}x{h}");
+        }
+        o.push_str("\nindex.m3u8\n");
+        Some(o)
+    }
+}
+
+/// RFC 6381 codec string from a track's configuration record.
+pub(crate) fn codec_string(t: &TrackInfo) -> Option<String> {
+    let c = &t.init;
+    match t.codec {
+        // avcC: [version, profile, compatibility, level, ...]
+        Codec::H264 if c.len() >= 4 => Some(format!("avc1.{:02x}{:02x}{:02x}", c[1], c[2], c[3])),
+        // hvcC: [version, space|tier|profile, compat(4), constraints(6), level, ...]
+        Codec::H265 if c.len() >= 13 => {
+            let space = ["", "A", "B", "C"][usize::from(c[1] >> 6)];
+            let tier = if c[1] & 0x20 != 0 { 'H' } else { 'L' };
+            let profile = c[1] & 0x1f;
+            let compat = u32::from_be_bytes([c[2], c[3], c[4], c[5]]).reverse_bits();
+            let mut cons: Vec<String> = c[6..12].iter().map(|b| format!("{b:X}")).collect();
+            while cons.len() > 1 && cons.last().is_some_and(|b| b == "0") {
+                cons.pop();
+            }
+            Some(format!("hvc1.{space}{profile}.{compat:X}.{tier}{}.{}", c[12], cons.join(".")))
+        }
+        // AudioSpecificConfig: object type in the top 5 bits.
+        Codec::Aac if !c.is_empty() => Some(format!("mp4a.40.{}", c[0] >> 3)),
+        _ => None,
     }
 }
 

@@ -6,9 +6,9 @@
 use bytes::Bytes;
 use caudal_core::{Codec, TrackInfo, TrackKind};
 use mp4_atom::{
-    Atom, Audio, Avc1, Avcc, Dinf, Dref, Encode, Esds, Ftyp, Hdlr, Hvc1, Hvcc, Mdhd, Mdia, Mfhd, Minf, Moof, Moov,
-    Mp4a, Mvex, Mvhd, Smhd, Stbl, Stco, Stsd, Tfdt, Tfhd, Tkhd, Traf, Trak, Trex, Trun, TrunEntry, Url, Visual, Vmhd,
-    esds,
+    Atom, Audio, Avc1, Avcc, Dinf, Dops, Dref, Encode, Esds, Ftyp, Hdlr, Hvc1, Hvcc, Mdhd, Mdia, Mfhd, Minf, Moof,
+    Moov, Mp4a, Mvex, Mvhd, Opus, Smhd, Stbl, Stco, Stsd, Tfdt, Tfhd, Tkhd, Traf, Trak, Trex, Trun, TrunEntry, Url,
+    Visual, Vmhd, esds,
 };
 
 /// `sample_depends_on = 2` (does not depend on others): a sync sample.
@@ -134,6 +134,28 @@ fn trak(t: &Mp4Track) -> Option<Trak> {
                 },
                 btrt: None,
                 taic: None,
+            }
+            .into()
+        }
+        Codec::Opus => {
+            let head = crate::opus::parse_opus_head(&info.init)?;
+            let channels =
+                info.audio.map(|a| a.channels as u16).filter(|&c| c > 0).unwrap_or(u16::from(head.channels)).max(1);
+            let rate = info.audio.map(|a| a.sample_rate).unwrap_or(48_000);
+            Opus {
+                audio: Audio {
+                    data_reference_index: 1,
+                    channel_count: channels,
+                    sample_size: 16,
+                    sample_rate: (rate.min(u16::MAX as u32) as u16).into(),
+                },
+                dops: Dops {
+                    output_channel_count: head.channels,
+                    pre_skip: head.pre_skip,
+                    input_sample_rate: head.input_sample_rate,
+                    output_gain: head.output_gain,
+                },
+                btrt: None,
             }
             .into()
         }

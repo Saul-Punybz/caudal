@@ -18,6 +18,22 @@ pub struct Demuxed {
 
 const VIDEO_TIMESCALE: u32 = 90_000;
 
+/// Rebuilds RFC 7845 `OpusHead` bytes (little-endian) from an ISOBMFF `dOps`
+/// box (big-endian), the shape ingest hands `TrackInfo::init`. Duplicated
+/// rather than shared with `caudal_hls::opus` because this file is compiled
+/// standalone into the `demo` example as well as into the test binary.
+fn opus_head(o: &mp4_atom::Opus) -> Vec<u8> {
+    let d = &o.dops;
+    let mut h = b"OpusHead".to_vec();
+    h.push(1); // version
+    h.push(d.output_channel_count);
+    h.extend_from_slice(&d.pre_skip.to_le_bytes());
+    h.extend_from_slice(&d.input_sample_rate.to_le_bytes());
+    h.extend_from_slice(&d.output_gain.to_le_bytes());
+    h.push(0); // channel mapping family
+    h
+}
+
 pub fn demux(file: &[u8]) -> Demuxed {
     let mut buf = file;
     let mut moov = None;
@@ -53,6 +69,11 @@ pub fn demux(file: &[u8]) -> Demuxed {
                 let asc = m.esds.es_desc.dec_config.dec_specific.as_ref().expect("asc").raw.clone();
                 let a = AudioParams { sample_rate: ts, channels: m.audio.channel_count as u8 };
                 (Codec::Aac, asc, ts, None, Some(a))
+            }
+            Some(mp4_atom::Codec::Opus(o)) => {
+                let init = opus_head(o);
+                let a = AudioParams { sample_rate: o.dops.input_sample_rate, channels: o.audio.channel_count as u8 };
+                (Codec::Opus, init, ts, None, Some(a))
             }
             _ => continue,
         };

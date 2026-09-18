@@ -72,6 +72,7 @@ struct Lane {
     track_id: u32,
     timescale: u32,
     core_id: TrackId,
+    codec: Codec,
     shift: i64,
     pending: Option<Sample>,
     last_dur: u32,
@@ -87,10 +88,19 @@ impl Lane {
             track_id,
             timescale: info.timescale.max(1),
             core_id: info.id,
+            codec: info.codec,
             shift: SHIFT_SECS * i64::from(info.timescale.max(1)),
             pending: None,
             last_dur: default_dur.max(1),
         }
+    }
+
+    /// Duration to give a sample when there is no next one on its track to
+    /// measure a gap against. Opus packets carry their own duration in the
+    /// TOC byte (RFC 6716 §3.1), which can change frame to frame, so it is
+    /// read off the packet itself instead of assuming the last one's length.
+    fn fallback_dur(&self, data: &Bytes) -> u32 {
+        if self.codec == Codec::Opus { crate::opus::frame_duration_samples(data) } else { self.last_dur }
     }
 
     fn sample(&self, f: &Frame, audio: bool) -> Sample {
@@ -177,7 +187,11 @@ impl Packager {
     /// The track list changed. Returns true if the output was reset.
     pub fn set_tracks(&mut self, tracks: &[TrackInfo]) -> bool {
         let video = tracks.iter().find(|t| matches!(t.codec, Codec::H264 | Codec::H265) && !t.init.is_empty());
-        let audio = tracks.iter().find(|t| t.codec == Codec::Aac && t.init.len() >= 2);
+        let audio = tracks.iter().find(|t| match t.codec {
+            Codec::Aac => t.init.len() >= 2,
+            Codec::Opus => crate::opus::parse_opus_head(&t.init).is_some(),
+            _ => false,
+        });
         let mut mp4 = Vec::new();
         if let Some(v) = video {
             mp4.push(Mp4Track { track_id: 1, info: v.clone() });
@@ -282,7 +296,8 @@ impl Packager {
         let new = lane.sample(f, true);
         if let Some(mut p) = lane.pending.take() {
             let d = new.dts - p.dts;
-            p.dur = if d <= 0 || d > JUMP_SECS * i64::from(lane.timescale) { lane.last_dur } else { d as u32 };
+            p.dur =
+                if d <= 0 || d > JUMP_SECS * i64::from(lane.timescale) { lane.fallback_dur(&p.data) } else { d as u32 };
             lane.last_dur = p.dur;
             self.queue.push_back(p);
         }
@@ -402,7 +417,7 @@ impl Packager {
     fn flush(&mut self) {
         let pending = self.primary.as_mut().and_then(|lane| {
             let mut p = lane.pending.take()?;
-            p.dur = lane.last_dur;
+            p.dur = lane.fallback_dur(&p.data);
             Some(p)
         });
         if let Some(p) = pending {
@@ -413,7 +428,7 @@ impl Packager {
         if let Some(lane) = self.secondary.as_mut()
             && let Some(mut p) = lane.pending.take()
         {
-            p.dur = lane.last_dur;
+            p.dur = lane.fallback_dur(&p.data);
             self.queue.push_back(p);
         }
         self.close_part();
@@ -580,6 +595,9 @@ pub(crate) fn codec_string(t: &TrackInfo) -> Option<String> {
         }
         // AudioSpecificConfig: object type in the top 5 bits.
         Codec::Aac if !c.is_empty() => Some(format!("mp4a.40.{}", c[0] >> 3)),
+        // RFC 6381 (and common practice): Opus in MP4 is just "opus", no
+        // profile or level suffix.
+        Codec::Opus if crate::opus::parse_opus_head(c).is_some() => Some("opus".to_string()),
         _ => None,
     }
 }

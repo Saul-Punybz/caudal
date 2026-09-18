@@ -93,8 +93,7 @@ AI captions; clustering; geo-blocking; Helm/Kubernetes; Raspberry Pi appliance.
 (FAST channels); forensic watermarking; web/mobile player SDKs; legal caution:
 describe OMT on its own merits, don't market it with the NDI trademark.
 
-**New from Gemini, NOT adopted:** 24/7 linear channels from VOD playlists:
-that is ANTENA787's job (Saul's playout project); Caudal can ingest its output.
+**24/7 linear channels from VOD playlists:** adopted into Caudal as M13 (Saul, 18 Sep 2026: finish Caudal with everything, all in Rust; overlap with ANTENA787 is fine).
 
 **Known licensing trade-off (decision already made by Saul: MIT OR Apache-2.0):**
 a permissive license allows clouds to host Caudal commercially without

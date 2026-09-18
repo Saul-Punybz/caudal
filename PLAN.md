@@ -100,7 +100,8 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [x] **M8: Recording and VOD.** (batch 6; S3/GCS upload untested against real buckets) MP4 to disk, DVR window, MP4/TS/MKV file inputs.
 - [ ] **M9: RTSP** pull (retina) and server.
 - [ ] **M10: Clustering.** Origin-edge.
-- [ ] **M11: Transcoding.**
+- [x] **M11: Transcoding.** Ladders as `<name>+<label>` via external ffmpeg (default) or in-process rusty_h264 (works; 2–3x the CPU of x264, ~4.7 dB lower PSNR at the same bitrate, batch 7).
+- [ ] **M13: 24/7 channels from files** (decided by Saul, 18 Sep 2026: Caudal includes playout, all in Rust, no concern about overlapping ANTENA787). Playlists and schedules of MP4/TS/MKV files published as a continuous live stream, with transitions on keyframes and timestamp stitching; normalization through the transcoder when files differ.
 - [ ] **M12: Open Media Transport (OMT), the open NDI alternative.** Pure-Rust port of the MIT reference (libomtnet C#, ~10.6K lines) and the VMX codec (libvmx C, ~23.5K lines incl. SIMD), mDNS discovery with `mdns-sd`. First native Rust OMT. Send and receive, so Caudal can take in and put out LAN video for live production.
   - **Licensing (changed by Saul, 18 Sep 2026): MIT OR Apache-2.0**, like the rest of Caudal and like OMT's own reference code. Goal: the definitive, go-to OMT implementation in Rust, adopted widely. Replaces the earlier PolyForm Noncommercial decision the same day.
   - **Standalone crates, not buried in Caudal**, so any Rust project can use them: `open-media-transport` (protocol, send/receive, discovery) and `vmx-codec` (the VMX codec), both free on crates.io as of 18 Sep 2026. Own repo; Caudal depends on them like any other crate (in the default build, since the license no longer restricts it).

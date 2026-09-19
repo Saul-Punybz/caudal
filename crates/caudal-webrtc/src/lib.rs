@@ -1,5 +1,5 @@
 //! WebRTC in and out: WHIP (RFC 9725) to publish, WHEP to play. One UDP
-//! socket for all peers. Entry point fixed by the orchestrator.
+//! socket for all peers, served by `threads` engines (see `engine`). Entry point fixed by the orchestrator.
 //!
 //! Routes (absolute; merged at the root by the server):
 //! - `POST /whip/{name}` (SDP offer in, 201 + SDP answer + `Location` out)
@@ -22,6 +22,7 @@ mod net;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -43,13 +44,40 @@ pub struct WebRtcConfig {
     /// Empty: the local addresses of `udp_bind`.
     pub public_ips: Vec<IpAddr>,
     pub buffer: caudal_core::BufferConfig,
+    /// Peer engines (cores doing SRTP). 0: one per core, at most 8.
+    pub threads: usize,
+}
+
+/// The running engines and how sessions are spread over them.
+struct Engines {
+    cmds: Vec<mpsc::Sender<Cmd>>,
+    next: AtomicUsize,
+    ufrags: engine::Ufrags,
+}
+
+impl Engines {
+    /// Hands a new session to the next engine, round robin.
+    async fn add(&self, mut peer: Peer) -> bool {
+        let i = self.next.fetch_add(1, Ordering::Relaxed) % self.cmds.len();
+        let ufrag = peer.rtc.direct_api().local_ice_credentials().ufrag;
+        if let Ok(mut u) = self.ufrags.lock() {
+            u.insert(ufrag.clone(), i);
+        }
+        if self.cmds[i].send(Cmd::Add(Box::new(peer))).await.is_ok() {
+            return true;
+        }
+        if let Ok(mut u) = self.ufrags.lock() {
+            u.remove(&ufrag);
+        }
+        false
+    }
 }
 
 #[derive(Clone)]
 struct AppState {
     registry: Arc<Registry>,
     /// `None` when the UDP socket could not be bound: every request is 503.
-    cmds: Option<mpsc::Sender<Cmd>>,
+    engines: Option<Arc<Engines>>,
     candidates: Arc<Vec<SocketAddr>>,
     buffer: caudal_core::BufferConfig,
 }
@@ -57,14 +85,14 @@ struct AppState {
 /// Must be called inside a tokio runtime (it binds the UDP socket and spawns
 /// the peer loop).
 pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig) -> axum::Router {
-    let (cmds, candidates) = match start(&cfg) {
-        Ok((tx, c)) => (Some(tx), c),
+    let (engines, candidates) = match start(&cfg) {
+        Ok((e, c)) => (Some(Arc::new(e)), c),
         Err(e) => {
             tracing::error!(error = %e, bind = %cfg.udp_bind, "webrtc: cannot start; WHIP/WHEP disabled");
             (None, Vec::new())
         }
     };
-    let state = AppState { registry, cmds, candidates: Arc::new(candidates), buffer: cfg.buffer };
+    let state = AppState { registry, engines, candidates: Arc::new(candidates), buffer: cfg.buffer };
     axum::Router::new()
         .route("/whip/{name}", post(whip_post).options(preflight))
         .route("/whip/{name}/{session}", axum::routing::delete(whip_delete).options(preflight))
@@ -74,21 +102,34 @@ pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig) -> axum::Router {
         .with_state(state)
 }
 
-fn start(cfg: &WebRtcConfig) -> std::io::Result<(mpsc::Sender<Cmd>, Vec<SocketAddr>)> {
+fn start(cfg: &WebRtcConfig) -> std::io::Result<(Engines, Vec<SocketAddr>)> {
     let std_sock = std::net::UdpSocket::bind(cfg.udp_bind)?;
     std_sock.set_nonblocking(true)?;
     grow_buffers(&std_sock);
-    let sock = tokio::net::UdpSocket::from_std(std_sock)?;
+    let sock = Arc::new(tokio::net::UdpSocket::from_std(std_sock)?);
     let local = sock.local_addr()?;
     let candidates = net::candidate_addrs(local, &cfg.public_ips);
     if candidates.is_empty() {
         return Err(std::io::Error::other("no address to advertise as an ICE candidate; set [webrtc] public_ips"));
     }
-    tracing::info!(bind = %local, candidates = ?candidates, "webrtc: listening");
-    let dest = net::Destinations::new(local, candidates.clone());
-    let (tx, rx) = mpsc::channel(256);
-    tokio::spawn(engine::run(sock, dest, rx));
-    Ok((tx, candidates))
+    let threads = match cfg.threads {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(8),
+        n => n,
+    };
+    tracing::info!(bind = %local, candidates = ?candidates, threads, "webrtc: listening");
+    let ufrags = engine::Ufrags::default();
+    let mut cmds = Vec::with_capacity(threads);
+    let mut inbound = Vec::with_capacity(threads);
+    for _ in 0..threads {
+        let dest = net::Destinations::new(local, candidates.clone());
+        let (tx, rx) = mpsc::channel(256);
+        let (in_tx, in_rx) = mpsc::channel(engine::INBOUND_QUEUE);
+        tokio::spawn(engine::run(sock.clone(), dest, rx, in_rx, ufrags.clone()));
+        cmds.push(tx);
+        inbound.push(in_tx);
+    }
+    tokio::spawn(engine::receive(sock, inbound, ufrags.clone()));
+    Ok((Engines { cmds, next: AtomicUsize::new(0), ufrags }, candidates))
 }
 
 /// Asks for large socket buffers: every WHEP viewer shares this one
@@ -281,7 +322,9 @@ async fn whip_post(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(cmds) = st.cmds.clone() else { return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running") };
+    let Some(engines) = st.engines.clone() else {
+        return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running");
+    };
     if !is_sdp(&headers) {
         return plain(StatusCode::UNSUPPORTED_MEDIA_TYPE, "expected Content-Type: application/sdp");
     }
@@ -305,7 +348,7 @@ async fn whip_post(
         rtc,
         role: Role::Whip(Box::new(ingest::Ingest::new(publisher))),
     };
-    if cmds.send(Cmd::Add(Box::new(peer))).await.is_err() {
+    if !engines.add(peer).await {
         return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running");
     }
     created(format!("/whip/{name}/{session}"), sdp)
@@ -318,7 +361,9 @@ async fn whep_post(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(cmds) = st.cmds.clone() else { return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running") };
+    let Some(engines) = st.engines.clone() else {
+        return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running");
+    };
     if !is_sdp(&headers) {
         return plain(StatusCode::UNSUPPORTED_MEDIA_TYPE, "expected Content-Type: application/sdp");
     }
@@ -341,22 +386,29 @@ async fn whep_post(
         rtc,
         role: Role::Whep(Box::new(egress::Egress::new(name.clone(), sub))),
     };
-    if cmds.send(Cmd::Add(Box::new(peer))).await.is_err() {
+    if !engines.add(peer).await {
         return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running");
     }
     created(format!("/whep/{name}/{session}"), sdp)
 }
 
 async fn delete_session(st: AppState, whip: bool, name: String, session: String) -> Response {
-    let Some(cmds) = st.cmds else { return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running") };
-    let (reply, rx) = oneshot::channel();
-    if cmds.send(Cmd::Delete { whip, name, session, reply }).await.is_err() {
-        return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running");
+    let Some(engines) = st.engines else { return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running") };
+    // Ask every engine; the one that owns the session ends it.
+    let mut found = false;
+    for cmds in &engines.cmds {
+        let (reply, rx) = oneshot::channel();
+        let cmd = Cmd::Delete { whip, name: name.clone(), session: session.clone(), reply };
+        if cmds.send(cmd).await.is_ok() && rx.await == Ok(true) {
+            found = true;
+            break;
+        }
     }
-    match rx.await {
+    if found {
         // A body: ffmpeg's WHIP muxer reports an empty DELETE response as an error.
-        Ok(true) => plain(StatusCode::OK, "session ended"),
-        _ => plain(StatusCode::NOT_FOUND, "no such session"),
+        plain(StatusCode::OK, "session ended")
+    } else {
+        plain(StatusCode::NOT_FOUND, "no such session")
     }
 }
 

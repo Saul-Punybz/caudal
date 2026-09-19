@@ -2,8 +2,8 @@
 //! and, in [`Supervisor`], keeps what a config reload needs to apply the
 //! smallest correct change per section:
 //!
-//! - **Hot, no restart:** `[[restream]]`, `[[channel]]`, `[[failover]]`,
-//!   `[[srt.push]]`, `[[rtsp.pull]]` are each their own subsystem with a `reload` that
+//! - **Hot, no restart:** `[[restream]]`, `[[multicast]]`, `[[channel]]`,
+//!   `[[failover]]`, `[[srt.push]]`, `[[rtsp.pull]]` are each their own subsystem with a `reload` that
 //!   diffs by identity — unchanged entries keep their task untouched, so
 //!   a reload never drops an unrelated viewer or publisher. `[auth]` and
 //!   `[hooks]` swap in place (`Registry::set_gate` is a live snapshot
@@ -292,6 +292,7 @@ pub struct Supervisor {
     rtsp_listen: Mutex<RtspListener>,
 
     restream: caudal_restream::RestreamHandle,
+    multicast: caudal_multicast::MulticastHandle,
     channel: caudal_channel::ChannelHandle,
     failover: caudal_failover::FailoverHandle,
     srt_push: caudal_srt::PushHandle,
@@ -317,6 +318,9 @@ pub struct Supervisor {
 pub struct Started {
     pub supervisor: Arc<Supervisor>,
     pub restream_router: axum::Router,
+    pub multicast_router: axum::Router,
+    /// For `/metrics` (`caudal_multicast_*`).
+    pub multicast: caudal_multicast::MulticastHandle,
     pub channel_router: axum::Router,
     pub failover_router: axum::Router,
     /// For forwarding switch events to health webhooks.
@@ -357,6 +361,9 @@ impl Supervisor {
         );
         let restream_router = caudal_restream::router(restream.clone());
 
+        let multicast = caudal_multicast::start(registry.clone(), cfg.multicast_targets().expect("validated"));
+        let multicast_router = caudal_multicast::router(multicast.clone());
+
         let channel = caudal_channel::start(
             registry.clone(),
             caudal_channel::ChannelConfig {
@@ -385,6 +392,7 @@ impl Supervisor {
             srt_listen,
             rtsp_listen,
             restream,
+            multicast: multicast.clone(),
             channel,
             failover: failover.clone(),
             srt_push,
@@ -395,7 +403,16 @@ impl Supervisor {
             cluster,
             current: Mutex::new(cfg.clone()),
         });
-        Started { supervisor, restream_router, channel_router, failover_router, failover, access }
+        Started {
+            supervisor,
+            restream_router,
+            multicast_router,
+            multicast,
+            channel_router,
+            failover_router,
+            failover,
+            access,
+        }
     }
 
     /// Validates `new_cfg`, then applies the smallest correct action per
@@ -414,6 +431,10 @@ impl Supervisor {
         if old.restream != new_cfg.restream {
             self.restream.reload(&self.registry, new_cfg.restream_targets());
             report.applied.push("restream".into());
+        }
+        if old.multicast != new_cfg.multicast {
+            self.multicast.reload(&self.registry, new_cfg.multicast_targets().expect("validated"));
+            report.applied.push("multicast".into());
         }
         if old.channel != new_cfg.channel {
             self.channel.reload(caudal_channel::ChannelConfig {

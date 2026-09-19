@@ -728,6 +728,7 @@ dependencies = [
  "caudal-health",
  "caudal-hls",
  "caudal-moq",
+ "caudal-multicast",
  "caudal-record",
  "caudal-restream",
  "caudal-rtmp",
@@ -979,6 +980,25 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "caudal-multicast"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-core",
+ "caudal-ts",
+ "mp4-atom",
+ "parking_lot",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "socket2 0.6.5",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

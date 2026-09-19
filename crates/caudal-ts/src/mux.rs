@@ -49,6 +49,14 @@ const PCR_INTERVAL: Duration = Duration::from_millis(40);
 /// PTS/DTS and PCR both wrap at 2^33 ticks (90 kHz for PTS/DTS; PCR's base
 /// is the same 33-bit field, extended to 27 MHz by `ClockReference`).
 const TS_TIMESTAMP_MASK: u64 = (1u64 << 33) - 1;
+/// [`PSI_INTERVAL`] on the 90 kHz media clock ([`TsMux::with_media_clock`]).
+const PSI_INTERVAL_90K: u64 = 9_000;
+/// [`TsMux::with_media_clock`]: how far each frame's PTS/DTS runs ahead of
+/// the PCR sent with it, i.e. how long a receiver buffers before decoding.
+/// ffmpeg's mpegts muxer defaults to the same 0.7 s (`-muxdelay`), and
+/// likewise shifts PTS/DTS forward rather than PCR back, so a stream
+/// starting at timestamp 0 has no PCR wrap in its first second.
+pub const MEDIA_CLOCK_DELAY_90K: u64 = 63_000;
 
 struct VideoTrack {
     h265: bool,
@@ -111,6 +119,20 @@ fn to_90k(ts: i64, timescale: u32) -> u64 {
     (scaled as i64 as u64) & TS_TIMESTAMP_MASK
 }
 
+/// Whether `interval` (90 kHz ticks) of media time has passed since `last`,
+/// on the 33-bit wrapping clock. A frame slightly behind `last` (audio
+/// interleaved a few ms behind video) is not due; one more than a second
+/// behind is a timestamp reset, which restarts the cadence.
+fn media_interval_due(last: Option<u64>, now: Option<u64>, interval: u64) -> bool {
+    let (Some(last), Some(now)) = (last, now) else { return true };
+    let delta = now.wrapping_sub(last) & TS_TIMESTAMP_MASK;
+    if delta > TS_TIMESTAMP_MASK / 2 {
+        let behind = TS_TIMESTAMP_MASK + 1 - delta;
+        return behind > 90_000;
+    }
+    delta >= interval
+}
+
 fn write_annexb(out: &mut Vec<u8>, nal: &[u8]) {
     out.extend_from_slice(&[0, 0, 0, 1]);
     out.extend_from_slice(nal);
@@ -163,6 +185,12 @@ pub struct TsMux {
     /// PMT version_number (5 bits), bumped when the PID list changes so
     /// demuxers already tuned in re-read it.
     pmt_version: u8,
+    /// See [`TsMux::with_media_clock`].
+    media_clock: bool,
+    /// Media-clock mode: the current frame's DTS (90 kHz) and the one the
+    /// last PAT/PMT went out at.
+    now_90k: Option<u64>,
+    last_psi_90k: Option<u64>,
 }
 
 impl Default for TsMux {
@@ -184,7 +212,23 @@ impl TsMux {
             warned_opus: false,
             cues: false,
             pmt_version: 0,
+            media_clock: false,
+            now_90k: None,
+            last_psi_90k: None,
         }
+    }
+
+    /// A muxer whose PAT/PMT cadence runs on the frames' own timestamps
+    /// instead of the wall clock at mux time, with a PCR on every video
+    /// access unit (every audio frame for an audio-only stream), and PTS/DTS
+    /// (and SCTE-35 splice times) [`MEDIA_CLOCK_DELAY_90K`] ahead of it. For outputs that pace
+    /// their bytes to the media clock afterwards (`caudal-multicast`): a
+    /// backlog muxed in one go (a live-edge join hands over the whole GOP
+    /// at once) still carries PSI every 100 ms and a PCR per frame of
+    /// *media* time once paced out, where wall-clock timers would have
+    /// fired once for the whole backlog.
+    pub fn with_media_clock() -> Self {
+        Self { media_clock: true, ..Self::new() }
     }
 
     /// Writes an SCTE-35 cue on its own PID. The section's splice time is
@@ -202,7 +246,7 @@ impl TsMux {
             self.psi_written = false;
         }
         self.maybe_write_psi(false);
-        let target = (caudal_scte35::us_to_ticks(cue.at_us) as u64) & TS_TIMESTAMP_MASK;
+        let target = (caudal_scte35::us_to_ticks(cue.at_us) as u64).wrapping_add(self.pts_offset()) & TS_TIMESTAMP_MASK;
         let section = caudal_scte35::retime(&cue.section, target).unwrap_or_else(|_| cue.section.clone());
         self.write_section(SCTE35_PID, &section);
     }
@@ -271,6 +315,9 @@ impl TsMux {
     /// Muxes one frame. A frame on a track this muxer doesn't recognize
     /// (Opus, or a video codec whose init hasn't parsed yet) is dropped.
     pub fn push_frame(&mut self, info: &TrackInfo, frame: &Frame) {
+        if self.media_clock {
+            self.now_90k = Some(to_90k(frame.dts, info.timescale));
+        }
         self.maybe_write_psi(frame.keyframe && info.kind() == TrackKind::Video);
         let pcr = if self.is_pcr_track(info.kind()) { self.due_pcr(to_90k(frame.dts, info.timescale)) } else { None };
         match info.kind() {
@@ -290,7 +337,19 @@ impl TsMux {
         }
     }
 
+    /// Added to every PTS/DTS written (0 unless media-clock mode).
+    fn pts_offset(&self) -> u64 {
+        if self.media_clock { MEDIA_CLOCK_DELAY_90K } else { 0 }
+    }
+
+    fn pes_ts(&self, ts: i64, timescale: u32) -> u64 {
+        (to_90k(ts, timescale) + self.pts_offset()) & TS_TIMESTAMP_MASK
+    }
+
     fn due_pcr(&mut self, media_90k: u64) -> Option<u64> {
+        if self.media_clock {
+            return Some(media_90k * 300);
+        }
         let due = self.last_pcr.is_none_or(|t| t.elapsed() >= PCR_INTERVAL);
         if !due {
             return None;
@@ -303,7 +362,12 @@ impl TsMux {
         if self.video.is_none() && self.audio.is_none() {
             return;
         }
-        let due = !self.psi_written || force || self.last_psi.is_none_or(|t| t.elapsed() >= PSI_INTERVAL);
+        let interval_due = if self.media_clock {
+            media_interval_due(self.last_psi_90k, self.now_90k, PSI_INTERVAL_90K)
+        } else {
+            self.last_psi.is_none_or(|t| t.elapsed() >= PSI_INTERVAL)
+        };
+        let due = !self.psi_written || force || interval_due;
         if !due {
             return;
         }
@@ -311,6 +375,7 @@ impl TsMux {
         self.write_pmt();
         self.psi_written = true;
         self.last_psi = Some(Instant::now());
+        self.last_psi_90k = self.now_90k;
     }
 
     fn write_pat(&mut self) {
@@ -413,8 +478,8 @@ impl TsMux {
             data = &data[len..];
         }
 
-        let pts90 = to_90k(frame.pts, info.timescale);
-        let dts90 = to_90k(frame.dts, info.timescale);
+        let pts90 = self.pes_ts(frame.pts, info.timescale);
+        let dts90 = self.pes_ts(frame.dts, info.timescale);
         let header = PesHeader {
             stream_id: StreamId::new(0xE0),
             priority: false,
@@ -443,7 +508,7 @@ impl TsMux {
         payload.extend_from_slice(&adts_header(frame.data.len(), profile, sfi, chan));
         payload.extend_from_slice(&frame.data);
 
-        let pts90 = to_90k(frame.pts, info.timescale);
+        let pts90 = self.pes_ts(frame.pts, info.timescale);
         let header = PesHeader {
             stream_id: StreamId::new(0xC0),
             priority: false,
@@ -625,6 +690,97 @@ mod tests {
         let out = mux.take_output();
         assert!(!out.is_empty());
         assert_eq!(out.len() % 188, 0);
+    }
+
+    /// (PAT packets, PCR bases on the video PID) in `out`.
+    fn pat_and_pcrs(out: &[u8]) -> (usize, Vec<u64>) {
+        let mut pats = 0;
+        let mut pcrs = Vec::new();
+        for p in out.chunks(188) {
+            let pid = u16::from_be_bytes([p[1], p[2]]) & 0x1FFF;
+            if pid == PAT_PID {
+                pats += 1;
+            }
+            if pid == VIDEO_PID && p[3] & 0x20 != 0 && p[4] >= 7 && p[5] & 0x10 != 0 {
+                let b = &p[6..11];
+                pcrs.push(
+                    (u64::from(b[0]) << 25)
+                        | (u64::from(b[1]) << 17)
+                        | (u64::from(b[2]) << 9)
+                        | (u64::from(b[3]) << 1)
+                        | (u64::from(b[4]) >> 7),
+                );
+            }
+        }
+        (pats, pcrs)
+    }
+
+    /// 2 s of 25 fps video muxed in one go, as a live-edge join hands it
+    /// over: the wall-clock muxer writes PSI and a PCR about once for the
+    /// lot; the media-clock muxer paces both by the frames' own DTS.
+    #[test]
+    fn media_clock_spaces_psi_and_pcr_by_timestamps() {
+        let video = video_track();
+        let frames: Vec<Frame> = (0..50i64)
+            .map(|i| Frame {
+                track: TrackId(0),
+                dts: 1_000_000 + i * 3600,
+                pts: 1_000_000 + i * 3600,
+                keyframe: i % 25 == 0,
+                data: Bytes::from_static(&[0, 0, 0, 2, 0x41, 0xAB]),
+            })
+            .collect();
+
+        let mut wall = TsMux::new();
+        wall.set_tracks(std::slice::from_ref(&video));
+        let mut media = TsMux::with_media_clock();
+        media.set_tracks(std::slice::from_ref(&video));
+        for f in &frames {
+            wall.push_frame(&video, f);
+            media.push_frame(&video, f);
+        }
+        let (wall_pats, wall_pcrs) = pat_and_pcrs(&wall.take_output());
+        let (pats, pcrs) = pat_and_pcrs(&media.take_output());
+
+        assert!(wall_pats <= 3 && wall_pcrs.len() <= 2, "wall clock: {wall_pats} PAT, {} PCR", wall_pcrs.len());
+        // Every 100 ms of media (9000 ticks at 3600 a frame: every third
+        // frame) plus the keyframes: 20 or so over 2 s.
+        assert!((17..=22).contains(&pats), "{pats} PAT");
+        assert_eq!(pcrs.len(), 50, "a PCR on every video frame");
+        assert_eq!(pcrs[0], 1_000_000, "PCR carries the frame's own DTS");
+        assert!(pcrs.windows(2).all(|w| w[1] - w[0] == 3600), "PCR follows the frames' DTS");
+
+        // PTS runs the mux delay ahead of the PCR sent with it.
+        let mut media = TsMux::with_media_clock();
+        media.set_tracks(std::slice::from_ref(&video));
+        media.push_frame(&video, &frames[0]);
+        let out = media.take_output();
+        let pes = out
+            .chunks(188)
+            .find(|p| u16::from_be_bytes([p[1], p[2]]) & 0x1FFF == VIDEO_PID && p[1] & 0x40 != 0)
+            .unwrap();
+        let start = 4 + if pes[3] & 0x20 != 0 { 1 + pes[4] as usize } else { 0 };
+        let b = &pes[start + 9..start + 14];
+        let pts = (u64::from(b[0] >> 1 & 7) << 30)
+            | (u64::from(b[1]) << 22)
+            | (u64::from(b[2] >> 1) << 15)
+            | (u64::from(b[3]) << 7)
+            | u64::from(b[4] >> 1);
+        assert_eq!(pts, 1_000_000 + MEDIA_CLOCK_DELAY_90K);
+    }
+
+    #[test]
+    fn media_interval_handles_interleave_and_resets() {
+        assert!(media_interval_due(None, Some(0), 9000));
+        assert!(!media_interval_due(Some(100_000), Some(108_999), 9000));
+        assert!(media_interval_due(Some(100_000), Some(109_000), 9000));
+        // Audio a few ms behind the last PSI: not due.
+        assert!(!media_interval_due(Some(100_000), Some(99_000), 9000));
+        // More than a second behind: a timestamp reset, due.
+        assert!(media_interval_due(Some(1_000_000), Some(0), 9000));
+        // Across the 33-bit wrap.
+        assert!(media_interval_due(Some(TS_TIMESTAMP_MASK - 100), Some(9000), 9000));
+        assert!(!media_interval_due(Some(TS_TIMESTAMP_MASK - 100), Some(100), 9000));
     }
 
     fn have(bin: &str) -> bool {

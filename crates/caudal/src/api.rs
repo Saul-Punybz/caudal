@@ -37,6 +37,8 @@ pub struct AppState {
     captions: std::sync::OnceLock<caudal_captions::Captions>,
     /// Set once on a cluster edge; `/metrics` appends its pull metrics.
     edge: std::sync::OnceLock<caudal_cluster::Edge>,
+    /// Set once at startup; `/metrics` appends `caudal_multicast_*`.
+    multicast: std::sync::OnceLock<caudal_multicast::MulticastHandle>,
 }
 
 impl AppState {
@@ -50,6 +52,7 @@ impl AppState {
             #[cfg(feature = "captions")]
             captions: std::sync::OnceLock::new(),
             edge: std::sync::OnceLock::new(),
+            multicast: std::sync::OnceLock::new(),
         })
     }
 
@@ -72,6 +75,10 @@ impl AppState {
     #[cfg(feature = "captions")]
     pub fn set_captions(&self, captions: caudal_captions::Captions) {
         let _ = self.captions.set(captions);
+    }
+
+    pub fn set_multicast(&self, handle: caudal_multicast::MulticastHandle) {
+        let _ = self.multicast.set(handle);
     }
 
     pub fn set_edge(&self, edge: caudal_cluster::Edge) {
@@ -259,6 +266,9 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     }
     if let Some(edge) = state.edge.get() {
         edge.render_metrics(&mut body);
+    }
+    if let Some(multicast) = state.multicast.get() {
+        multicast.render_metrics(&mut body);
     }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }

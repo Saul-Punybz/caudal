@@ -612,7 +612,6 @@ def mist_sizes():
         total = sum(os.path.getsize(os.path.join(MIST_DIR, n)) for n in used
                     if os.path.isfile(os.path.join(MIST_DIR, n)))
         return {"mistserver_used": round(total / 1e6, 2)}
-    import re
     total = arm = arm_used = 0
     for name in sorted(os.listdir(MIST_DIR)):
         path = os.path.join(MIST_DIR, name)

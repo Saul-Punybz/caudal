@@ -10,6 +10,10 @@ generated tables next to them (`.md`). The latency rows were re-measured
 the same evening with a corrected decoder command
 (`bench/results/20260918-225809.jsonl`); see Latency.
 
+MistServer joins this benchmark as a third server, built from source and run
+on GitHub's Linux runners (never on the developer's laptop): see
+[`docs/research/BENCH-MISTSERVER.md`](BENCH-MISTSERVER.md).
+
 ## Short answer
 
 | Metric | Caudal | MediaMTX | Verdict |

@@ -56,6 +56,28 @@ chunks). RTF = inference time / audio time; below 1 keeps up. Word accuracy
   `opt-level = 3` in the dev profile (workspace `Cargo.toml`); the engine
   test measured RTF 0.05 for tiny on Metal in a debug build.
 
+## Languages: what is verified and what is not
+
+The models `caudal captions fetch-model` downloads (`tiny`, `base`, `small`)
+are Whisper's **multilingual** models (not the English-only `.en` ones),
+trained on about 99 languages. `[[captions.stream]] language` accepts
+`auto` (detected per chunk) or any 2–3 letter language code the model knows
+(`es`, `en`, `pt`, `fr`, `de`, ...).
+
+- **Verified: Spanish and English only.** Measured on an Apple M4 with
+  generated speech (table above): 96–99 % of words right with `tiny`,
+  language detection between the two correct, viewer labels
+  "Español (auto)" / "English (auto)".
+- **Not verified: every other language.** Caudal passes the code to the
+  model and it will produce captions, but nobody has measured their
+  quality. Whisper is known to do well on high-resource languages
+  (Portuguese, French, German, Italian) and much worse on low-resource
+  ones, especially with `tiny`; for a language other than Spanish or
+  English, start with `small` (about 3 cores on CPU) and check the output
+  before relying on it.
+- The subtitle rendition's `NAME` for other languages is the plain code
+  (e.g. `pt (auto)`), not a localized name.
+
 ## Pipeline
 
 ```

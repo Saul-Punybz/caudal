@@ -251,7 +251,9 @@ max_mb = 256  # Maximum buffer size in megabytes
 # max_streams = 2           # streams captioned at once; later ones get none
 # [[captions.stream]]
 # streams = ["noticias*"]   # names or prefix* globs; renditions (name+label) share the source's captions
-# language = "es"           # es | en | auto (detected per chunk)
+# language = "es"           # es | en | auto (detected per chunk) | any code the model knows (pt, fr, ...)
+#                           # Verified: Spanish and English only; other languages work but their
+#                           # quality is unmeasured (docs/research/CAPTIONS.md, "Languages").
 
 # Origin-edge clustering (docs/research/CLUSTER.md). Publishers push to any
 # origin; viewers connect to any edge. An edge pulls a stream over MoQ from

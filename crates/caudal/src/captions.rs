@@ -90,7 +90,11 @@ impl CaptionsSection {
                 code if (2..=3).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_lowercase()) => {
                     caudal_captions::Language::Fixed(code.to_owned())
                 }
-                other => return Err(format!("[[captions.stream]] language `{other}` (es, en or auto)")),
+                other => {
+                    return Err(format!(
+                        "[[captions.stream]] language `{other}`: a 2-3 letter code (es, en, pt, ...) or auto"
+                    ));
+                }
             };
             rules.push(caudal_captions::StreamRule { streams: s.streams.clone(), language });
         }

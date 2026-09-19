@@ -1,21 +1,25 @@
 # STATUS — Caudal
 
-**Last updated:** 19 Sep 2026, ~12:00 UTC (18 PRs merged; main green; see RESUME HERE)
+**Last updated:** 19 Sep 2026, ~12:30 UTC (PAUSED; v0.1 in progress; see RESUME HERE)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (19 Sep 2026, ~12:00 UTC) — read this first in a new session
-**Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI + local gate are green; up to 5 agents but ONE heavy local job at a time (shared lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); heavy benchmarks run on GitHub (`bench.yml`, workflow_dispatch), never on the laptop (it overheated once today); a question from Saul is not a request.
+## RESUME HERE (19 Sep 2026, ~12:30 UTC, PAUSED by Saul: "stop, save and we will continue later")
+**Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI + local gate are green; up to 5 agents but ONE heavy local job at a time (shared lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); heavy benchmarks and soak on GitHub (`bench.yml`), never on the laptop; a question from Saul is not a request. Keep a health guard (load, free RAM, `pmset -g therm`) running while agents work.
 
-**main = `2804f25`, all CI green incl. browser.** Merged 19 Sep (18 PRs): #1–#14 (see git log), #15 live captions (candle Whisper, es/en verified; `captions` cargo feature default on, +2.9 MiB x86_64 / +1.9 MiB aarch64 static; rusty_aac FFT IMDCT patch — the O(N²) decoder was slower than real time on x86, reported upstream remade_ffmpeg_rs#16), #16 benchmarks on GitHub Linux runners, #17 RTSP one write per frame (Linux: x100 11.5 % vs MediaMTX 63 %, x300 30 % vs 184 %), #18 IP multicast output (TS/RTP, verified with ffprobe/ffmpeg/TSDuck; Linux runner too).
+**main = `a8b1f78`, CI green.** 18 PRs merged 19 Sep (see git log; highlights: RTSP ~6x less CPU than MediaMTX on Linux, IP multicast output, live captions es/en with a `captions` cargo feature, origin-edge clustering, failover, fuzzing).
 
-**Running:** agent finishing `perf/webrtc-batched-send` (quinn-udp GSO/batch; macOS x100 69→58 %, x300 315→293 %; Linux before/after runs on bench.yml pending), then its PR.
-**Set aside by Saul:** MistServer in the bench (branch `bench/mistserver`, see below); MCP server (future, PLAN batch 14).
-**v0.1 scope (approved by Saul, 19 Sep 2026):** the running item + RSS per live stream + soak test + v0.1 release (static binaries x86_64/aarch64 + GHCR image) + Saul's OBS glass-to-glass check.
+**v0.1 scope (approved by Saul)** — status at pause, all agents stopped, every WIP pushed:
+1. Batched UDP sends for WebRTC — branch `perf/webrtc-batched-send` @ 3305c4f (code clean + 8 grouping unit tests; macOS x100 69→58 %, x300 315→293 %). TODO: Linux before/after with `gh workflow run bench.yml --ref <main|branch> -f protos=whep -f levels=100,300 -f reps=3 -f servers=caudal,mediamtx`, update BENCH doc, PR.
+2. RSS per live stream (98 vs 80 MB) — branch `perf/rss-per-stream` @ 8ce4236 (WIP: dhat feature started, nothing measured). TODO: measure on Linux (`-f only=idle`), fix, PR.
+3. Soak test — not started on a branch (agent was reading bench.py; plan: `.github/workflows/soak.yml`, 2 h on GitHub, RSS/fd/threads/CPU CSV + verdict).
+4. Release — branch `release/v0.1-pipeline` @ 97ba0d8 (WIP: Dockerfile.release + release notes draft; no workflow yet). TODO: `release.yml` on tag push + dry-run dispatch, GHCR multi-arch, Helm appVersion 0.1.0. Tag `v0.1.0` only after 1–3 merge.
+5. Saul's OBS glass-to-glass check (docs agent had started `docs/QUICKSTART.md` + `docs/OBS.md`; nothing saved — restart it).
 
-**Queue after that:** kTLS + sendfile (batch 13), io_uring/pacing evaluation, OMT protocol, Raspberry Pi image, MoQ on Safari, DASH, player SDKs, watermarking, CEA-608, GPU transcoding, TEST-AUDIT phase 2/3.
-**MistServer bench (set aside):** `bench/mistserver` @ c553882 builds MistServer 3.11.2 on the runner with its own mbedtls 3.6.6 (Ubuntu's 2.28 breaks it); last blocker: binaries need libmist.so + subproject .so at run time → next step `meson setup --default-library=static`. MistServer's LL-HLS part is a compile-time 500 ms (vs 200 ms) — note it in any comparison.
+**Set aside:** MistServer bench (`bench/mistserver` @ c553882; next: `meson setup --default-library=static`; MistServer LL-HLS part is a fixed 500 ms); MCP server (future).
+**After v0.1:** kTLS + sendfile, io_uring/pacing, OMT, Raspberry Pi image, MoQ on Safari, DASH, SDKs, watermarking, CEA-608, GPU transcoding, TEST-AUDIT phase 2/3.
+**Status page:** https://claude.ai/artifact/NGCn3AzWdLEKLGQkvuT56A (source in the session scratchpad; republish with `url`).
 **Rule from Saul:** verify with tools outside Claude; say what is not verified.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps

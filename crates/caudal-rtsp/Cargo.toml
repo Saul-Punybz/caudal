@@ -26,6 +26,7 @@ scuffle-h265 = "0.2.2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [dev-dependencies]
+rustix.workspace = true
 mp4-atom = "0.15.0"
 rcgen = "0.13"
 tempfile = "3"

@@ -11,6 +11,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Saul-Punybz/caudal"
 
 [workspace.dependencies]
+# Signals to process groups (`kill -KILL -<pgid>` via /bin/kill kills every
+# process of the user on Linux procps; see caudal-transcode ffmpeg.rs).
+rustix = { version = "1", features = ["process"] }
 arc-swap = "1"
 bytes = "1"
 parking_lot = "0.12"

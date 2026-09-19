@@ -21,6 +21,12 @@ cargo build --release
 TLS, clock, tools, and (with `--url`) a running server's stream codecs.
 Each check prints OK/WARN/FAIL with a fix; see `caudal doctor --help`.
 
+Migrating from MistServer: `caudal import-mist <mistserver.conf|config.json>`
+reads its config and writes a `caudal.toml` plus a report of every setting
+translated, approximated, or with no Caudal equivalent (user accounts, for
+one — hash new passwords with `caudal hash-password`). It fails without
+writing anything if the generated file doesn't pass `caudal check`.
+
 ## Deploy
 
 A Helm chart is at [deploy/helm/caudal](deploy/helm/caudal) (README there);

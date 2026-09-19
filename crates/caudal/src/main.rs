@@ -8,6 +8,7 @@ mod api;
 mod captions;
 mod config;
 mod doctor;
+mod import_mist;
 mod metrics;
 mod reload;
 mod shutdown;
@@ -58,6 +59,18 @@ enum Command {
         /// play over the configured outputs.
         #[arg(long)]
         url: Option<String>,
+    },
+    /// Imports a MistServer `config.json`/`mistserver.conf` (JSON either
+    /// way), writing a Caudal config plus a report of every setting
+    /// translated, approximated, or with no Caudal equivalent. Fails
+    /// (writing nothing) if the generated file doesn't itself pass
+    /// `caudal check`.
+    ImportMist {
+        /// Path to the MistServer config.
+        path: PathBuf,
+        /// Where to write the Caudal config.
+        #[arg(short = 'o', long, default_value = "caudal.toml")]
+        output: PathBuf,
     },
     /// Live captions tools.
     Captions {
@@ -124,6 +137,9 @@ fn main() -> ExitCode {
     }
     if let Some(Command::Captions { command: CaptionsCommand::FetchModel { name, dir } }) = &cli.command {
         return captions::fetch_model_cmd(name, dir);
+    }
+    if let Some(Command::ImportMist { path, output }) = &cli.command {
+        return import_mist::run(path, output);
     }
     if let Some(Command::Check { path }) = &cli.command {
         return match config::load(path) {
@@ -263,6 +279,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
                     tracing::info!(webhooks, "stream health alerts enabled");
                     let svc = std::sync::Arc::new(svc);
                     state.set_health(svc.clone());
+                    spawn_failover_webhooks(&started.failover, svc.clone());
                     svc.router()
                 }
                 Err(e) => {
@@ -274,6 +291,29 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         None => axum::Router::new(),
     };
 
+    // Origin-edge clustering: an origin answers edges' locate requests; an
+    // edge pulls a stream from its origins when its first viewer asks.
+    let cluster_router = match &cfg.cluster {
+        Some(c) => match c.edge_config(cfg.buffer.to_buffer_config()).expect("validated") {
+            None => {
+                tracing::info!(node_id = %c.node_id(), "cluster origin");
+                caudal_cluster::origin_router(registry.clone(), c.secret().expect("validated"), c.node_id())
+            }
+            Some(edge) => {
+                let origins = edge.origins.len();
+                match caudal_cluster::Edge::start(&registry, edge) {
+                    Ok(e) => {
+                        tracing::info!(node_id = %c.node_id(), origins, "cluster edge");
+                        state.set_edge(e);
+                    }
+                    Err(e) => tracing::error!(error = %e, "cluster edge disabled"),
+                }
+                axum::Router::new()
+            }
+        },
+        None => axum::Router::new(),
+    };
+
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
         .merge(hls_router)
@@ -281,9 +321,11 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         .merge(moq_router)
         .merge(record_router)
         .merge(started.channel_router)
+        .merge(started.failover_router)
         .merge(started.restream_router)
         .merge(reload::router(reload_state))
         .merge(health_router)
+        .merge(cluster_router)
         .merge(caudal_ui::router());
     let app = admin::wrap(app, admin);
 
@@ -337,4 +379,23 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Sends a `failover_switched` health webhook for every failover switch.
+fn spawn_failover_webhooks(
+    failover: &caudal_failover::FailoverHandle,
+    health: std::sync::Arc<caudal_health::HealthService>,
+) {
+    let mut switches = failover.subscribe_switches();
+    tokio::spawn(async move {
+        loop {
+            match switches.recv().await {
+                Ok(ev) => health.failover_switched(&ev.stream, ev.from.as_deref(), &ev.to, ev.reason),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(missed = n, "failover webhooks lagged");
+                }
+                Err(_) => return,
+            }
+        }
+    });
 }

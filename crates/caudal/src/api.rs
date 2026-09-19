@@ -34,6 +34,8 @@ pub struct AppState {
     /// Set once, if `[captions]` captions any stream; read by `/metrics`
     /// for `caudal_captions_*`.
     captions: std::sync::OnceLock<caudal_captions::Captions>,
+    /// Set once on a cluster edge; `/metrics` appends its pull metrics.
+    edge: std::sync::OnceLock<caudal_cluster::Edge>,
 }
 
 impl AppState {
@@ -45,6 +47,7 @@ impl AppState {
             health: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
             captions: std::sync::OnceLock::new(),
+            edge: std::sync::OnceLock::new(),
         })
     }
 
@@ -66,6 +69,10 @@ impl AppState {
 
     pub fn set_captions(&self, captions: caudal_captions::Captions) {
         let _ = self.captions.set(captions);
+    }
+
+    pub fn set_edge(&self, edge: caudal_cluster::Edge) {
+        let _ = self.edge.set(edge);
     }
 }
 
@@ -238,15 +245,17 @@ async fn post_cue(State(state): State<Arc<AppState>>, Path(name): Path<String>, 
 }
 
 async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let body = metrics::render(
+    let mut body = metrics::render(
         &state.registry,
         state.health.get().map(|h| h.as_ref()),
         state.access.get().map(|a| a.as_ref()),
     );
-    let body = match state.captions.get() {
-        Some(c) => body + &crate::captions::render_metrics(c),
-        None => body,
-    };
+    if let Some(c) = state.captions.get() {
+        body.push_str(&crate::captions::render_metrics(c));
+    }
+    if let Some(edge) = state.edge.get() {
+        edge.render_metrics(&mut body);
+    }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 

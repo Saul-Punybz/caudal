@@ -211,6 +211,37 @@ fn grow_buffers(sock: &std::net::UdpSocket) {
     );
 }
 
+/// Fuzz-only entry points into the SDP offer/answer parsing internals of
+/// this module, which are otherwise private. Not part of the public API;
+/// used by `fuzz/fuzz_targets/webrtc_sdp.rs`. Must never panic on any
+/// input; `engine.rs` (owned by other work) is never touched or called
+/// from here.
+#[doc(hidden)]
+pub mod fuzz {
+    use std::sync::Arc;
+
+    /// Exercises SDP offer parsing and ICE-lite negotiation exactly as
+    /// `whip_post`/`whep_post` do (str0m's offer parse and answer, then our
+    /// own `answer_codecs` scan), with no registry lookups or network I/O.
+    pub fn negotiate_offer(body: &[u8]) {
+        let st = crate::AppState {
+            registry: caudal_core::Registry::new(),
+            engines: None,
+            candidates: Arc::new(vec!["127.0.0.1:9".parse().unwrap()]),
+            buffer: caudal_core::BufferConfig::default(),
+            trusted_proxies: Arc::new(Vec::new()),
+        };
+        let _ = crate::negotiate(&st, body);
+    }
+
+    /// Exercises just the answer-codec line scan on arbitrary SDP-shaped
+    /// text (the `str0m`-produced answer is not the only input this ever
+    /// sees in practice; WHEP/WHIP offers can also reach it indirectly).
+    pub fn answer_codecs(sdp: &str) {
+        let _ = crate::answer_codecs(sdp);
+    }
+}
+
 // ---- HTTP ----
 
 fn plain(code: StatusCode, msg: &str) -> Response {
@@ -451,7 +482,8 @@ async fn whep_post(
     if let Err(d) = st.registry.authorize(Access::Play, &name, tok.as_deref(), ip).await {
         return denied(d);
     }
-    let Some(sub) = st.registry.subscribe(&name, StartAt::LiveEdge) else {
+    // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
+    let Some(sub) = st.registry.get_or_demand(&name).await.map(|s| s.subscribe(StartAt::LiveEdge)) else {
         return plain(StatusCode::NOT_FOUND, "no such stream");
     };
     let (rtc, sdp) = match negotiate(&st, &body) {

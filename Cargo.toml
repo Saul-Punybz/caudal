@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-exclude = ["vendor"]
+exclude = ["vendor", "fuzz"]
 
 [workspace.package]
 version = "0.1.0"
@@ -44,6 +44,8 @@ caudal-admin = { path = "crates/caudal-admin", version = "0.1.0" }
 caudal-health = { path = "crates/caudal-health", version = "0.1.0" }
 caudal-access = { path = "crates/caudal-access", version = "0.1.0" }
 caudal-captions = { path = "crates/caudal-captions", version = "0.1.0" }
+caudal-cluster = { path = "crates/caudal-cluster", version = "0.1.0" }
+caudal-failover = { path = "crates/caudal-failover", version = "0.1.0" }
 
 # argon2 unoptimized takes seconds per hash, which makes debug tests crawl.
 [profile.dev.package.argon2]
@@ -97,5 +99,28 @@ panic = "unwind"
 
 # scuffle-rtmp 0.2.3 (latest) froze timestamps on Type 3 chunks that start a
 # new message. Patched copy with a regression test; see vendor/README.md.
+#
+# scuffle-amf0 0.2.4 (latest) took a 4-byte, wire-controlled AMF0
+# EcmaArray/StrictArray element count as a `Vec`/`HashMap` capacity hint
+# with no bound, so a few bytes from any RTMP publisher could make it try
+# to pre-allocate gigabytes -- and a failed allocation aborts the whole
+# process, not just one connection. Patched copy with regression tests; see
+# vendor/README.md.
+#
+# scuffle-h264 0.2.2 (latest): `Sps::width()`/`height()` compute
+# `base - crop_offset * 2` with plain arithmetic; a parseable-but-nonsense
+# SPS with crop offsets bigger than the frame panicked (debug builds,
+# which includes every test and fuzz run) or silently produced a bogus
+# width (release). Patched copy with a regression test; see
+# vendor/README.md.
+#
+# scuffle-expgolomb 0.1.5 (latest): `read_exp_golomb` (used by every
+# exp-Golomb field scuffle-h264/h265 read, i.e. most of an SPS/PPS) built
+# its result as `1 << leading_zeros`; at 64+ leading zero bits that is
+# already 0 in a u64, and the following `result - 1` underflowed and
+# panicked. Patched copy with a regression test; see vendor/README.md.
 [patch.crates-io]
 scuffle-rtmp = { path = "vendor/scuffle-rtmp" }
+scuffle-amf0 = { path = "vendor/scuffle-amf0" }
+scuffle-h264 = { path = "vendor/scuffle-h264" }
+scuffle-expgolomb = { path = "vendor/scuffle-expgolomb" }

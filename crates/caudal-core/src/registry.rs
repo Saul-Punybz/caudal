@@ -1,7 +1,10 @@
 //! Stream names to live streams, with one publisher per name.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::broadcast;
@@ -27,6 +30,26 @@ pub struct Registry {
     // publish/play request, never per frame, so this is not the hot path
     // rule 3 in the reload brief means to keep lock-free.
     gate: RwLock<Option<Arc<dyn Gate>>>,
+    /// Where a viewer's request for an unknown name goes (a cluster edge
+    /// pulling from its origin). Same locking rationale as `gate`.
+    demand: RwLock<Option<Arc<dyn Demand>>>,
+}
+
+/// Longest [`Registry::get_or_demand`] waits for a [`Demand`] to bring a
+/// stream up, whatever the demand source does.
+pub const DEMAND_TIMEOUT: Duration = Duration::from_secs(15);
+
+pub type DemandFuture<'a> = Pin<Box<dyn Future<Output = Option<Arc<Stream>>> + Send + 'a>>;
+
+/// A source of streams on demand: asked when a viewer wants a name that
+/// no publisher is feeding. A cluster edge implements it by pulling the
+/// stream from an origin and publishing it into this registry as a normal
+/// stream, so every output serves it unchanged.
+pub trait Demand: Send + Sync + 'static {
+    /// Brings `name` up if it can and resolves to the published stream, or
+    /// `None` when no source has it. Called concurrently for the same name
+    /// by many viewers; implementations start one source per name.
+    fn demand<'a>(&'a self, name: &'a str) -> DemandFuture<'a>;
 }
 
 impl Default for Registry {
@@ -36,6 +59,7 @@ impl Default for Registry {
             published: broadcast::channel(64).0,
             ended: broadcast::channel(64).0,
             gate: RwLock::new(None),
+            demand: RwLock::new(None),
         }
     }
 }
@@ -110,6 +134,30 @@ impl Registry {
         self.streams.lock().get(name).cloned()
     }
 
+    /// Installs the source asked for streams nobody publishes here (see
+    /// [`Demand`]). Without one, [`Registry::get_or_demand`] is `get`.
+    pub fn set_demand(&self, demand: Arc<dyn Demand>) {
+        *self.demand.write() = Some(demand);
+    }
+
+    /// The live stream `name`; if there is none, asks the installed
+    /// [`Demand`] source and waits (at most [`DEMAND_TIMEOUT`]) for it to
+    /// publish. Outputs call this for a viewer who already passed
+    /// `authorize`, so an unauthorized request never starts a pull.
+    pub async fn get_or_demand(&self, name: &str) -> Option<Arc<Stream>> {
+        if let Some(s) = self.get(name) {
+            return Some(s);
+        }
+        if !valid_stream_name(name) {
+            return None;
+        }
+        let demand = self.demand.read().clone()?;
+        match tokio::time::timeout(DEMAND_TIMEOUT, demand.demand(name)).await {
+            Ok(Some(s)) if !s.is_ended() => Some(s),
+            _ => self.get(name),
+        }
+    }
+
     pub fn subscribe(&self, name: &str, start: StartAt) -> Option<Subscriber> {
         self.get(name).map(|s| s.subscribe(start))
     }
@@ -161,5 +209,50 @@ impl Drop for Publisher {
         drop(map);
         let _ = self.registry.ended.send(self.stream.name().into());
         tracing::info!(stream = %self.stream.name(), "publish ended");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Weak;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// Publishes any name it is asked for, and keeps the publisher.
+    struct Source {
+        registry: Weak<Registry>,
+        asked: AtomicUsize,
+        held: Mutex<Vec<Publisher>>,
+    }
+
+    impl Demand for Source {
+        fn demand<'a>(&'a self, name: &'a str) -> DemandFuture<'a> {
+            Box::pin(async move {
+                self.asked.fetch_add(1, Ordering::Relaxed);
+                let p = self.registry.upgrade()?.publish(name, BufferConfig::default()).ok()?;
+                let s = p.stream().clone();
+                self.held.lock().push(p);
+                Some(s)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn get_or_demand() {
+        let reg = Registry::new();
+        assert!(reg.get_or_demand("cam").await.is_none(), "no demand source: plain get");
+
+        let src =
+            Arc::new(Source { registry: Arc::downgrade(&reg), asked: AtomicUsize::new(0), held: Mutex::default() });
+        reg.set_demand(src.clone());
+        let s = reg.get_or_demand("cam").await.expect("brought up on demand");
+        assert!(Arc::ptr_eq(&s, &reg.get("cam").unwrap()));
+        // Live now: no second demand.
+        assert!(Arc::ptr_eq(&s, &reg.get_or_demand("cam").await.unwrap()));
+        assert_eq!(src.asked.load(Ordering::Relaxed), 1);
+        // Names that can never exist are not asked for.
+        assert!(reg.get_or_demand("../x").await.is_none());
+        assert_eq!(src.asked.load(Ordering::Relaxed), 1);
     }
 }

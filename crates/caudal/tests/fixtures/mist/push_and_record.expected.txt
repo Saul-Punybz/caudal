@@ -1,0 +1,17 @@
+3 translated, 1 approximated, 5 with no Caudal equivalent
+
+Translated:
+  config.protocols[connector=RTMP]: -> `[rtmp] bind` on port 1935
+  auto_push[stream=main]: -> `[[restream]]` stream="main" url="rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"
+  auto_push[stream=backup]: -> `[[restream]]` stream="backup" url="rtmp://live.twitch.tv/app/live_xxxxxxxx"
+
+Approximated:
+  auto_push[stream=main]: file target `/records/main/$Y$m$d.mp4` -> `[record]` streams += ["main"]; MistServer's per-push path pattern (e.g. `$Y$m$d`) is not reproduced — Caudal always writes to `<dir>/<stream>/<timestamp>/`
+
+No Caudal equivalent:
+  auto_push[stream=backup]: scheduletime: Caudal's `[[restream]]`/`[record]` have no scheduling, variable rules, or inhibit condition — the push runs immediately and always while the stream is live
+  config.triggers.PUSH_REWRITE: 1 handler(s): MistServer triggers are synchronous calls that can rewrite or cancel the action they fire on (controller_storage.cpp, ~line 930); Caudal's closest features are `[hooks]` (signed webhooks, fire-and-forget, only on stream.started/stream.ended) and `[health]` (alerts on stream problems) — neither can rewrite or block anything. Configure `[hooks]`/`[health]` by hand if you need notifications.
+  config.triggers.STREAM_BUFFER: 1 handler(s): MistServer triggers are synchronous calls that can rewrite or cancel the action they fire on (controller_storage.cpp, ~line 930); Caudal's closest features are `[hooks]` (signed webhooks, fire-and-forget, only on stream.started/stream.ended) and `[health]` (alerts on stream problems) — neither can rewrite or block anything. Configure `[hooks]`/`[health]` by hand if you need notifications.
+  account: 1 user(s) (ana) not migrated: MistServer hashes passwords with MD5 (controller.cpp's createAccount), Caudal uses argon2id. Run `caudal hash-password` for each user and fill in the commented `[admin]` block below.
+  (none — always noted): a commented-out `[admin]` block is included below: without `[admin]`, Caudal refuses to listen on anything but loopback (see caudal.example.toml)
+

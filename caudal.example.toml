@@ -2,6 +2,9 @@
 # `caudal doctor [--config <path>]` checks the setup it describes — ports,
 # NAT, TLS, clock, tools — and prints what to fix; add `--url http://host:port`
 # once a server is running to also flag stream codecs a browser can't play.
+# Migrating from MistServer instead of starting from scratch? Skip this file:
+# `caudal import-mist <mistserver.conf|config.json>` writes one for you, plus
+# a report of what was translated, approximated, or has no Caudal equivalent.
 
 [server]
 # HTTP server bind address. Without an [admin] login (below) Caudal refuses
@@ -100,6 +103,26 @@ max_mb = 256  # Maximum buffer size in megabytes
 # loop = true      # default true; false ends the stream after the last item
 # shuffle = false  # default false; reshuffles on every pass
 
+# Backup sources: viewers play `stream`, fed by the first healthy entry of
+# `sources` (priority order). A source is an ingest stream name (any protocol:
+# RTMP, SRT, WHIP, an [[rtsp.pull]]) or `file:<path>`, a file looped by the
+# channel player (it runs only while on air, as stream `failover.<stream>.<n>`).
+# The active source sending no frames for `switch_after_ms` hands over to the
+# next healthy one on its newest keyframe; a better-ranked source healthy for
+# `switch_back_after_secs` takes back over. Timestamps continue across every
+# switch, so players never restart; a source with different codec parameters
+# starts a new EXT-X-MAP after an EXT-X-DISCONTINUITY in LL-HLS.
+# GET /api/v1/failover shows the active source, per-source health and the
+# last switches. POST /api/v1/failover/{stream}/switch {"source": "main-backup"}
+# switches now and prefers that source until {"source": null} (automatic).
+# With [health] webhooks, every switch also sends a `failover_switched` event.
+# Hot-reloadable; `stream` must not also be a [[channel]].
+# [[failover]]
+# stream = "main"
+# sources = ["main-primary", "main-backup", "file:/media/slate.mp4"]
+# switch_after_ms = 2000        # default 2000
+# switch_back_after_secs = 10   # default 10
+
 # Multistreaming: push a stream to one or more RTMP/RTMPS ingests while it is
 # live, reconnecting with backoff. The stream key is never logged and shows as
 # **** in GET /api/v1/restreams. H.264 and AAC; H.265, AV1 and Opus as Enhanced RTMP.
@@ -186,3 +209,26 @@ max_mb = 256  # Maximum buffer size in megabytes
 # [[captions.stream]]
 # streams = ["noticias*"]   # names or prefix* globs; renditions (name+label) share the source's captions
 # language = "es"           # es | en | auto (detected per chunk)
+
+# Origin-edge clustering (docs/research/CLUSTER.md). Publishers push to any
+# origin; viewers connect to any edge. An edge pulls a stream over MoQ from
+# the first origin that has it when its first viewer asks (LL-HLS, WHEP,
+# RTSP or SRT play), shares that one pull between all its viewers, stops it
+# idle_timeout_secs after the last viewer leaves, and moves to the next
+# origin without restarting its viewers when the current one goes away.
+# Origins need [moq] enabled. Every node uses the same `secret`; a node's
+# token plays any stream on an origin, past [auth] and [[access.rules]]
+# (the edge applies its own to its viewers). Absent: a standalone server.
+#
+# [cluster]
+# role = "origin"
+# node_id = "origin-a"                     # logs and tokens; default "caudal"
+# secret = "change-me-shared-cluster-secret" # >= 16 bytes, same on every node
+#
+# [cluster]
+# role = "edge"
+# node_id = "edge-1"
+# secret = "change-me-shared-cluster-secret"
+# origins = ["http://origin-a:8080", "http://origin-b:8080"]  # HTTP base URLs, tried in order
+# idle_timeout_secs = 30                   # stop pulling this long after the last viewer
+# source_timeout_secs = 10                 # end the stream when no origin has it this long

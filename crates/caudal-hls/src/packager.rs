@@ -473,6 +473,18 @@ impl Packager {
                 if new.key && seg_len >= seg_min {
                     self.close_part();
                     self.close_segment();
+                } else if new.key && !audio && !self.part.is_empty() {
+                    // A keyframe off the segment cadence (a source switch, a
+                    // scene cut): it starts its own part, marked INDEPENDENT.
+                    // The part before it is cut short, and a short part is
+                    // only allowed as INDEPENDENT or last in its segment
+                    // (under 85% of PART-TARGET otherwise), so unless it is
+                    // long enough the segment ends here too.
+                    let long_enough = self.part_span() * 100 >= self.part_max() * 85;
+                    self.close_part();
+                    if !long_enough {
+                        self.close_segment();
+                    }
                 } else if !self.part.is_empty() && self.part_span() + d > self.part_max() {
                     self.close_part();
                 }

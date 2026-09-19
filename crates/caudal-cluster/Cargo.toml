@@ -1,0 +1,31 @@
+[package]
+name = "caudal-cluster"
+description = "Origin-edge clustering for Caudal: edges pull streams from origins over MoQ on the first viewer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+axum.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+url = "2"
+# Same exact pins as caudal-moq (the moq-dev crates move fast); their types
+# stay inside this crate.
+moq-net = "=0.2.22"
+hang = "=0.20.13"
+moq-native = { version = "=0.19.19", default-features = false, features = ["quinn", "ring"] }
+
+[dev-dependencies]
+caudal-moq.workspace = true
+mp4-atom = "0.15.0"

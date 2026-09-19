@@ -77,7 +77,10 @@ fn denied(d: Denied) -> Resp {
 }
 
 /// `(stream name, path segments, ?token=)` from a request's URI.
-fn parse_uri(req: &Request<Vec<u8>>) -> Option<(String, Vec<String>, Option<String>)> {
+///
+/// `pub(crate)` (rather than private) only so `crate::fuzz` can reach it;
+/// see `fuzz/fuzz_targets/rtsp_request.rs`.
+pub(crate) fn parse_uri(req: &Request<Vec<u8>>) -> Option<(String, Vec<String>, Option<String>)> {
     let uri: &Url = req.request_uri()?;
     let token = uri.query_pairs().find(|(k, _)| k.as_ref() == "token").map(|(_, v)| v.into_owned());
     let segments: Vec<String> = uri.path_segments()?.filter(|s| !s.is_empty()).map(str::to_owned).collect();
@@ -416,7 +419,8 @@ async fn handle_describe(req: &Request<Vec<u8>>, registry: &Arc<Registry>, state
     if let Err(d) = registry.authorize(Access::Play, &name, token.as_deref(), Some(state.peer_ip)).await {
         return denied(d);
     }
-    let Some(stream) = registry.get(&name) else {
+    // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
+    let Some(stream) = registry.get_or_demand(&name).await else {
         return simple(StatusCode::NotFound);
     };
     let tracks = stream.tracks();
@@ -442,7 +446,7 @@ fn session_mismatch(req: &Request<Vec<u8>>, state: &ConnState) -> Option<Resp> {
 
 /// One transport SETUP picked from the client's offered alternatives, in
 /// the order the client listed them.
-enum Chosen {
+pub(crate) enum Chosen {
     Tcp { ch0: u8, ch1: u8 },
     Udp { client_rtp_port: u16, client_rtcp_port: u16 },
 }
@@ -451,7 +455,10 @@ enum Chosen {
 /// interleaved always, UDP unicast only when the connection isn't TLS
 /// (RTSPS keeps media inside the encrypted channel). Multicast, and a TLS
 /// connection offering only UDP, fall through to `None` (461).
-fn choose_transport(transports: &Transports, is_tls: bool) -> Option<Chosen> {
+///
+/// `pub(crate)` only so `crate::fuzz` can reach it; see
+/// `fuzz/fuzz_targets/rtsp_request.rs`.
+pub(crate) fn choose_transport(transports: &Transports, is_tls: bool) -> Option<Chosen> {
     transports.iter().find_map(|t| {
         let Transport::Rtp(RtpTransport {
             params: RtpTransportParameters { multicast, interleaved, client_port, .. },

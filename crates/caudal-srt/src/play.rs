@@ -27,7 +27,8 @@ pub(crate) async fn handle(
         tracing::info!(%peer, stream = %name, reason = ?denied, "srt play rejected");
         return;
     }
-    let Some(stream) = registry.get(name) else {
+    // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
+    let Some(stream) = registry.get_or_demand(name).await else {
         tracing::debug!(%peer, stream = %name, "srt play rejected: stream not found");
         return;
     };

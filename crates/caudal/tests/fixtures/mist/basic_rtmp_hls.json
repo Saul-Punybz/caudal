@@ -1,0 +1,15 @@
+{
+  "config": {
+    "protocols": [
+      {"connector": "RTMP", "port": 1935},
+      {"connector": "HTTP", "port": 8080},
+      {"connector": "HLS"}
+    ]
+  },
+  "streams": {
+    "live-main": {
+      "source": "push://10.0.0.5",
+      "DVR": 30000
+    }
+  }
+}

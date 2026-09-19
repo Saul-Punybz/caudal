@@ -1,0 +1,4 @@
+SETUP rtsp://127.0.0.1:8554/stream/streamid=0 RTSP/1.0
+CSeq: 3
+Transport: RTP/AVP;unicast;client_port=4000-4001
+

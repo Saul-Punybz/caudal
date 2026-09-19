@@ -44,6 +44,9 @@ const PUBLIC_AUTH: [&str; 4] =
 /// (`[auth]`) where one is required. Players and encoders cannot log in.
 const PUBLIC_PREFIXES: [&str; 6] = ["/hls/", "/play/", "/vod/", "/whip/", "/whep/", "/moq/"];
 
+/// Origin-edge cluster endpoints (`caudal-cluster`).
+const CLUSTER_PREFIX: &str = "/api/v1/cluster/";
+
 /// Whether a request needs an admin. Everything under `/api/` does
 /// (except logging in), `/metrics` does unless `public_metrics`; media and
 /// probes do not; the UI's static files are public for `GET`/`HEAD` (they
@@ -51,6 +54,11 @@ const PUBLIC_PREFIXES: [&str; 6] = ["/hls/", "/play/", "/vod/", "/whip/", "/whep
 /// path nobody claimed is refused, so a future route defaults to closed.
 pub fn needs_admin(method: &Method, path: &str, public_metrics: bool) -> bool {
     if PUBLIC_AUTH.contains(&path) {
+        return false;
+    }
+    // Inter-node traffic carries its own credential (the `[cluster]`
+    // secret's token), checked by the handler.
+    if path.starts_with(CLUSTER_PREFIX) {
         return false;
     }
     if path == "/api" || path.starts_with("/api/") {
@@ -334,6 +342,7 @@ mod tests {
             "/vod/live/1/index.m3u8",
             "/moq/fingerprint",
             "/api/v1/auth/session",
+            "/api/v1/cluster/locate/live",
             "/",
             "/streams/live",
             "/assets/index.js",

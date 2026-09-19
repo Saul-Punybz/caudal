@@ -1,0 +1,18 @@
+{
+  "config": {
+    "protocols": [
+      {"connector": "RTSP", "port": 8554},
+      {"connector": "TSSRT", "port": 9000},
+      {"connector": "WebRTC"},
+      {"connector": "HTTPTS", "port": 8081}
+    ]
+  },
+  "streams": {
+    "cam1": {"source": "rtsp://user:pass@192.0.2.10/stream1"},
+    "tv": {"source": "/media/intro.mp4"},
+    "vod-library": {"source": "/media/shows"}
+  },
+  "autopushes": [
+    ["main", "rtmp://backup.example.com/live/main"]
+  ]
+}

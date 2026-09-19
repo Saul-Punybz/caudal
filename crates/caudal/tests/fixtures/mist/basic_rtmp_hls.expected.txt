@@ -1,0 +1,14 @@
+3 translated, 2 approximated, 1 with no Caudal equivalent
+
+Translated:
+  config.protocols[connector=RTMP]: -> `[rtmp] bind` on port 1935
+  config.protocols[connector=HLS]: served on `[server] http_bind` already: MistServer's HLS output has no port of its own either (`capa["deps"] = "HTTP"` in output_hls.cpp), it rides the HTTP connector
+  streams.live-main.source: `push://10.0.0.5` -> `[[access.rules]]` streams=["live-main"] publish_allow=["10.0.0.5"]
+
+Approximated:
+  config.protocols[connector=HTTP]: -> `[server] http_bind` on port 8080; bound to 127.0.0.1, not MistServer's usual 0.0.0.0: without `[admin]` Caudal refuses to start on a non-loopback address — set up `[admin]` (commented in below), then change this to 0.0.0.0 to match MistServer's original reach
+  streams.live-main.DVR: -> `[buffer] window_secs` (30000 ms asked here); Caudal's buffer window is one global setting, not per stream, so the largest DVR across all streams wins
+
+No Caudal equivalent:
+  (none — always noted): a commented-out `[admin]` block is included below: without `[admin]`, Caudal refuses to listen on anything but loopback (see caudal.example.toml)
+

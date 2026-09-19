@@ -119,8 +119,14 @@ pub fn render_metrics(c: &caudal_captions::Captions) -> String {
     let _ = writeln!(out, "# HELP caudal_captions_engine_panics_total Inference panics caught and recovered from.");
     let _ = writeln!(out, "# TYPE caudal_captions_engine_panics_total counter");
     let _ = writeln!(out, "caudal_captions_engine_panics_total {}", c.engine_panics());
-    let series: [Series; 6] = [
+    let series: [Series; 8] = [
         ("caudal_captions_chunks_total", "counter", "Audio chunks transcribed.", |s| s.chunks as f64),
+        (
+            "caudal_captions_inferences_total",
+            "counter",
+            "Inference runs (chunks queued while the engine was busy share one).",
+            |s| s.inferences as f64,
+        ),
         ("caudal_captions_cues_total", "counter", "Caption cues produced.", |s| s.cues as f64),
         (
             "caudal_captions_dropped_audio_seconds_total",
@@ -131,9 +137,18 @@ pub fn render_metrics(c: &caudal_captions::Captions) -> String {
         ("caudal_captions_dropped_chunks_total", "counter", "Chunks dropped because transcription fell behind.", |s| {
             s.dropped_chunks as f64
         }),
-        ("caudal_captions_real_time_factor", "gauge", "Inference time / audio time of the last chunk.", |s| {
-            s.real_time_factor
-        }),
+        (
+            "caudal_captions_real_time_factor",
+            "gauge",
+            "Inference time / audio time, everything transcribed so far.",
+            |s| s.real_time_factor,
+        ),
+        (
+            "caudal_captions_last_real_time_factor",
+            "gauge",
+            "Inference time / audio time of the last inference run.",
+            |s| s.last_real_time_factor,
+        ),
         ("caudal_captions_latency_seconds", "gauge", "Media time from the end of speech to its caption.", |s| {
             s.latency_seconds
         }),

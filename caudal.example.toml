@@ -199,7 +199,12 @@ max_mb = 256  # Maximum buffer size in megabytes
 # Measured on an Apple M4, 4 threads (docs/research/CAPTIONS.md): real-time
 # factor (inference time / audio time) tiny 0.04 Metal / 0.12 CPU, base
 # 0.08 / 0.24, small 0.22 / 0.80. One captioned stream costs about RTF x
-# `threads` cores; `threads` is a hard cap for all streams together.
+# `threads` cores; `threads` is a hard cap for all streams together. On a
+# slower machine chunks queued while inference runs are transcribed together
+# (up to 30 s per run) rather than dropped. /metrics:
+# caudal_captions_real_time_factor (all audio so far; above 1 = falling
+# behind), caudal_captions_last_real_time_factor, and
+# caudal_captions_inferences_total vs caudal_captions_chunks_total.
 # [captions]
 # model_dir = "models"      # holds whisper-<model>/ (config.json, tokenizer.json, model.safetensors)
 # model = "base"            # tiny (~150 MB), base (~290 MB) or small (~970 MB, best Spanish)

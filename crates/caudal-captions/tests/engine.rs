@@ -161,8 +161,14 @@ async fn a_live_aac_stream_gets_cues() {
         CaptionsConfig {
             model_dir: dir,
             model: name,
-            threads: 4,
-            device: if std::env::var("CAUDAL_CAPTIONS_DEVICE").as_deref() == Ok("cpu") { DeviceChoice::Cpu } else { DeviceChoice::Auto },
+            // CAUDAL_CAPTIONS_THREADS=1 (with device cpu) stands in for a
+            // slow machine.
+            threads: std::env::var("CAUDAL_CAPTIONS_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(4),
+            device: if std::env::var("CAUDAL_CAPTIONS_DEVICE").as_deref() == Ok("cpu") {
+                DeviceChoice::Cpu
+            } else {
+                DeviceChoice::Auto
+            },
             max_streams: 1,
             min_display_ms: 3000,
             rules: vec![StreamRule { streams: vec!["news*".into()], language: Language::Fixed("es".into()) }],
@@ -228,6 +234,8 @@ async fn a_live_aac_stream_gets_cues() {
     let text: String = cues.iter().map(|c| c.text.replace('\n', " ") + " ").collect();
     let r = recall(ES, &text);
     eprintln!("pipeline ({voice:?}): recall {:.0}%, {} cues: {text}", r * 100.0, cues.len());
+    let m = &captions.metrics()[0];
+    eprintln!("pipeline metrics: {m:?}");
     assert!(r >= if voice == Voice::Say { 0.8 } else { 0.5 }, "recall {r:.2}: {text}");
     // On the stream's clock, after the speech began, never before it; at
     // most the live edge when we read them: the media pushed (speech, then
@@ -243,7 +251,6 @@ async fn a_live_aac_stream_gets_cues() {
         assert!(c.text.lines().all(|l| l.chars().count() <= caudal_captions::cues::LINE), "{c:?}");
     }
     let m = &captions.metrics()[0];
-    eprintln!("pipeline metrics: {m:?}");
     assert_eq!(m.stream, "news-es");
     assert!(m.chunks >= 3 && m.cues >= cues.len() as u64, "{m:?}");
     assert_eq!(m.dropped_chunks, 0, "{m:?}");

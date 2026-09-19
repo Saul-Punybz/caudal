@@ -59,9 +59,9 @@ chunks). RTF = inference time / audio time; below 1 keeps up. Word accuracy
 ## Pipeline
 
 ```
-Subscriber (tokio task) --bounded 512 AUs--> decoder thread per stream
+Subscriber (tokio task) --bounded 2048 AUs--> decoder thread per stream
   AAC: rusty_aac (Apache-2.0)      \
-  Opus: opus-decoder (MIT/Apache)  -> 16 kHz mono -> Chunker -> job queue (4)
+  Opus: opus-decoder (MIT/Apache)  -> 16 kHz mono -> Chunker -> job queue (4, coalescing)
                                                                   |
                               one engine thread + rayon pool (`threads`)
                                                                   |
@@ -77,10 +77,14 @@ Subscriber (tokio task) --bounded 512 AUs--> decoder thread per stream
   level and aliasing at 48/44.1/32/22.05 kHz).
 - **Never blocks ingest.** The stream task `try_send`s access units; when
   the decoder queue is full the frame is dropped and counted
-  (`caudal_captions_dropped_audio_seconds_total`). Chunks go to the engine
-  with `try_send` too; a chunk that does not fit, or that waited more than
-  10 s, is dropped and counted (`..._dropped_chunks_total`). Measured in the
-  in-process pipeline test and the e2e test: 0 dropped.
+  (`caudal_captions_dropped_audio_seconds_total`). The queue holds 2048
+  access units (~44 s of AAC at 48 kHz): at 512 (~11 s) the decoder thread,
+  starved of CPU by a busy inference pool, fell behind the 4x-real-time
+  pipeline test and lost 6.5 s of audio (below). Chunks never wait for the
+  engine either; see "Slow machines" for what happens when it is behind.
+  A job that waited more than 10 s is dropped and counted
+  (`..._dropped_chunks_total`). Measured in the in-process pipeline test
+  and the e2e test on an M4: 0 dropped.
 - **Chunking** (`chunk.rs`): a chunk ends at a pause of 300 ms once it has
   1.5 s, or at the quietest 100 ms of its last second when it reaches 5 s.
   Chunks that never rise above the silence threshold are never sent to the
@@ -93,6 +97,34 @@ Subscriber (tokio task) --bounded 512 AUs--> decoder thread per stream
   how many streams share them. Per stream it also costs one light decoder
   thread. Size it with the table above: a stream needs about RTF x
   `threads` cores' worth of time; the queue drops (and counts) the rest.
+- **Slow machines.** Whisper encodes a full 30 s window on every call, so
+  a call costs about the same for 0.5 s of audio as for 5 s. On a 4-vCPU
+  x86 CI runner (tiny, CPU, direct RTF 0.38) the pipeline test cut ~18 s of
+  speech into 13 chunks (4 on an M4), dropped 5, and reported RTF 50.9:
+  the decoder thread fell behind, the audio queue dropped frames, every
+  hole in the timestamps closed a short chunk, and every scrap paid for a
+  full window until the job queue overflowed. Two rules now keep that from
+  compounding: (1) while the engine is busy, a stream's new chunks join its
+  waiting job (up to 30 s), so a slow engine runs fewer, longer inferences
+  instead of dropping; only a chunk that fits nowhere (queue of 4 jobs
+  full) is dropped and counted; (2) a chunk shorter than 1 s (a gap closed
+  it) waits up to 1 s for the audio after it rather than taking an
+  inference alone, except at the end of the stream.
+  `crates/caudal-captions/tests/pipeline.rs` reproduces it without a model
+  (a stand-in costing 1 s per call, 16 runs of 0.5 s separated by
+  timestamp gaps): before, 8 of 15 chunks dropped, every call on a 0.51 s
+  scrap; after, 4 calls, 0 dropped, done 2.7 s after the last audio.
+  With the real model on the M4's efficiency cores (`taskpolicy -c
+  background`, `device = "cpu"`, espeak-ng speech), where tiny runs slower
+  than real time: 1 thread, before: 16 chunks, 15 dropped, 1 transcribed;
+  4 threads with coalescing but the old 512-AU audio queue: 20 chunks, 4
+  inferences, 0 chunks dropped but 6.5 s of audio lost at the decoder
+  queue; with the 2048-AU queue: 3 chunks, 0 dropped (RTF 1.9, so it
+  still cannot keep up there; it degrades by falling behind, not by
+  dropping). `caudal_captions_real_time_factor` is
+  inference time / audio time over everything transcribed (it was the last
+  chunk's); `..._last_real_time_factor` is the last run's, and
+  `..._inferences_total` next to `..._chunks_total` shows the coalescing.
 - **Crash policy.** Inference is wrapped in `catch_unwind`; after a panic
   the worker restores its model from a pristine clone and keeps going
   (`caudal_captions_engine_panics_total`), and the release profile keeps
@@ -188,9 +220,11 @@ span.
   built; Caudal has no TS output that carries them yet.
 - Safari native playback of the rendition (with parts) was not tried; only
   the validator exercised the parts path.
-- The Linux CI path (espeak-ng voice, CPU, debug build) was not run
-  locally: espeak-ng is not installed on the dev machine. Its thresholds
-  are looser (WER <= 60%, recall >= 50%).
+- The Linux CI path (espeak-ng voice, CPU, debug build) runs on the Mac
+  with `CAUDAL_TTS=espeak CAUDAL_CAPTIONS_DEVICE=cpu` (and
+  `CAUDAL_CAPTIONS_THREADS=1` for a slower machine), but not on x86 Linux
+  locally; CI is the check there. Its thresholds are looser (WER <= 60%,
+  recall >= 50%).
 - Static musl builds with candle were not built locally (no zig).
 - Speaker changes, music, noisy audio, and languages other than es/en:
   not measured.

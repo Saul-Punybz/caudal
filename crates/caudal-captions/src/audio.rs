@@ -34,7 +34,6 @@ impl AudioDecoder {
     pub fn decode(&mut self, packet: &[u8]) -> Result<Vec<f32>, String> {
         match self {
             Self::Aac { dec, resampler } => {
-                let t_aac = std::time::Instant::now();
                 let out = match dec.decode(packet, None) {
                     Ok(out) => out,
                     Err(rusty_aac::Error::Again) => return Ok(Vec::new()),
@@ -45,10 +44,7 @@ impl AudioDecoder {
                 if r.from != out.sample_rate {
                     *r = Resampler::new(out.sample_rate, SAMPLE_RATE as u32);
                 }
-                let t_rs = std::time::Instant::now();
-                let res = r.process(&mono);
-                probe!("audio: aac decode {:?}, resample {:?}", t_rs - t_aac, t_rs.elapsed());
-                Ok(res)
+                Ok(r.process(&mono))
             }
             Self::Opus { dec, buf } => {
                 let n = dec.decode_float(packet, buf, false).map_err(|e| format!("opus: {e:?}"))?;
@@ -198,6 +194,46 @@ mod tests {
                 assert!(alias < 0.01, "{from}: alias {alias}");
             }
         }
+    }
+
+    /// The decoder shares the CPU with inference, so it must stay far ahead
+    /// of real time. rusty_aac's direct IMDCT took 24 ms per 21 ms frame on
+    /// a 4-vCPU x86 CI runner (vendor/README.md): the decoder, not Whisper,
+    /// became the bottleneck. At least 10x faster than real time, and the
+    /// output is the tone that went in.
+    #[test]
+    fn aac_decodes_far_faster_than_real_time() {
+        let secs = 5.0;
+        let pcm = sine(48_000, 440.0, secs);
+        let mut enc =
+            rusty_aac::AacEncoder::new(rusty_aac::AacEncoderConfig { bitrate_bps: 64_000, ..Default::default() });
+        enc.push_pcm(&pcm, 1, 48_000).unwrap();
+        enc.finish();
+        let mut packets = Vec::new();
+        while let Ok(p) = enc.next_packet() {
+            packets.push(p.data);
+        }
+        let track = TrackInfo {
+            id: caudal_core::TrackId(0),
+            codec: Codec::Aac,
+            timescale: 48_000,
+            init: rusty_aac::audio_specific_config_bytes(48_000, 1).into(),
+            lang: None,
+            video: None,
+            audio: Some(caudal_core::AudioParams { sample_rate: 48_000, channels: 1 }),
+        };
+        let mut dec = AudioDecoder::new(&track).unwrap();
+        let t = std::time::Instant::now();
+        let mut out = Vec::new();
+        for p in &packets {
+            out.extend(dec.decode(p).unwrap());
+        }
+        let spent = t.elapsed().as_secs_f32();
+        eprintln!("aac: {secs} s of audio decoded in {spent:.3} s");
+        assert!(spent < secs / 10.0, "{spent:.3} s to decode {secs} s of AAC");
+        assert!(out.len() as f32 >= 16_000.0 * (secs - 0.2), "{} samples", out.len());
+        let l = level(&out[8_000..out.len() - 8_000], 16_000, 440.0);
+        assert!((l - 0.5).abs() < 0.05, "440 Hz level {l}");
     }
 
     #[test]

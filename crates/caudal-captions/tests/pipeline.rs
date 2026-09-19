@@ -9,6 +9,14 @@
 //! dropped, and a last-chunk RTF of 50.9 (a scrap of audio paying for a
 //! full window). This test, before the fix: 15 calls on 0.51 s scraps
 //! offered, 8 dropped.
+//!
+//! On that runner this test then still ran one call per two chunks (8
+//! calls, 7.5-10.8 s to clear): timing probes showed the engine idle
+//! whenever a chunk arrived, because the AAC decoder took 24.4 ms per
+//! 21.3 ms frame (rusty_aac's direct O(N^2) IMDCT; 6.1 ms on an M4). The
+//! decoder, not the engine, was the bottleneck, and it could never keep up
+//! with a live stream. Fixed in `vendor/rusty_aac` (an FFT IMDCT); the
+//! decoder's speed has its own test in `audio.rs`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -104,18 +112,18 @@ async fn short_chunks_on_a_slow_engine_are_coalesced_not_dropped() {
     // RUNS short runs of audio, one every 100 ms of wall time (the decoder
     // catching up in bursts), each followed by a hole in the timestamps.
     let frames = tone_frames(RUNS * RUN_FRAMES);
+    let first_push = Instant::now();
     let mut ts = 0i64;
     for run in frames.chunks(RUN_FRAMES) {
         for d in run {
             p.push(Frame { track: TrackId(0), dts: ts, pts: ts, keyframe: true, data: d.clone() }).unwrap();
-            let _ = caudal_captions::PROBE_T0.get_or_init(Instant::now);
             ts += 1024;
         }
         ts += GAP_FRAMES as i64 * 1024;
-        eprintln!("PROBE {:>7.1}ms [test] pushed run ending ts {ts}", caudal_captions::PROBE_T0.get().unwrap().elapsed().as_secs_f64() * 1e3);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let last_push = Instant::now();
+    let push_span = last_push - first_push;
 
     // All the audio sent is either transcribed or counted as dropped.
     let sent_s = (RUNS * RUN_FRAMES * 1024) as f64 / 48_000.0;
@@ -141,11 +149,12 @@ async fn short_chunks_on_a_slow_engine_are_coalesced_not_dropped() {
     assert_eq!(m.dropped_chunks, 0, "{m:?}");
     assert_eq!(m.dropped_audio_seconds, 0.0, "{m:?}");
     assert!(heard_s() >= sent_s * 0.9, "{:.2} s heard of {sent_s:.2} s", heard_s());
-    // Fewer, fuller inferences: never one per short chunk. How many chunks
-    // share a call depends on how far behind the engine falls, which
-    // depends on the machine (M4: 4 calls; 4-core CI runner: 8 calls of two
-    // runs each, 19 Sep 2026), so the bound is "at most one call per two".
-    assert!(calls.len() <= RUNS / 2, "{} calls for {RUNS} short chunks", calls.len());
+    // Fewer, fuller inferences: while a call runs, every chunk that arrives
+    // joins one waiting job. So the audio pushed over `push_span` (plus up to
+    // half a second for the decoder to catch up) takes one call per COST,
+    // plus the first call (it starts before the rest arrives) and the tail.
+    let max_calls = 2 + ((push_span + Duration::from_millis(500)).as_secs_f64() / COST.as_secs_f64()).ceil() as usize;
+    assert!(calls.len() <= max_calls, "{} calls for {RUNS} short chunks (at most {max_calls})", calls.len());
     // No call on a short scrap while more audio was on its way (the last
     // one may be the stream's tail).
     for n in &calls[..calls.len() - 1] {

@@ -21,15 +21,6 @@
 //!   background; a missing model is logged with the command that fetches
 //!   it, and the server runs on without captions.
 
-// TEMP PROBE (remove)
-pub static PROBE_T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-macro_rules! probe {
-    ($($a:tt)*) => {{
-        let t0 = *crate::PROBE_T0.get_or_init(std::time::Instant::now);
-        eprintln!("PROBE {:>7.1}ms [{}] {}", t0.elapsed().as_secs_f64() * 1e3, std::thread::current().name().unwrap_or("?"), format!($($a)*));
-    }};
-}
-
 pub mod audio;
 pub mod chunk;
 pub mod cues;
@@ -211,7 +202,6 @@ impl JobQueue {
             && job.piece.pcm.len() + piece.pcm.len() <= JOB_SAMPLES
         {
             job.piece.join(piece);
-            probe!("offer: joined waiting job -> {} samples", job.piece.pcm.len());
             return Ok(());
         }
         if jobs.len() >= JOB_QUEUE {
@@ -224,7 +214,6 @@ impl JobQueue {
             piece,
             queued: Instant::now(),
         });
-        probe!("offer: new job, queue len {}", jobs.len());
         self.ready.notify_one();
         Ok(())
     }
@@ -516,13 +505,8 @@ async fn feed(inner: Arc<Inner>, state: Arc<Captioned>, mut sub: caudal_core::Su
             Event::Cue(_) => continue,
             Event::End => break,
         };
-        let is_frame = matches!(msg, AudioMsg::Frame { .. });
         match tx.try_send(msg) {
-            Ok(()) => {
-                if is_frame {
-                    probe!("feed: frame forwarded");
-                }
-            }
+            Ok(()) => {}
             Err(TrySendError::Full(AudioMsg::Frame { .. })) => {
                 // One AAC frame at 48 kHz: ~21 ms.
                 state.counters.dropped_audio_ms.fetch_add(21, Ordering::Relaxed);
@@ -589,12 +573,8 @@ fn decode_loop(
     let submit = |held: &mut Held, chunk: Chunk, anchor: (u64, i64)| {
         let start_us = anchor.1 + ((chunk.start - anchor.0) as i64 * 1_000_000 / SAMPLE_RATE as i64);
         let end_us = start_us + chunk.duration_us();
-        let n = chunk.pcm.len();
         if let Some(p) = held.add(Piece { end_us, pcm: chunk.pcm, chunks: 1 }) {
-            probe!("submit: chunk {n} -> offering {}", p.pcm.len());
             offer(inner, state, live, language, p);
-        } else {
-            probe!("submit: chunk {n} held");
         }
     };
     loop {
@@ -610,7 +590,6 @@ fn decode_loop(
             },
         };
         if let Some(p) = held.release(false) {
-            probe!("held: released after wait, {}", p.pcm.len());
             offer(inner, state, live, language, p);
         }
         let Some(msg) = msg else { continue };
@@ -628,7 +607,6 @@ fn decode_loop(
             }
             AudioMsg::Gap => last_pts = None,
             AudioMsg::Frame { pts_us, data } => {
-                probe!("decode: frame pts {pts_us} received");
                 let Some(dec) = decoder.as_mut() else { continue };
                 let gap = last_pts.is_none_or(|p| pts_us <= p || pts_us - p > GAP_US);
                 last_pts = Some(pts_us);
@@ -640,7 +618,6 @@ fn decode_loop(
                     chunker.reset(pos);
                     anchor = Some((pos, pts_us));
                 }
-                let td = Instant::now();
                 let pcm = match dec.decode(&data) {
                     Ok(p) => p,
                     Err(e) => {
@@ -649,10 +626,6 @@ fn decode_loop(
                     }
                 };
                 let a = anchor.expect("anchored above");
-                let dt = td.elapsed();
-                if dt > Duration::from_millis(2) {
-                    probe!("decode: slow frame {dt:?}");
-                }
                 for c in chunker.push(&pcm) {
                     submit(&mut held, c, a);
                 }
@@ -724,12 +697,10 @@ fn run_job(inner: &Inner, pool: &rayon::ThreadPool, model: &mut dyn Recognizer, 
         c.dropped_audio_ms.fetch_add(dur_us as u64 / 1000, Ordering::Relaxed);
         return;
     }
-    probe!("engine: job start, {} samples, waited {:?}", piece.pcm.len(), job.queued.elapsed());
     let t = Instant::now();
     let result =
         std::panic::catch_unwind(AssertUnwindSafe(|| pool.install(|| model.transcribe(&piece.pcm, &job.language))));
     let spent = t.elapsed();
-    probe!("engine: job end, spent {spent:?}");
     c.chunks.fetch_add(piece.chunks, Ordering::Relaxed);
     c.inferences.fetch_add(1, Ordering::Relaxed);
     c.infer_us.fetch_add(spent.as_micros() as u64, Ordering::Relaxed);

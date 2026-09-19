@@ -132,3 +132,26 @@ Fixed with `saturating_add`/`rem_euclid(256)`, which changes nothing about
 and produces a normal `[0, 256)` value for anything else, matching what
 that comment already promised. Regression test
 `a_delta_scale_near_i64_max_does_not_overflow_next_scale`. Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).
+
+## rusty_aac 0.5.0 (Apache-2.0), patched
+
+The decoder's synthesis filterbank called `dsp::imdct`, a direct O(N²)
+evaluation (its own doc comment: "can be swapped for an FFT-based fast path
+later"): 2048 × 1024 `f64` cosines per long block. Measured on 19 Sep 2026 in
+`crates/caudal-captions/tests/pipeline.rs` with timing probes: 24.4 ms to
+decode one 21.3 ms frame of 48 kHz mono AAC on GitHub's 4-vCPU ubuntu runner
+(AMD EPYC 7763), 6.1 ms on an Apple M4. Slower than real time on the Linux
+runner, so the captions decoder thread (not Whisper) was the bottleneck: its
+chunks trickled out one at a time and a live stream could never be captioned
+without the decoder falling further and further behind.
+
+Patch: `src/dsp.rs` gains `imdct_fast` (the IMDCT as a DCT-IV of the N/2
+coefficients, unfolded by the kernel's symmetries; the DCT-IV uses the same
+pre-rotation, N/4-point FFT, post-rotation and cached twiddles as the crate's
+existing `mdct_fast`), and `src/decode.rs` calls it for long and short blocks.
+Every change is marked `Caudal patch`. Test `imdct_fast_matches_direct` checks
+it against the direct `imdct` (kept as the oracle) at both AAC block sizes;
+the crate's own decoder tests (`hand_built_frame_matches_independent_imdct`,
+the encoder round trips) pass unchanged. Downstream,
+`crates/caudal-captions/src/audio.rs`'s `aac_decodes_far_faster_than_real_time`
+keeps the speed. Drop this copy once upstream ships a fast IMDCT.

@@ -119,7 +119,13 @@ panic = "unwind"
 # its result as `1 << leading_zeros`; at 64+ leading zero bits that is
 # already 0 in a u64, and the following `result - 1` underflowed and
 # panicked. Patched copy with a regression test; see vendor/README.md.
+#
+# rusty_aac 0.5.0 (latest): its decoder ran a direct O(N^2) IMDCT (2.1 M
+# f64 cosines per frame), 24 ms per 21 ms AAC frame on a 4-vCPU x86 CI
+# runner: live captions could not keep up with one stream. Patched copy
+# with an FFT IMDCT checked against the direct one; see vendor/README.md.
 [patch.crates-io]
+rusty_aac = { path = "vendor/rusty_aac" }
 scuffle-rtmp = { path = "vendor/scuffle-rtmp" }
 scuffle-amf0 = { path = "vendor/scuffle-amf0" }
 scuffle-h264 = { path = "vendor/scuffle-h264" }

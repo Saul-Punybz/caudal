@@ -72,6 +72,7 @@ jobs:
         # TEMPORARY fallback values after each `||` (see push trigger above)
         # for a push-triggered iteration run; removed with the push trigger.
         run: |
+          set -o pipefail   # `| tee` must not hide a failed run
           ulimit -n 65536 || true
           bench/run.sh --reps "${{ inputs.reps || '1' }}" --only "${{ inputs.only || 'idle,fanout,latency' }}" \
             --protos "${{ inputs.protos || 'hls' }}" --levels "${{ inputs.levels || '100' }}" \

@@ -69,7 +69,12 @@ async function whepDiagnostics(page: import("@playwright/test").Page, stream: st
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     const r = await fetch(`/whep/${name}`, { method: "POST", headers: { "Content-Type": "application/sdp" }, body: offer.sdp });
-    await pc.setRemoteDescription({ type: "answer", sdp: await r.text() });
+    const body = await r.text();
+    if (r.status !== 201) {
+      pc.close();
+      return `POST /whep/${name} -> ${r.status} ${body.trim()}`;
+    }
+    await pc.setRemoteDescription({ type: "answer", sdp: body });
     await new Promise((res) => setTimeout(res, 5000));
     const out: string[] = [`ice=${pc.iceConnectionState}`];
     const stats = await pc.getStats();

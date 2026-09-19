@@ -48,6 +48,16 @@ caudal-health = { path = "crates/caudal-health", version = "0.1.0" }
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+# The in-process H.264 engine encodes in real time; unoptimized it could not
+# keep up on a 4-core CI runner even alone (112 of 240 frames).
+[profile.dev.package.rusty_h264]
+opt-level = 3
+[profile.dev.package.rusty_h264-common]
+opt-level = 3
+[profile.dev.package.rusty_h264-encoder]
+opt-level = 3
+[profile.dev.package.rusty_h264-decoder]
+opt-level = 3
 
 [profile.release]
 lto = "fat"

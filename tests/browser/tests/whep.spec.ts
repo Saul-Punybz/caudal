@@ -39,7 +39,14 @@ test.describe("WHEP playback in a real browser", () => {
 
     const video = page.locator("video");
     await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.readyState), { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
-    await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 10_000 }).toBe(1280);
+    try {
+      await expect.poll(async () => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 10_000 }).toBe(1280);
+    } catch (e) {
+      // No picture: say why, from a second, bare WHEP session's stats
+      // (packets in but nothing decoded = the browser has no decoder).
+      console.log(`[${browserName}] no video; bare WHEP session: ${await whepDiagnostics(page, STREAM)}`);
+      throw e;
+    }
 
     const t0 = await video.evaluate((v: HTMLVideoElement) => v.currentTime);
     await page.waitForTimeout(3_000);
@@ -52,3 +59,27 @@ test.describe("WHEP playback in a real browser", () => {
     await expect(page.getByText(/audio not available over WebRTC/)).toBeVisible();
   });
 });
+
+/** Opens a bare WHEP session in the page for 5 s and returns its inbound
+ * video stats (packets, frames decoded, decoder) and ICE state. */
+async function whepDiagnostics(page: import("@playwright/test").Page, stream: string): Promise<string> {
+  return page.evaluate(async (name) => {
+    const pc = new RTCPeerConnection();
+    pc.addTransceiver("video", { direction: "recvonly" });
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const r = await fetch(`/whep/${name}`, { method: "POST", headers: { "Content-Type": "application/sdp" }, body: offer.sdp });
+    await pc.setRemoteDescription({ type: "answer", sdp: await r.text() });
+    await new Promise((res) => setTimeout(res, 5000));
+    const out: string[] = [`ice=${pc.iceConnectionState}`];
+    const stats = await pc.getStats();
+    stats.forEach((s: any) => {
+      if (s.type === "inbound-rtp" && s.kind === "video") {
+        const codec = s.codecId ? ((stats as any).get(s.codecId) as any) : undefined;
+        out.push(`packets=${s.packetsReceived} framesDecoded=${s.framesDecoded} decoder=${s.decoderImplementation} codec=${codec?.mimeType} ${codec?.sdpFmtpLine ?? ""}`);
+      }
+    });
+    pc.close();
+    return out.join(" ");
+  }, stream);
+}

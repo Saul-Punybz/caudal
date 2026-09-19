@@ -1,0 +1,45 @@
+{{/*
+UDP media (WebRTC ICE, SRT, MoQ/QUIC): only when NOT using hostNetwork —
+with hostNetwork the pod binds the node's real address directly and no
+Service is needed (see the "Networking" comment in values.yaml). A
+Service is not created when hostNetwork is on so the two modes can't both
+silently be active at once.
+*/}}
+{{- if and .Values.udp.service.enabled (not .Values.udp.hostNetwork) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "caudal.fullname" . }}-udp
+  labels:
+    {{- include "caudal.labels" . | nindent 4 }}
+  {{- with .Values.udp.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.udp.service.type }}
+  {{- if .Values.udp.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.udp.service.loadBalancerIP }}
+  {{- end }}
+  selector:
+    {{- include "caudal.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- if .Values.webrtc.enabled }}
+    - name: webrtc
+      port: {{ .Values.webrtc.udpPort }}
+      targetPort: webrtc
+      protocol: UDP
+    {{- end }}
+    {{- if .Values.srt.enabled }}
+    - name: srt
+      port: {{ .Values.srt.udpPort }}
+      targetPort: srt
+      protocol: UDP
+    {{- end }}
+    {{- if .Values.moq.enabled }}
+    - name: moq
+      port: {{ .Values.moq.udpPort }}
+      targetPort: moq
+      protocol: UDP
+    {{- end }}
+{{- end }}

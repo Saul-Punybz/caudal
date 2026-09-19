@@ -8,9 +8,17 @@
 //!   a reload never drops an unrelated viewer or publisher. `[auth]` and
 //!   `[hooks]` swap in place (`Registry::set_gate` is a live snapshot
 //!   swap; a changed webhook config restarts only its own forwarder
-//!   task). `[transcode]`'s ladders are read fresh (via `arc-swap`, see
-//!   `caudal-transcode`) by every *new* publish; a transcode already
-//!   running keeps the snapshot it started with.
+//!   task). `[access]` / `[[access.rules]]` swap in place too
+//!   (`caudal_access::Checker::reload`, an `arc-swap` internally, see its
+//!   docs) without ever touching `Registry::set_gate`. Neither `[auth]`
+//!   nor `[[access.rules]]` re-checks a session already granted: like
+//!   `[transcode]`'s ladders (read fresh, via `arc-swap`, by every *new*
+//!   publish; a transcode already running keeps the snapshot it started
+//!   with), a new ruleset governs only the *next* publish/play request —
+//!   an existing viewer or publisher a new deny rule would now refuse
+//!   keeps streaming until it disconnects on its own. Revoking an
+//!   in-progress session needs killing its connection some other way
+//!   (there is no per-session kill switch today).
 //! - **Restarted (this listener only):** `[rtmp]`, `[srt]`'s bind/
 //!   latency/passphrase, and `[rtsp]`'s server/RTSPS fields each restart
 //!   only their own listener task. Aborting it never drops an
@@ -32,22 +40,40 @@ use parking_lot::Mutex;
 
 use crate::config::{self, Config};
 
-/// Plugs `caudal-auth` into the core's access gate.
-pub struct AuthGate(pub caudal_auth::Authorizer);
+/// Plugs `caudal-auth` (token) and `caudal-access` (IP/CIDR/country) into
+/// the core's access gate as one combined check: access rules first (they
+/// short-circuit on a network-level denial without even looking at the
+/// token), then token auth. Either half can be a no-op (no `[auth]` keys,
+/// no `[[access]]` rules) without disabling the other.
+pub struct CombinedGate {
+    auth: caudal_auth::Authorizer,
+    /// Always present (even with an empty ruleset) once the registry has a
+    /// gate installed at all; see `Supervisor::start`. Its own ruleset is
+    /// swapped by `caudal_access::Checker::reload`, independent of `auth`.
+    access: Arc<caudal_access::Checker>,
+}
 
-impl caudal_core::Gate for AuthGate {
+impl caudal_core::Gate for CombinedGate {
     fn check<'a>(
         &'a self,
         access: caudal_core::Access,
         stream: &'a str,
         token: Option<&'a str>,
+        ip: Option<std::net::IpAddr>,
     ) -> caudal_core::GateFuture<'a> {
         Box::pin(async move {
+            if let Err(denied) = self.access.check(access, stream, ip) {
+                tracing::info!(
+                    stream, ip = ?ip, reason = denied.reason, detail = %denied.detail,
+                    action = ?access, "access denied",
+                );
+                return Err(caudal_core::Denied::Refused(denied.to_string()));
+            }
             let action = match access {
                 caudal_core::Access::Publish => caudal_auth::Action::Publish,
                 caudal_core::Access::Play => caudal_auth::Action::Play,
             };
-            self.0.check(action, stream, token).await.map_err(|e| match e {
+            self.auth.check(action, stream, token).await.map_err(|e| match e {
                 caudal_auth::AuthError::Missing => caudal_core::Denied::Missing,
                 other => caudal_core::Denied::Refused(other.to_string()),
             })
@@ -55,17 +81,29 @@ impl caudal_core::Gate for AuthGate {
     }
 }
 
-/// Applies the loaded `[auth]` section to the registry: installs a gate
-/// when keys are configured, clears any previous one otherwise.
-fn apply_auth(registry: &Arc<Registry>, section: &config::AuthSection) {
+/// Applies the loaded `[auth]` section to the registry: reinstalls the
+/// combined gate with a fresh `Authorizer`, keeping the current
+/// `caudal-access` checker (its ruleset is independent, see
+/// `apply_access`).
+fn apply_auth(registry: &Arc<Registry>, access: &Arc<caudal_access::Checker>, section: &config::AuthSection) {
     let auth = section.to_auth_config().expect("validated");
-    if auth.keys.is_some() {
-        tracing::info!(publish = auth.publish, play = auth.play, "token auth enabled");
-        registry.set_gate(Arc::new(AuthGate(caudal_auth::Authorizer::new(auth))));
+    if auth.keys.is_none() {
+        tracing::warn!("no [auth] keys: anyone who can reach the server can publish and play (subject to [[access]])");
     } else {
-        tracing::warn!("no [auth] keys: anyone who can reach the server can publish and play");
-        registry.clear_gate();
+        tracing::info!(publish = auth.publish, play = auth.play, "token auth enabled");
     }
+    registry.set_gate(Arc::new(CombinedGate { auth: caudal_auth::Authorizer::new(auth), access: access.clone() }));
+}
+
+/// Applies the loaded `[access]` / `[[access]]` sections: swaps the
+/// ruleset in place on the existing `caudal-access::Checker` (see its
+/// module docs), so denial counters and the installed gate object survive.
+/// `Err` only on a config accepted by `serde` but rejected by
+/// `AccessConfig::build` (e.g. a `country:` entry with a `geoip_db` that
+/// stopped opening); `Config::validate` already runs the same check before
+/// a reload gets here, so this is a safety net, not the primary guard.
+fn apply_access(access: &Arc<caudal_access::Checker>, section: &config::AccessSection) -> Result<(), String> {
+    access.reload(&section.to_access_config().expect("validated"))
 }
 
 /// Sends a webhook for every stream that starts or ends, until aborted.
@@ -224,6 +262,11 @@ pub struct Supervisor {
     /// spawning a new restream/channel/pull/push/transcode task uses the
     /// same buffer sizing as everything already running.
     buffer: caudal_core::BufferConfig,
+    /// `[server] trusted_proxies`, parsed once at startup. `[server]` is a
+    /// `requires_restart` section (see module docs), so this never changes
+    /// without a full restart either, even though `caudal-channel`'s
+    /// `reload` runs independently of it.
+    trusted_proxies: Vec<caudal_core::Cidr>,
 
     rtmp: Mutex<RtmpListener>,
     srt_listen: Mutex<SrtListener>,
@@ -235,6 +278,10 @@ pub struct Supervisor {
     rtsp_pull: caudal_rtsp::PullHandle,
     transcode: caudal_transcode::TranscodeHandle,
     hooks_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// `[[access]]` / `[access]`. Created once (even empty); reloaded in
+    /// place (see `apply_access`), never replaced, so `/metrics`' denial
+    /// counters survive a reload.
+    access: Arc<caudal_access::Checker>,
 
     /// The last config a reload was applied against (or the startup
     /// config); also the mutex that serializes concurrent reloads (SIGHUP
@@ -249,6 +296,9 @@ pub struct Started {
     pub supervisor: Arc<Supervisor>,
     pub restream_router: axum::Router,
     pub channel_router: axum::Router,
+    /// For `main::run` to hand to `api::AppState::set_access`, so
+    /// `/metrics` can render `caudal_access_denied_total`.
+    pub access: Arc<caudal_access::Checker>,
 }
 
 impl Supervisor {
@@ -259,8 +309,10 @@ impl Supervisor {
     /// of the hot-reload surface (see module docs).
     pub fn start(cfg: &Config, registry: Arc<Registry>) -> Started {
         let buffer = cfg.buffer.to_buffer_config();
+        let trusted_proxies = cfg.server.trusted_proxy_cidrs().expect("validated");
 
-        apply_auth(&registry, &cfg.auth);
+        let access = cfg.access.to_access_config().expect("validated").checker().expect("validated");
+        apply_auth(&registry, &access, &cfg.auth);
         let hooks_task = Mutex::new(None);
         apply_hooks(&registry, &hooks_task, &cfg.hooks);
 
@@ -279,13 +331,20 @@ impl Supervisor {
         );
         let restream_router = caudal_restream::router(restream.clone());
 
-        let channel =
-            caudal_channel::start(registry.clone(), caudal_channel::ChannelConfig { channels: cfg.channels(), buffer });
+        let channel = caudal_channel::start(
+            registry.clone(),
+            caudal_channel::ChannelConfig {
+                channels: cfg.channels(),
+                buffer,
+                trusted_proxies: trusted_proxies.clone(),
+            },
+        );
         let channel_router = caudal_channel::router(channel.clone());
 
         let supervisor = Arc::new(Supervisor {
             registry,
             buffer,
+            trusted_proxies,
             rtmp,
             srt_listen,
             rtsp_listen,
@@ -295,9 +354,10 @@ impl Supervisor {
             rtsp_pull,
             transcode,
             hooks_task,
+            access: access.clone(),
             current: Mutex::new(cfg.clone()),
         });
-        Started { supervisor, restream_router, channel_router }
+        Started { supervisor, restream_router, channel_router, access }
     }
 
     /// Validates `new_cfg`, then applies the smallest correct action per
@@ -318,7 +378,11 @@ impl Supervisor {
             report.applied.push("restream".into());
         }
         if old.channel != new_cfg.channel {
-            self.channel.reload(caudal_channel::ChannelConfig { channels: new_cfg.channels(), buffer: self.buffer });
+            self.channel.reload(caudal_channel::ChannelConfig {
+                channels: new_cfg.channels(),
+                buffer: self.buffer,
+                trusted_proxies: self.trusted_proxies.clone(),
+            });
             report.applied.push("channel".into());
         }
         if old.srt.push != new_cfg.srt.push {
@@ -342,8 +406,21 @@ impl Supervisor {
             }
         }
         if old.auth != new_cfg.auth {
-            apply_auth(&self.registry, &new_cfg.auth);
+            apply_auth(&self.registry, &self.access, &new_cfg.auth);
             report.applied.push("auth".into());
+        }
+        if old.access != new_cfg.access {
+            match apply_access(&self.access, &new_cfg.access) {
+                Ok(()) => report.applied.push("access".into()),
+                // Unreachable in practice: `new_cfg.validate()` above
+                // already ran the same check. Kept as a safety net (same
+                // pattern as `transcode`'s reload arm above), never
+                // silently dropped.
+                Err(e) => {
+                    tracing::error!(error = %e, "access reload rejected after passing validation");
+                    report.requires_restart.push("access".into());
+                }
+            }
         }
         if old.hooks != new_cfg.hooks {
             apply_hooks(&self.registry, &self.hooks_task, &new_cfg.hooks);

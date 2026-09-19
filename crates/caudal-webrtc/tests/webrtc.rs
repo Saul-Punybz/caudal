@@ -29,7 +29,11 @@ async fn serve(registry: Arc<Registry>) -> Server {
     // Port 0: the engine binds and advertises whatever port it gets. Probing
     // a free port first raced with the client sockets of parallel tests.
     let udp = "127.0.0.1:0".parse().unwrap();
-    let app = router(registry, WebRtcConfig { udp_bind: udp, public_ips: vec![], buffer: BufferConfig::default() });
+    let app = router(
+        registry,
+        WebRtcConfig { udp_bind: udp, public_ips: vec![], buffer: BufferConfig::default(), threads: 0 },
+        Vec::new(),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -338,7 +342,13 @@ async fn whip_delete_ends_the_stream() {
 struct OnlyGood;
 
 impl Gate for OnlyGood {
-    fn check<'a>(&'a self, _: Access, _: &'a str, token: Option<&'a str>) -> GateFuture<'a> {
+    fn check<'a>(
+        &'a self,
+        _: Access,
+        _: &'a str,
+        token: Option<&'a str>,
+        _ip: Option<std::net::IpAddr>,
+    ) -> GateFuture<'a> {
         Box::pin(async move {
             match token {
                 None => Err(Denied::Missing),

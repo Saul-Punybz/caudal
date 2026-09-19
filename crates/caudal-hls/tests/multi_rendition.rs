@@ -76,7 +76,11 @@ async fn wait_http(url: &str, pred: impl Fn(&str) -> bool, timeout: Duration) ->
 async fn abr_family_serves_and_ffprobes_clean() {
     let fx = mp4demux::demux(include_bytes!("fixtures/av.mp4"));
     let reg = Registry::new();
-    let app = router(reg.clone(), HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false });
+    let app = router(
+        reg.clone(),
+        HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
+        Vec::new(),
+    );
 
     let port = free_port();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
@@ -147,7 +151,11 @@ async fn abr_family_apple_validator_if_present() {
     }
     let fx = std::sync::Arc::new(mp4demux::demux(include_bytes!("fixtures/av.mp4")));
     let reg = Registry::new();
-    let app = router(reg.clone(), HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false });
+    let app = router(
+        reg.clone(),
+        HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
+        Vec::new(),
+    );
     let port = free_port();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
     tokio::spawn(async move {
@@ -180,9 +188,14 @@ async fn abr_family_apple_validator_if_present() {
     wait_http(&format!("{base}/hls/v2main/index.m3u8"), |b| b.contains("#EXTINF"), Duration::from_secs(10)).await;
     wait_http(&format!("{base}/hls/v2main+low/index.m3u8"), |b| b.contains("#EXTINF"), Duration::from_secs(10)).await;
 
+    // The validator writes validation_data.json into its working directory
+    // unless told otherwise (it used to land in the crate, committed once).
+    let report = std::env::temp_dir().join(format!("caudal-multi-rendition-{}.json", std::process::id()));
     let out = Guarded::spawn(Command::new("mediastreamvalidator").args([
         "--timeout",
         "20",
+        "--validation-data-path",
+        &report.to_string_lossy(),
         &format!("{base}/hls/v2main/master.m3u8"),
     ]))
     .wait_with_output();

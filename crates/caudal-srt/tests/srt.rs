@@ -85,7 +85,13 @@ impl TestServer {
 struct DenyPlayGate;
 
 impl Gate for DenyPlayGate {
-    fn check<'a>(&'a self, access: Access, _stream: &'a str, _token: Option<&'a str>) -> GateFuture<'a> {
+    fn check<'a>(
+        &'a self,
+        access: Access,
+        _stream: &'a str,
+        _token: Option<&'a str>,
+        _ip: Option<std::net::IpAddr>,
+    ) -> GateFuture<'a> {
         Box::pin(async move {
             match access {
                 Access::Play => Err(Denied::Refused("test gate denies play".to_owned())),
@@ -301,7 +307,14 @@ async fn h264_aac_publish_end_to_end() {
         let hls_port = hls_listener.local_addr().unwrap().port();
         let router = caudal_hls::router(
             server.registry.clone(),
-            caudal_hls::HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false },
+            caudal_hls::HlsConfig {
+                part_ms: 200,
+                segment_ms: 2000,
+                cue_tags: true,
+                cue_out_tags: false,
+                ..caudal_hls::HlsConfig::default()
+            },
+            Vec::new(),
         );
         tokio::spawn(async move {
             let _ = axum::serve(hls_listener, router).await;

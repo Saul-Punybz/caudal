@@ -55,6 +55,11 @@ pub const RETRY: Duration = Duration::from_secs(10);
 pub struct ChannelConfig {
     pub channels: Vec<Channel>,
     pub buffer: BufferConfig,
+    /// `[server] trusted_proxies`, for resolving `X-Forwarded-For` on the
+    /// `skip` route; see `caudal_core::net::resolve_forwarded`. Fixed for
+    /// the process's life (`[server]` is a `requires_restart` section), so
+    /// [`ChannelHandle::reload`] carries the same value forward untouched.
+    pub trusted_proxies: Vec<caudal_core::Cidr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +126,7 @@ pub struct ChannelHandle {
 struct Inner {
     registry: Arc<Registry>,
     buffer: BufferConfig,
+    trusted_proxies: Vec<caudal_core::Cidr>,
     entries: Mutex<Vec<Entry>>,
 }
 
@@ -197,12 +203,23 @@ impl ChannelHandle {
     pub(crate) fn registry(&self) -> &Arc<Registry> {
         &self.inner.registry
     }
+
+    pub(crate) fn trusted_proxies(&self) -> &[caudal_core::Cidr] {
+        &self.inner.trusted_proxies
+    }
 }
 
 /// Spawns one task per channel on the current tokio runtime.
 pub fn start(registry: Arc<Registry>, cfg: ChannelConfig) -> ChannelHandle {
     let entries = cfg.channels.into_iter().map(|ch| spawn_channel(&registry, cfg.buffer, ch)).collect();
-    ChannelHandle { inner: Arc::new(Inner { registry, buffer: cfg.buffer, entries: Mutex::new(entries) }) }
+    ChannelHandle {
+        inner: Arc::new(Inner {
+            registry,
+            buffer: cfg.buffer,
+            trusted_proxies: cfg.trusted_proxies,
+            entries: Mutex::new(entries),
+        }),
+    }
 }
 
 /// The channel API routes, with their state already applied.
@@ -225,24 +242,22 @@ mod reload_tests {
     #[tokio::test]
     async fn unchanged_channel_keeps_its_task() {
         let registry = Registry::new();
-        let handle = start(registry, ChannelConfig { channels: vec![ch("a", true)], buffer: BufferConfig::default() });
+        let handle = start(registry, ChannelConfig { channels: vec![ch("a", true)], ..Default::default() });
         let before = task_ids(&handle);
-        handle.reload(ChannelConfig { channels: vec![ch("a", true)], buffer: BufferConfig::default() });
+        handle.reload(ChannelConfig { channels: vec![ch("a", true)], ..Default::default() });
         assert_eq!(task_ids(&handle), before, "unchanged channel must not be restarted");
     }
 
     #[tokio::test]
     async fn changed_removed_and_added_channels() {
         let registry = Registry::new();
-        let handle = start(
-            registry,
-            ChannelConfig { channels: vec![ch("a", true), ch("b", true)], buffer: BufferConfig::default() },
-        );
+        let handle =
+            start(registry, ChannelConfig { channels: vec![ch("a", true), ch("b", true)], ..Default::default() });
         let before = task_ids(&handle);
 
         // `a`'s `loop` flag changes (restart), `b` is dropped (stop), `c`
         // is new (start).
-        handle.reload(ChannelConfig { channels: vec![ch("a", false), ch("c", true)], buffer: BufferConfig::default() });
+        handle.reload(ChannelConfig { channels: vec![ch("a", false), ch("c", true)], ..Default::default() });
 
         let names: Vec<String> = handle.status().iter().map(|s| s.name.clone()).collect();
         assert!(names.contains(&"a".to_string()));

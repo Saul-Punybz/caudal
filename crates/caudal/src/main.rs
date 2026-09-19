@@ -6,6 +6,7 @@
 mod admin;
 mod api;
 mod config;
+mod doctor;
 mod metrics;
 mod reload;
 mod shutdown;
@@ -36,6 +37,27 @@ enum Command {
     /// Reads a password from stdin and prints its argon2id hash for
     /// `[[admin.users]] password_hash`.
     HashPassword,
+    /// Diagnoses a Caudal setup: config, ports, NAT, TLS, clock, tools,
+    /// and (with `--url`) a running server's stream codecs. Prints one
+    /// OK/WARN/FAIL line per check, with a fix for anything not OK.
+    /// Exit code: 0 all OK, 1 any FAIL, 2 only WARNs.
+    Doctor {
+        /// Path to the TOML config file. Defaults to `caudal.toml` in the
+        /// current directory if it exists, otherwise built-in defaults.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Also compares the system clock against a well-known HTTPS
+        /// host's `Date` header. Off by default: without it, `doctor`
+        /// makes no network calls at all (DNS lookups for ACME domains
+        /// are the only exception, since they use the local resolver).
+        #[arg(long)]
+        online: bool,
+        /// Base URL of a running caudal server (e.g. `http://host:8080`)
+        /// whose `/api/v1/streams` is checked for codecs a browser can't
+        /// play over the configured outputs.
+        #[arg(long)]
+        url: Option<String>,
+    },
 }
 
 fn make_filter() -> EnvFilter {
@@ -57,7 +79,7 @@ fn init_logging() {
 /// later reload should re-read: explicit `--config`, or `caudal.toml` in
 /// the current directory if it exists, otherwise built-in defaults with no
 /// file to reload from.
-fn resolve_config(explicit: Option<PathBuf>) -> Result<(config::Config, Option<PathBuf>), String> {
+pub(crate) fn resolve_config(explicit: Option<PathBuf>) -> Result<(config::Config, Option<PathBuf>), String> {
     let path = explicit.or_else(|| {
         let default_path = PathBuf::from("caudal.toml");
         default_path.exists().then_some(default_path)
@@ -73,6 +95,12 @@ fn main() -> ExitCode {
 
     if let Some(Command::HashPassword) = &cli.command {
         return admin::hash_password_cmd();
+    }
+    if let Some(Command::Doctor { config, online, url }) = &cli.command {
+        let opts = doctor::Options { online: *online, url: url.clone() };
+        let report = doctor::run(config.as_deref(), &opts);
+        report.print();
+        return report.exit_code();
     }
     if let Some(Command::Check { path }) = &cli.command {
         return match config::load(path) {
@@ -114,10 +142,13 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         }
     };
     let registry = caudal_core::Registry::new();
+    // `[server] trusted_proxies`: HTTP protocols only (see
+    // `caudal_core::net::resolve_forwarded`'s docs and each router below).
+    let trusted_proxies = cfg.server.trusted_proxy_cidrs().expect("validated");
 
     // Starts RTMP, SRT, RTSP, restream, channels and transcode, and wires
-    // auth/webhooks: everything `subsystems::Supervisor::reload` can later
-    // apply hot or restart on its own (see that module's docs). Each
+    // auth/access/webhooks: everything `subsystems::Supervisor::reload` can
+    // later apply hot or restart on its own (see that module's docs). Each
     // listener runs in its own task; a panic or I/O error there is logged
     // and does not bring down the HTTP side.
     let started = subsystems::Supervisor::start(&cfg, registry.clone());
@@ -129,17 +160,22 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             segment_ms: cfg.hls.segment_ms,
             cue_tags: cfg.hls.cue_tags,
             cue_out_tags: cfg.hls.cue_out_tags,
+            reconnect_grace: std::time::Duration::from_secs(cfg.hls.reconnect_grace_secs.into()),
         },
+        trusted_proxies.clone(),
     );
 
     let state = api::AppState::new(registry.clone());
+    state.set_access(started.access.clone());
     let webrtc_router = caudal_webrtc::router(
         registry.clone(),
         caudal_webrtc::WebRtcConfig {
             udp_bind: cfg.webrtc.udp_bind,
             public_ips: cfg.webrtc.public_ips.clone(),
             buffer: cfg.buffer.to_buffer_config(),
+            threads: cfg.webrtc.threads,
         },
+        trusted_proxies.clone(),
     );
 
     // MoQ failing to start (e.g. its UDP port is taken) disables MoQ only.
@@ -165,7 +201,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     let record_router = match cfg.record.to_record_config() {
         Some(rc) => {
             let dir = rc.dir.display().to_string();
-            match caudal_record::start(registry.clone(), rc) {
+            match caudal_record::start(registry.clone(), rc, trusted_proxies.clone()) {
                 Ok(svc) => {
                     tracing::info!(%dir, "recording enabled");
                     svc.router()

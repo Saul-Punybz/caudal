@@ -135,7 +135,7 @@ fn files(dir: &Path) -> Vec<String> {
 async fn records_plays_as_vod_and_clips() {
     let tmp = tempfile::tempdir().unwrap();
     let reg = Registry::new();
-    let svc = caudal_record::start(reg.clone(), cfg(tmp.path())).unwrap();
+    let svc = caudal_record::start(reg.clone(), cfg(tmp.path()), Vec::new()).unwrap();
     let app = svc.router();
     let fx = fixture();
 
@@ -297,7 +297,9 @@ async fn records_plays_as_vod_and_clips() {
 async fn retention_deletes_old_ended_recordings_only() {
     let tmp = tempfile::tempdir().unwrap();
     let reg = Registry::new();
-    let svc = caudal_record::start(reg.clone(), RecordConfig { retention_hours: Some(1), ..cfg(tmp.path()) }).unwrap();
+    let svc =
+        caudal_record::start(reg.clone(), RecordConfig { retention_hours: Some(1), ..cfg(tmp.path()) }, Vec::new())
+            .unwrap();
     let app = svc.router();
     let fx = fixture();
 
@@ -342,7 +344,8 @@ async fn uploads_mirror_to_file_url() {
     let bucket = tempfile::tempdir().unwrap();
     let url = format!("file://{}/rec", bucket.path().display());
     let reg = Registry::new();
-    let svc = caudal_record::start(reg.clone(), RecordConfig { upload_url: Some(url), ..cfg(tmp.path()) }).unwrap();
+    let svc = caudal_record::start(reg.clone(), RecordConfig { upload_url: Some(url), ..cfg(tmp.path()) }, Vec::new())
+        .unwrap();
     let app = svc.router();
     let fx = fixture();
 
@@ -380,7 +383,7 @@ async fn uploads_mirror_to_file_url() {
 async fn track_change_starts_a_new_recording() {
     let tmp = tempfile::tempdir().unwrap();
     let reg = Registry::new();
-    let svc = caudal_record::start(reg.clone(), cfg(tmp.path())).unwrap();
+    let svc = caudal_record::start(reg.clone(), cfg(tmp.path()), Vec::new()).unwrap();
     let app = svc.router();
     let fx = fixture();
 
@@ -427,7 +430,8 @@ async fn unmatched_streams_are_not_recorded_and_restart_closes_interrupted() {
 
     let reg = Registry::new();
     let svc =
-        caudal_record::start(reg.clone(), RecordConfig { streams: vec!["cam*".into()], ..cfg(tmp.path()) }).unwrap();
+        caudal_record::start(reg.clone(), RecordConfig { streams: vec!["cam*".into()], ..cfg(tmp.path()) }, Vec::new())
+            .unwrap();
     let app: Router = svc.router();
     assert!(!crashed.join("seg-000002.m4s.tmp").exists());
     let pl = std::fs::read_to_string(crashed.join("index.m3u8")).unwrap();

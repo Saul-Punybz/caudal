@@ -16,7 +16,9 @@ use tower::ServiceExt;
 use super::*;
 use mp4demux::{Demuxed, demux};
 
-const CFG: HlsConfig = HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false };
+/// No reconnect grace: a dropped publisher ends the playlist at once.
+const CFG: HlsConfig =
+    HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, reconnect_grace: Duration::ZERO };
 
 fn fixture() -> Demuxed {
     demux(include_bytes!("../tests/fixtures/av.mp4"))
@@ -120,7 +122,7 @@ fn program_date_time_format() {
 async fn init_segment_is_decodable_cmaf() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "init", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..1);
     wait_playlist(&app, "init", |pl| pl.contains("#EXT-X-PART:")).await;
@@ -160,7 +162,7 @@ async fn init_segment_is_decodable_cmaf() {
 async fn h264_opus_init_segment_and_multivariant() {
     let fx = fixture_opus();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "opus", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..1);
     wait_playlist(&app, "opus", |pl| pl.contains("#EXT-X-PART:")).await;
@@ -197,7 +199,7 @@ async fn audio_only_opus_stream() {
     let audio_track = fx.tracks[1].clone();
     assert_eq!(audio_track.codec, caudal_core::Codec::Opus);
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = reg.publish("opus-only", BufferConfig::default()).unwrap();
     p.set_tracks(vec![audio_track]).unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -226,7 +228,7 @@ async fn audio_only_opus_stream() {
 async fn parts_and_segments_follow_the_config() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "cut", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..3); // 12 s: segments 0..=4 complete, 5 open
     let pl = wait_playlist(&app, "cut", |pl| pl.contains("#EXTINF") && pl.contains("s4.m4s")).await;
@@ -310,7 +312,7 @@ async fn parts_and_segments_follow_the_config() {
 async fn window_slides_and_old_segments_404() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "win", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..6); // 24 s: 11 complete segments
     let pl = wait_playlist(&app, "win", |pl| pl.contains("s10.m4s")).await;
@@ -328,7 +330,7 @@ async fn window_slides_and_old_segments_404() {
 async fn blocking_reload_wakes_when_the_part_lands() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "blk", &fx, BufferConfig::default()).await;
     // First loop, minus the last frames: segment 1 is open.
     let first: Vec<_> = fx.looped(0).collect();
@@ -379,7 +381,7 @@ async fn blocking_reload_wakes_when_the_part_lands() {
 async fn blocking_reload_times_out_with_503() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "idle", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..1);
     let pl = wait_playlist(&app, "idle", |pl| pl.contains("#EXT-X-PART:")).await;
@@ -397,7 +399,7 @@ async fn blocking_reload_times_out_with_503() {
 async fn end_of_stream_appends_endlist() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "end", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..2);
     wait_playlist(&app, "end", |pl| pl.contains("s1.m4s")).await;
@@ -414,7 +416,7 @@ async fn end_of_stream_appends_endlist() {
 async fn lagging_packager_restarts_on_a_keyframe_with_a_discontinuity() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let small = BufferConfig { window: Duration::from_secs(3), max_bytes: 64 << 20 };
     let p = publish(&reg, "lag", &fx, small).await;
     push_loops(&p, &fx, 0..1);
@@ -435,7 +437,7 @@ async fn lagging_packager_restarts_on_a_keyframe_with_a_discontinuity() {
 #[tokio::test]
 async fn play_page() {
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let fx = fixture();
     let _p = publish(&reg, "cam", &fx, BufferConfig::default()).await;
     let r = get(&app, "/play/cam").await;
@@ -500,7 +502,7 @@ fn render_master_formats_attrs_and_preserves_caller_order() {
 async fn master_aggregates_the_family_and_playlists_report_each_other_never_self() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let root = publish(&reg, "abr", &fx, BufferConfig::default()).await;
     let low = publish(&reg, "abr+low", &fx, BufferConfig::default()).await;
     push_loops(&root, &fx, 0..3);
@@ -683,7 +685,7 @@ async fn a_pushed_cue_reaches_the_live_playlist() {
     use caudal_core::CueKind;
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "ad", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..2);
     let c = cue(4_500_000, CueKind::Out { duration_us: Some(15_000_000) });
@@ -708,5 +710,205 @@ async fn a_pushed_cue_reaches_the_live_playlist() {
     let start = attr(dr, "START-DATE").unwrap();
     assert_eq!((ms(start) - ms(pdt)).rem_euclid(86_400_000), 500, "{pl}");
     assert!(lines[at + 1].starts_with("#EXT-X-PART") || lines[at + 1].starts_with("#EXTINF"), "{pl}");
+    drop(p);
+}
+
+/// Grace on: a republish of the same name continues the playlist.
+const GRACE: HlsConfig = HlsConfig { reconnect_grace: Duration::from_secs(10), ..CFG };
+
+/// Every segment number listed (full segments and parts), in order.
+fn listed_msns(pl: &str) -> Vec<u64> {
+    let mut v: Vec<u64> = pl
+        .lines()
+        .filter_map(|l| {
+            let uri = if l.starts_with('#') { attr(l.strip_prefix("#EXT-X-PART:")?, "URI")? } else { l };
+            parse_media_name(uri).map(|(m, _)| m)
+        })
+        .collect();
+    v.dedup();
+    v
+}
+
+fn media_sequence(pl: &str) -> u64 {
+    tag_values(pl, "#EXT-X-MEDIA-SEQUENCE:")[0].parse().unwrap()
+}
+
+/// The text after `#EXT-X-DISCONTINUITY`: the tags that open the first
+/// segment of the new publish, and what follows.
+fn after_discontinuity(pl: &str) -> &str {
+    pl.split("#EXT-X-DISCONTINUITY\n").nth(1).unwrap_or_else(|| panic!("no discontinuity:\n{pl}"))
+}
+
+/// Feeds `loops` of `fx` from media time zero, like a fresh encoder
+/// connection.
+fn feed(pkg: &mut Packager, fx: &Demuxed, loops: std::ops::Range<i64>) {
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    for n in loops {
+        for f in fx.looped(n) {
+            pkg.push(&f, t0 + Duration::from_micros(fx.micros(&f) as u64));
+        }
+    }
+}
+
+#[test]
+fn resume_keeps_counting_and_marks_the_discontinuity() {
+    let fx = fixture();
+    let mut pkg = Packager::new(GRACE);
+    pkg.set_tracks(&fx.tracks);
+    feed(&mut pkg, &fx, 0..2);
+    pkg.suspend();
+    let gap = pkg.playlist();
+    assert!(!gap.contains("#EXT-X-ENDLIST"), "no ENDLIST while a republish may come:\n{gap}");
+    assert!(gap.contains("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"s4.p0.m4s\""), "{gap}");
+    assert_eq!(listed_msns(&gap), vec![0, 1, 2, 3], "{gap}");
+
+    // The new encoder's clock starts over at zero.
+    pkg.resume();
+    pkg.set_tracks(&fx.tracks);
+    feed(&mut pkg, &fx, 0..1);
+    let pl = pkg.playlist();
+    assert_eq!(media_sequence(&pl), 0);
+    assert_eq!(listed_msns(&pl), vec![0, 1, 2, 3, 4, 5], "numbers keep counting:\n{pl}");
+    assert_eq!(pl.matches("#EXT-X-DISCONTINUITY\n").count(), 1, "{pl}");
+    let first_new = after_discontinuity(&pl);
+    assert!(first_new.starts_with("#EXT-X-PROGRAM-DATE-TIME:"), "{pl}");
+    let part = first_new.lines().find(|l| l.starts_with("#EXT-X-PART:")).unwrap();
+    assert!(part.contains("URI=\"s4.p0.m4s\"") && part.contains("INDEPENDENT=YES"), "{pl}");
+    assert_eq!(pl.matches("#EXT-X-MAP:").count(), 1, "same init: one EXT-X-MAP:\n{pl}");
+    assert!(!pl.contains("#EXT-X-DISCONTINUITY-SEQUENCE"), "{pl}");
+
+    // Once the discontinuity leaves the window, DISCONTINUITY-SEQUENCE counts it.
+    feed(&mut pkg, &fx, 1..5);
+    let pl = pkg.playlist();
+    assert!(media_sequence(&pl) > 4, "{pl}");
+    assert!(pl.contains("#EXT-X-DISCONTINUITY-SEQUENCE:1\n"), "{pl}");
+    assert!(!pl.contains("#EXT-X-DISCONTINUITY\n"), "{pl}");
+    let msns = listed_msns(&pl);
+    assert!(msns.windows(2).all(|w| w[1] == w[0] + 1), "{pl}");
+}
+
+#[test]
+fn resume_with_a_new_init_segment_adds_an_ext_x_map() {
+    let fx = fixture();
+    let opus = fixture_opus();
+    let mut pkg = Packager::new(GRACE);
+    pkg.set_tracks(&fx.tracks);
+    feed(&mut pkg, &fx, 0..2);
+    let first_init = pkg.init.clone().unwrap();
+    pkg.suspend();
+    // The encoder came back with another audio codec.
+    pkg.resume();
+    pkg.set_tracks(&opus.tracks);
+    feed(&mut pkg, &opus, 0..1);
+    let pl = pkg.playlist();
+    assert_eq!(listed_msns(&pl), vec![0, 1, 2, 3, 4, 5], "{pl}");
+    assert!(pl.contains("#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n"), "{pl}");
+    assert!(after_discontinuity(&pl).starts_with("#EXT-X-MAP:URI=\"init1.mp4\"\n"), "{pl}");
+    assert_eq!(pkg.init_for(0).unwrap(), first_init, "old segments keep their init");
+    assert_eq!(pkg.init_for(1), pkg.init);
+    assert_ne!(pkg.init_for(0), pkg.init_for(1));
+
+    // When the old segments leave, so does their init segment.
+    feed(&mut pkg, &opus, 1..5);
+    let pl = pkg.playlist();
+    assert!(pl.contains("#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init1.mp4\"\n"), "{pl}");
+    assert_eq!(pl.matches("#EXT-X-MAP:").count(), 1, "{pl}");
+    assert!(pkg.init_for(0).is_none());
+}
+
+#[test]
+fn init_names() {
+    assert_eq!(parse_init_name("init1.mp4"), Some(1));
+    assert_eq!(parse_init_name("init12.mp4"), Some(12));
+    for bad in ["init.mp4", "init0.mp4", "init01.mp4", "initx.mp4", "init1.m4s", "init-1.mp4"] {
+        assert_eq!(parse_init_name(bad), None, "{bad}");
+    }
+    assert_eq!(packager::init_uri(0), "init.mp4");
+    assert_eq!(packager::init_uri(3), "init3.mp4");
+}
+
+#[tokio::test]
+async fn republish_within_the_grace_continues_the_same_playlist() {
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router(reg.clone(), GRACE, Vec::new());
+    let p = publish(&reg, "re", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..2);
+    let live = wait_playlist(&app, "re", |pl| pl.contains("s2.p")).await;
+    drop(p);
+    // The tail is flushed, but the playlist stays live.
+    let gap = wait_playlist(&app, "re", |pl| pl.contains("\ns3.m4s")).await;
+    assert!(!gap.contains("#EXT-X-ENDLIST") && gap.contains("PRELOAD-HINT"), "{gap}");
+    assert!(media_sequence(&gap) >= media_sequence(&live));
+
+    let p = publish(&reg, "re", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..2);
+    let pl = wait_playlist(&app, "re", |pl| pl.contains("\ns6.m4s")).await;
+    // Six full segments in the window: s0 slid out, the rest kept counting.
+    assert_eq!(listed_msns(&pl), (1..=7).collect::<Vec<_>>(), "{pl}");
+    assert_eq!(media_sequence(&pl), 1);
+    assert_eq!(pl.matches("#EXT-X-DISCONTINUITY\n").count(), 1, "{pl}");
+    assert_eq!(listed_msns(after_discontinuity(&pl))[0], 4, "the new publish starts at s4:\n{pl}");
+    assert!(!pl.contains("#EXT-X-ENDLIST"), "{pl}");
+    // Old and new segments are both served under their own numbers.
+    for f in ["s3.m4s", "s4.m4s", "s4.p0.m4s", "init.mp4"] {
+        assert_eq!(get(&app, &format!("/hls/re/{f}")).await.status, StatusCode::OK, "{f}");
+    }
+    drop(p);
+}
+
+#[tokio::test]
+async fn blocking_reload_during_the_gap_is_answered_after_republish() {
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router(reg.clone(), GRACE, Vec::new());
+    let p = publish(&reg, "gap", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..2);
+    wait_playlist(&app, "gap", |pl| pl.contains("s2.p")).await;
+    drop(p);
+    let gap = wait_playlist(&app, "gap", |pl| pl.contains("\ns3.m4s")).await;
+    let hint = tag_values(&gap, "#EXT-X-PRELOAD-HINT:")[0];
+    assert_eq!(attr(hint, "URI"), Some("s4.p0.m4s"), "{gap}");
+
+    let app2 = app.clone();
+    let reload = tokio::spawn(async move { get(&app2, "/hls/gap/index.m3u8?_HLS_msn=4&_HLS_part=0").await });
+    let app3 = app.clone();
+    let hinted = tokio::spawn(async move { get(&app3, "/hls/gap/s4.p0.m4s").await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!reload.is_finished() && !hinted.is_finished(), "must wait for the publisher to come back");
+
+    let p = publish(&reg, "gap", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..1);
+    let r = reload.await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(after_discontinuity(&r.text()).contains("URI=\"s4.p0.m4s\""), "{}", r.text());
+    let h = hinted.await.unwrap();
+    assert_eq!(h.status, StatusCode::OK);
+    assert!(h.body.windows(4).any(|w| w == b"moof"));
+    drop(p);
+}
+
+#[tokio::test(start_paused = true)]
+async fn endlist_only_after_the_grace_runs_out() {
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router(reg.clone(), GRACE, Vec::new());
+    let p = publish(&reg, "late", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..2);
+    wait_playlist(&app, "late", |pl| pl.contains("s2.p")).await;
+    drop(p);
+    wait_playlist(&app, "late", |pl| pl.contains("\ns3.m4s")).await;
+    tokio::time::sleep(Duration::from_secs(9)).await;
+    let pl = get(&app, "/hls/late/index.m3u8").await.text();
+    assert!(!pl.contains("#EXT-X-ENDLIST"), "still inside the grace:\n{pl}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let pl = get(&app, "/hls/late/index.m3u8").await.text();
+    assert!(pl.contains("#EXT-X-ENDLIST") && !pl.contains("PRELOAD-HINT"), "{pl}");
+
+    // Too late: the next publish starts a playlist of its own, as before.
+    let p = publish(&reg, "late", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..1);
+    let pl = wait_playlist(&app, "late", |pl| !pl.contains("#EXT-X-ENDLIST") && pl.contains("s0.p")).await;
+    assert!(!pl.contains("#EXT-X-DISCONTINUITY"), "{pl}");
     drop(p);
 }

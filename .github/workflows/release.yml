@@ -1,0 +1,249 @@
+name: Release
+
+# Two ways in:
+#   - push a `vX.Y.Z` tag: builds, verifies, and PUBLISHES (GitHub Release +
+#     GHCR image, tagged `:X.Y.Z` and `:latest`).
+#   - workflow_dispatch: builds and runs every verification below but
+#     publishes NOTHING — no GHCR push, no GitHub Release, no `:latest`.
+#     `should-publish` below is gated on `github.event_name == 'push' &&
+#     github.ref_type == 'tag'`, so a manual dispatch can never publish,
+#     regardless of the `dry_run` input's value.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >-
+          Build and verify everything, publish nothing. (Informational only:
+          a manual dispatch never publishes, even if set to false — only a
+          tag push does.)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/saul-punybz/caudal
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should-publish: ${{ steps.mode.outputs.should-publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version (from the tag, or from Cargo.toml on a dry run)
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+      - name: A tag must match the workspace version (caudal --version has to agree)
+        if: github.ref_type == 'tag'
+        run: |
+          cargo_ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "${{ steps.version.outputs.version }}" != "$cargo_ver" ]; then
+            echo "::error::tag v${{ steps.version.outputs.version }} does not match Cargo.toml's workspace version ($cargo_ver)"
+            exit 1
+          fi
+      - id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "should-publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-static:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            docker_arch: amd64
+          - target: aarch64-unknown-linux-musl
+            docker_arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo zigbuild --release -p caudal --target ${{ matrix.target }}
+      - name: Package the release tarball
+        env:
+          VER: ${{ needs.prepare.outputs.version }}
+        run: |
+          dir="caudal-${VER}-${{ matrix.target }}"
+          mkdir -p "$dir"
+          cp target/${{ matrix.target }}/release/caudal "$dir/"
+          cp LICENSE-MIT LICENSE-APACHE README.md caudal.example.toml "$dir/"
+          tar czf "${dir}.tar.gz" "$dir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.target }}
+          path: caudal-${{ needs.prepare.outputs.version }}-${{ matrix.target }}.tar.gz
+      - name: Stage the binary for the container image (docker arch names)
+        run: |
+          mkdir -p dist/${{ matrix.docker_arch }}
+          cp target/${{ matrix.target }}/release/caudal dist/${{ matrix.docker_arch }}/caudal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.docker_arch }}
+          path: dist/${{ matrix.docker_arch }}/caudal
+
+  checksums:
+    needs: [prepare, build-static]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          merge-multiple: true
+      - name: SHA256SUMS, then verify it against the files it just described
+        run: |
+          sha256sum *.tar.gz | tee SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: SHA256SUMS
+
+  verify-binary:
+    needs: [prepare, build-static]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball-x86_64-unknown-linux-musl
+      - name: Unpack
+        env:
+          VER: ${{ needs.prepare.outputs.version }}
+        run: |
+          tar xzf "caudal-${VER}-x86_64-unknown-linux-musl.tar.gz"
+          chmod +x "caudal-${VER}-x86_64-unknown-linux-musl/caudal"
+      - name: caudal --version matches the release version
+        env:
+          VER: ${{ needs.prepare.outputs.version }}
+        run: |
+          dir="caudal-${VER}-x86_64-unknown-linux-musl"
+          out=$("$dir/caudal" --version)
+          echo "$out"
+          echo "$out" | grep -q "$VER"
+      - name: caudal check accepts caudal.example.toml
+        env:
+          VER: ${{ needs.prepare.outputs.version }}
+        run: |
+          dir="caudal-${VER}-x86_64-unknown-linux-musl"
+          "$dir/caudal" check "$dir/caudal.example.toml"
+
+  build-image:
+    needs: [prepare, build-static]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: dist-amd64, path: dist/amd64 }
+      - uses: actions/download-artifact@v4
+        with: { name: dist-arm64, path: dist/arm64 }
+      - run: chmod +x dist/amd64/caudal dist/arm64/caudal
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: needs.prepare.outputs.should-publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # No QEMU: Dockerfile.release only COPYs an already-built binary, so
+      # buildx needs no emulation to produce the arm64 image on this
+      # amd64 runner (see the comment in Dockerfile.release). This step
+      # proves both arches build; it pushes only on a tag push.
+      - name: Build both arches (push only on a tag)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: ${{ needs.prepare.outputs.should-publish == 'true' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.prepare.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.title=caudal
+            org.opencontainers.image.description=Caudal media server (RTMP, LL-HLS, SRT, WebRTC/WHIP/WHEP, MoQ)
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/Saul-Punybz/caudal
+            org.opencontainers.image.licenses=MIT OR Apache-2.0
+      # A second, single-platform (amd64) build, loaded into the local
+      # docker daemon so it can actually be run below — multi-platform
+      # results above can't be --load'ed. Always runs (tag push and
+      # dispatch alike) so a dry run proves the image actually serves.
+      - name: Build amd64 only, loaded locally, to answer /healthz
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64
+          load: true
+          tags: caudal-healthz-check:local
+      - name: Minimal [admin] config (allow_unauthenticated, so /healthz has something to answer on 0.0.0.0)
+        run: |
+          cat > /tmp/caudal.toml <<'EOF'
+          http_bind = "0.0.0.0:8080"
+
+          [admin]
+          allow_unauthenticated = true
+          EOF
+      - name: Run the amd64 image and poll /healthz
+        run: |
+          docker run -d --name caudal-healthz -p 8080:8080 \
+            -v /tmp/caudal.toml:/caudal.toml:ro caudal-healthz-check:local
+          ok=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8080/healthz; then ok=1; break; fi
+            sleep 1
+          done
+          echo
+          docker logs caudal-healthz || true
+          docker rm -f caudal-healthz || true
+          test "$ok" = "1"
+
+  release:
+    needs: [prepare, checksums, verify-binary, build-image]
+    if: needs.prepare.outputs.should-publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Caudal v${{ needs.prepare.outputs.version }}
+          body_path: docs/release-notes/v${{ needs.prepare.outputs.version }}.md
+          files: |
+            *.tar.gz
+            SHA256SUMS

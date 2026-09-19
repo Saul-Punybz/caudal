@@ -1,0 +1,17 @@
+3 translated, 4 approximated, 2 with no Caudal equivalent
+
+Translated:
+  config.protocols[connector=RTSP]: -> `[rtsp] bind` on port 8554
+  config.protocols[connector=TSSRT]: -> `[srt] bind` on port 9000
+  streams.cam1.source: -> `[[rtsp.pull]]` stream="cam1" url="rtsp://user:pass@192.0.2.10/stream1"
+
+Approximated:
+  config.protocols[connector=WebRTC]: no `port` given; kept Caudal's default `[webrtc] udp_bind` port 8189
+  streams.tv.source: file/folder `/media/intro.mp4` -> `[[channel]]` name="tv" items=["/media/intro.mp4"]; MistServer serves this on demand as VoD, Caudal's `[[channel]]` plays it as a looping 24/7 live stream (loop = true) — the closest equivalent, not identical semantics
+  streams.vod-library.source: file/folder `/media/shows` -> `[[channel]]` name="vod-library" items=["/media/shows"]; MistServer serves this on demand as VoD, Caudal's `[[channel]]` plays it as a looping 24/7 live stream (loop = true) — the closest equivalent, not identical semantics
+  autopushes: legacy positional format: MistServer upgrades this to `auto_push` the first time it loads the config (controller_storage.cpp); start that MistServer instance once and re-export, or convert the entries to `auto_push` objects by hand before importing
+
+No Caudal equivalent:
+  config.protocols[connector=HTTPTS]: connector `HTTPTS` has no Caudal output (not built, or one of MistServer's legacy outputs — HDS, Flash, Smooth Streaming — that Caudal never ports, see PLAN.md)
+  (none — always noted): a commented-out `[admin]` block is included below: without `[admin]`, Caudal refuses to listen on anything but loopback (see caudal.example.toml)
+

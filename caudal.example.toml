@@ -2,6 +2,9 @@
 # `caudal doctor [--config <path>]` checks the setup it describes — ports,
 # NAT, TLS, clock, tools — and prints what to fix; add `--url http://host:port`
 # once a server is running to also flag stream codecs a browser can't play.
+# Migrating from MistServer instead of starting from scratch? Skip this file:
+# `caudal import-mist <mistserver.conf|config.json>` writes one for you, plus
+# a report of what was translated, approximated, or has no Caudal equivalent.
 
 [server]
 # HTTP server bind address. Without an [admin] login (below) Caudal refuses

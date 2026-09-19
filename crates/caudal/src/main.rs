@@ -7,6 +7,7 @@ mod admin;
 mod api;
 mod config;
 mod doctor;
+mod import_mist;
 mod metrics;
 mod reload;
 mod shutdown;
@@ -58,6 +59,18 @@ enum Command {
         #[arg(long)]
         url: Option<String>,
     },
+    /// Imports a MistServer `config.json`/`mistserver.conf` (JSON either
+    /// way), writing a Caudal config plus a report of every setting
+    /// translated, approximated, or with no Caudal equivalent. Fails
+    /// (writing nothing) if the generated file doesn't itself pass
+    /// `caudal check`.
+    ImportMist {
+        /// Path to the MistServer config.
+        path: PathBuf,
+        /// Where to write the Caudal config.
+        #[arg(short = 'o', long, default_value = "caudal.toml")]
+        output: PathBuf,
+    },
 }
 
 fn make_filter() -> EnvFilter {
@@ -101,6 +114,9 @@ fn main() -> ExitCode {
         let report = doctor::run(config.as_deref(), &opts);
         report.print();
         return report.exit_code();
+    }
+    if let Some(Command::ImportMist { path, output }) = &cli.command {
+        return import_mist::run(path, output);
     }
     if let Some(Command::Check { path }) = &cli.command {
         return match config::load(path) {

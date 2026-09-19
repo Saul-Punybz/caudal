@@ -158,18 +158,22 @@ jobs:
       - name: Build every fuzz target
         run: |
           cd fuzz
+          # cargo-fuzz defaults to the triple it was itself built for; the
+          # prebuilt one is musl, where the sanitizer cannot link. Use the host.
+          host=$(rustc +nightly -vV | sed -n 's/^host: //p')
           for target in $(cargo fuzz list); do
-            cargo +nightly fuzz build "$target"
+            cargo +nightly fuzz build --target "$host" "$target"
           done
       - name: Run each target for 60s on its saved corpus
         run: |
           cd fuzz
           status=0
+          host=$(rustc +nightly -vV | sed -n 's/^host: //p')
           for target in $(cargo fuzz list); do
             echo "::group::$target"
             # cargo-fuzz appends `corpus/$target` (the one committed to this
             # repo) as the last libFuzzer argument automatically.
-            cargo +nightly fuzz run "$target" -- \
+            cargo +nightly fuzz run --target "$host" "$target" -- \
               -max_total_time=60 -jobs=1 -workers=1 -rss_limit_mb=2048 || status=1
             echo "::endgroup::"
           done

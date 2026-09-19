@@ -120,7 +120,7 @@ fn program_date_time_format() {
 async fn init_segment_is_decodable_cmaf() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "init", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..1);
     wait_playlist(&app, "init", |pl| pl.contains("#EXT-X-PART:")).await;
@@ -160,7 +160,7 @@ async fn init_segment_is_decodable_cmaf() {
 async fn h264_opus_init_segment_and_multivariant() {
     let fx = fixture_opus();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "opus", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..1);
     wait_playlist(&app, "opus", |pl| pl.contains("#EXT-X-PART:")).await;
@@ -197,7 +197,7 @@ async fn audio_only_opus_stream() {
     let audio_track = fx.tracks[1].clone();
     assert_eq!(audio_track.codec, caudal_core::Codec::Opus);
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = reg.publish("opus-only", BufferConfig::default()).unwrap();
     p.set_tracks(vec![audio_track]).unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -226,7 +226,7 @@ async fn audio_only_opus_stream() {
 async fn parts_and_segments_follow_the_config() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "cut", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..3); // 12 s: segments 0..=4 complete, 5 open
     let pl = wait_playlist(&app, "cut", |pl| pl.contains("#EXTINF") && pl.contains("s4.m4s")).await;
@@ -310,7 +310,7 @@ async fn parts_and_segments_follow_the_config() {
 async fn window_slides_and_old_segments_404() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "win", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..6); // 24 s: 11 complete segments
     let pl = wait_playlist(&app, "win", |pl| pl.contains("s10.m4s")).await;
@@ -328,7 +328,7 @@ async fn window_slides_and_old_segments_404() {
 async fn blocking_reload_wakes_when_the_part_lands() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "blk", &fx, BufferConfig::default()).await;
     // First loop, minus the last frames: segment 1 is open.
     let first: Vec<_> = fx.looped(0).collect();
@@ -379,7 +379,7 @@ async fn blocking_reload_wakes_when_the_part_lands() {
 async fn blocking_reload_times_out_with_503() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "idle", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..1);
     let pl = wait_playlist(&app, "idle", |pl| pl.contains("#EXT-X-PART:")).await;
@@ -397,7 +397,7 @@ async fn blocking_reload_times_out_with_503() {
 async fn end_of_stream_appends_endlist() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "end", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..2);
     wait_playlist(&app, "end", |pl| pl.contains("s1.m4s")).await;
@@ -414,7 +414,7 @@ async fn end_of_stream_appends_endlist() {
 async fn lagging_packager_restarts_on_a_keyframe_with_a_discontinuity() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let small = BufferConfig { window: Duration::from_secs(3), max_bytes: 64 << 20 };
     let p = publish(&reg, "lag", &fx, small).await;
     push_loops(&p, &fx, 0..1);
@@ -435,7 +435,7 @@ async fn lagging_packager_restarts_on_a_keyframe_with_a_discontinuity() {
 #[tokio::test]
 async fn play_page() {
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let fx = fixture();
     let _p = publish(&reg, "cam", &fx, BufferConfig::default()).await;
     let r = get(&app, "/play/cam").await;
@@ -500,7 +500,7 @@ fn render_master_formats_attrs_and_preserves_caller_order() {
 async fn master_aggregates_the_family_and_playlists_report_each_other_never_self() {
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let root = publish(&reg, "abr", &fx, BufferConfig::default()).await;
     let low = publish(&reg, "abr+low", &fx, BufferConfig::default()).await;
     push_loops(&root, &fx, 0..3);
@@ -683,7 +683,7 @@ async fn a_pushed_cue_reaches_the_live_playlist() {
     use caudal_core::CueKind;
     let fx = fixture();
     let reg = Registry::new();
-    let app = router(reg.clone(), CFG);
+    let app = router(reg.clone(), CFG, Vec::new());
     let p = publish(&reg, "ad", &fx, BufferConfig::default()).await;
     push_loops(&p, &fx, 0..2);
     let c = cue(4_500_000, CueKind::Out { duration_us: Some(15_000_000) });

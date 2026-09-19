@@ -2,6 +2,7 @@
 //! allow lists, anything) by installing a [`Gate`] on the [`crate::Registry`].
 
 use std::future::Future;
+use std::net::IpAddr;
 use std::pin::Pin;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,5 +23,14 @@ pub enum Denied {
 pub type GateFuture<'a> = Pin<Box<dyn Future<Output = Result<(), Denied>> + Send + 'a>>;
 
 pub trait Gate: Send + Sync + 'static {
-    fn check<'a>(&'a self, access: Access, stream: &'a str, token: Option<&'a str>) -> GateFuture<'a>;
+    /// `ip` is the caller's resolved address (the TCP/UDP/QUIC peer, or the
+    /// client behind a trusted reverse proxy for HTTP protocols); `None`
+    /// when a protocol has no way to learn it (see callers for which ones).
+    fn check<'a>(
+        &'a self,
+        access: Access,
+        stream: &'a str,
+        token: Option<&'a str>,
+        ip: Option<IpAddr>,
+    ) -> GateFuture<'a>;
 }

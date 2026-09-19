@@ -8,8 +8,15 @@ use caudal_core::Registry;
 
 /// Renders the full `/metrics` body for the current state of `registry`.
 /// `health` is `None` when `[health]` has no webhooks configured (the
-/// watcher never starts, so there is nothing to report).
-pub fn render(registry: &Registry, health: Option<&caudal_health::HealthService>) -> String {
+/// watcher never starts, so there is nothing to report). `access` is
+/// always `Some` in `crate::main::run` (a `caudal_access::Checker` is
+/// created even with no `[[access.rules]]`); `None` only in a test that
+/// builds `AppState` without calling `set_access`.
+pub fn render(
+    registry: &Registry,
+    health: Option<&caudal_health::HealthService>,
+    access: Option<&caudal_access::Checker>,
+) -> String {
     let streams = registry.list();
     let mut out = String::new();
 
@@ -51,6 +58,20 @@ pub fn render(registry: &Registry, health: Option<&caudal_health::HealthService>
         }
     }
 
+    if let Some(access) = access {
+        let _ = writeln!(out, "# HELP caudal_access_denied_total Publish/play requests denied by [[access.rules]].");
+        let _ = writeln!(out, "# TYPE caudal_access_denied_total counter");
+        for m in access.metrics() {
+            let _ = writeln!(
+                out,
+                "caudal_access_denied_total{{stream=\"{}\",reason=\"{}\"}} {}",
+                escape(&m.stream),
+                m.reason,
+                m.count
+            );
+        }
+    }
+
     out
 }
 
@@ -66,7 +87,7 @@ mod tests {
     #[test]
     fn renders_zero_streams() {
         let registry = Registry::new();
-        let body = render(&registry, None);
+        let body = render(&registry, None, None);
         assert!(body.contains("caudal_streams 0"), "{body}");
         assert!(body.contains("caudal_viewers"), "{body}");
         assert!(body.contains("caudal_bytes_in_total"), "{body}");
@@ -77,7 +98,7 @@ mod tests {
     fn renders_a_live_stream() {
         let registry = Registry::new();
         let _publisher = registry.publish("test", caudal_core::BufferConfig::default()).unwrap();
-        let body = render(&registry, None);
+        let body = render(&registry, None, None);
         assert!(body.contains("caudal_streams 1"), "{body}");
         assert!(body.contains("caudal_viewers{stream=\"test\"} 0"), "{body}");
         assert!(body.contains("caudal_bytes_in_total{stream=\"test\"} 0"), "{body}");
@@ -108,8 +129,22 @@ mod tests {
             },
         )
         .unwrap();
-        let body = render(&registry, Some(&health));
+        let body = render(&registry, Some(&health), None);
         assert!(body.contains("caudal_alerts_active{rule=\"no_keyframe\"} 0"), "{body}");
         assert!(body.contains("caudal_alerts_fired_total{rule=\"publisher_lost\"} 0"), "{body}");
+    }
+
+    #[test]
+    fn renders_access_denial_counters() {
+        let registry = Registry::new();
+        let rule = caudal_access::Rule {
+            streams: vec!["*".into()],
+            play_deny: vec![caudal_access::Entry::parse("1.2.3.4").unwrap()],
+            ..Default::default()
+        };
+        let checker = caudal_access::AccessConfig { rules: vec![rule], geoip_db: None }.checker().unwrap();
+        assert!(checker.check(caudal_core::Access::Play, "live", Some("1.2.3.4".parse().unwrap())).is_err());
+        let body = render(&registry, None, Some(&checker));
+        assert!(body.contains("caudal_access_denied_total{stream=\"live\",reason=\"ip_denied\"} 1"), "{body}");
     }
 }

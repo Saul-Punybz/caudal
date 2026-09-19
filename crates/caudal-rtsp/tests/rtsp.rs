@@ -241,7 +241,13 @@ fn server_rtp_port(setup_resp: &str) -> u16 {
 struct DenyGate(Denied);
 
 impl Gate for DenyGate {
-    fn check<'a>(&'a self, access: Access, _stream: &'a str, _token: Option<&'a str>) -> GateFuture<'a> {
+    fn check<'a>(
+        &'a self,
+        access: Access,
+        _stream: &'a str,
+        _token: Option<&'a str>,
+        _ip: Option<std::net::IpAddr>,
+    ) -> GateFuture<'a> {
         let d = self.0.clone();
         Box::pin(async move {
             match access {

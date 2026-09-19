@@ -25,6 +25,7 @@ caudal-transcode.workspace = true
 caudal-scte35.workspace = true
 caudal-admin.workspace = true
 caudal-health.workspace = true
+caudal-access.workspace = true
 axum.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
@@ -45,3 +46,5 @@ serde_json.workspace = true
 tower = { version = "0.5", features = ["util"] }
 sha2 = "=0.10.9"
 hex = "=0.4.3"
+# Builds a tiny in-memory .mmdb for the [access] geoip_db config test.
+maxminddb-writer = "0.1"

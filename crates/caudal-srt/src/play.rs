@@ -23,7 +23,7 @@ pub(crate) async fn handle(
     name: &str,
     token: Option<&str>,
 ) {
-    if let Err(denied) = registry.authorize(Access::Play, name, token).await {
+    if let Err(denied) = registry.authorize(Access::Play, name, token, Some(std::net::IpAddr::V4(*peer.ip()))).await {
         tracing::info!(%peer, stream = %name, reason = ?denied, "srt play rejected");
         return;
     }

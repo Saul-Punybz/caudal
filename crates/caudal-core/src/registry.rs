@@ -71,11 +71,18 @@ impl Registry {
     }
 
     /// Asks the installed gate. Ingest calls this before `publish`, outputs
-    /// before serving a viewer.
-    pub async fn authorize(&self, access: Access, stream: &str, token: Option<&str>) -> Result<(), Denied> {
+    /// before serving a viewer. `ip` is the caller's resolved address, when
+    /// the protocol has one to give (see [`Gate::check`]).
+    pub async fn authorize(
+        &self,
+        access: Access,
+        stream: &str,
+        token: Option<&str>,
+        ip: Option<std::net::IpAddr>,
+    ) -> Result<(), Denied> {
         let gate = self.gate.read().clone();
         match gate {
-            Some(g) => g.check(access, stream, token).await,
+            Some(g) => g.check(access, stream, token, ip).await,
             None => Ok(()),
         }
     }

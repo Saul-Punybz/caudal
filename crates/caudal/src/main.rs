@@ -114,10 +114,13 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         }
     };
     let registry = caudal_core::Registry::new();
+    // `[server] trusted_proxies`: HTTP protocols only (see
+    // `caudal_core::net::resolve_forwarded`'s docs and each router below).
+    let trusted_proxies = cfg.server.trusted_proxy_cidrs().expect("validated");
 
     // Starts RTMP, SRT, RTSP, restream, channels and transcode, and wires
-    // auth/webhooks: everything `subsystems::Supervisor::reload` can later
-    // apply hot or restart on its own (see that module's docs). Each
+    // auth/access/webhooks: everything `subsystems::Supervisor::reload` can
+    // later apply hot or restart on its own (see that module's docs). Each
     // listener runs in its own task; a panic or I/O error there is logged
     // and does not bring down the HTTP side.
     let started = subsystems::Supervisor::start(&cfg, registry.clone());
@@ -130,9 +133,11 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             cue_tags: cfg.hls.cue_tags,
             cue_out_tags: cfg.hls.cue_out_tags,
         },
+        trusted_proxies.clone(),
     );
 
     let state = api::AppState::new(registry.clone());
+    state.set_access(started.access.clone());
     let webrtc_router = caudal_webrtc::router(
         registry.clone(),
         caudal_webrtc::WebRtcConfig {
@@ -141,6 +146,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             buffer: cfg.buffer.to_buffer_config(),
             threads: cfg.webrtc.threads,
         },
+        trusted_proxies.clone(),
     );
 
     // MoQ failing to start (e.g. its UDP port is taken) disables MoQ only.
@@ -166,7 +172,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     let record_router = match cfg.record.to_record_config() {
         Some(rc) => {
             let dir = rc.dir.display().to_string();
-            match caudal_record::start(registry.clone(), rc) {
+            match caudal_record::start(registry.clone(), rc, trusted_proxies.clone()) {
                 Ok(svc) => {
                     tracing::info!(%dir, "recording enabled");
                     svc.router()

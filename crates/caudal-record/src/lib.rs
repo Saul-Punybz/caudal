@@ -62,6 +62,9 @@ const SWEEP_EVERY: Duration = Duration::from_secs(600);
 pub(crate) struct Shared {
     pub registry: Arc<Registry>,
     pub cfg: RecordConfig,
+    /// `[server] trusted_proxies`, for resolving `X-Forwarded-For` on this
+    /// crate's HTTP routes; see `caudal_core::net::resolve_forwarded`.
+    pub trusted_proxies: Vec<caudal_core::Cidr>,
     /// `(stream, id)` of recordings being written right now.
     pub active: Mutex<HashSet<(String, String)>>,
     /// One recorder task per live stream.
@@ -93,8 +96,12 @@ impl RecordService {
 }
 
 /// Starts recording matching streams (current and future). Must be called
-/// inside a tokio runtime.
-pub fn start(registry: Arc<Registry>, cfg: RecordConfig) -> std::io::Result<RecordService> {
+/// inside a tokio runtime. `trusted_proxies`: see [`Shared::trusted_proxies`].
+pub fn start(
+    registry: Arc<Registry>,
+    cfg: RecordConfig,
+    trusted_proxies: Vec<caudal_core::Cidr>,
+) -> std::io::Result<RecordService> {
     std::fs::create_dir_all(&cfg.dir)?;
     // Fail now, not on the first publish, if the directory is not writable.
     let probe = cfg.dir.join(".caudal-write-test");
@@ -114,6 +121,7 @@ pub fn start(registry: Arc<Registry>, cfg: RecordConfig) -> std::io::Result<Reco
     let shared = Arc::new(Shared {
         registry: registry.clone(),
         cfg,
+        trusted_proxies,
         active: Mutex::default(),
         recorders: Mutex::default(),
         uploader,

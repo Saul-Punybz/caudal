@@ -20,6 +20,7 @@ Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; 
 **Set aside:** MistServer bench (`bench/mistserver` @ c553882; next: `meson setup --default-library=static`; MistServer LL-HLS part is a fixed 500 ms); MCP server (future).
 **After v0.1:** kTLS + sendfile, io_uring/pacing, OMT, Raspberry Pi image, MoQ on Safari, DASH, SDKs, watermarking, CEA-608, GPU transcoding, TEST-AUDIT phase 2/3.
 **Status page:** https://claude.ai/artifact/NGCn3AzWdLEKLGQkvuT56A (source in the session scratchpad; republish with `url`).
+**Gotcha (19 Sep):** debug builds of `caudal-ui` read `dist/` from disk at the path they were compiled in (rust-embed debug mode). A worktree build sharing `target/` left the main binary pointing at a deleted worktree → the UI 404s locally while CI passes. Fix: `touch crates/caudal-ui/src/lib.rs && cargo build -p caudal`; agents should use their own `CARGO_TARGET_DIR`.
 **Rule from Saul:** verify with tools outside Claude; say what is not verified.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps

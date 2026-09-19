@@ -1,7 +1,10 @@
 //! Load and latency client for the Caudal vs MediaMTX benchmark.
 //!
 //! Load modes (N concurrent viewers, one tokio task each; prints one JSON
-//! line with what was received during the measurement window):
+//! line with what was received during the measurement window, plus one
+//! `"kind":"tick"` progress line every `--report-interval` seconds if set,
+//! for a caller that wants to watch a long-running load without waiting
+//! for `--duration` to elapse — see `bench/soak.py`):
 //!   hls  <multivariant-or-media-url>   LL-HLS like a low-latency player:
 //!        blocking playlist reloads (_HLS_msn/_HLS_part), then every new part,
 //!        one HTTP client (connection pool) per viewer, every media playlist
@@ -119,6 +122,9 @@ struct Args {
     ramp_ms: u64,
     expect_mbps: f64,
     samples: usize,
+    /// Load modes only: print a `"kind":"tick"` diff every this many
+    /// seconds during `--duration`. 0 (default) means off.
+    report_interval: f64,
 }
 
 fn parse_args() -> Args {
@@ -134,6 +140,7 @@ fn parse_args() -> Args {
         ramp_ms: 5000,
         expect_mbps: 0.0,
         samples: 20,
+        report_interval: 0.0,
     };
     while let Some(k) = a.next() {
         let v = a.next().unwrap_or_else(|| usage());
@@ -144,6 +151,7 @@ fn parse_args() -> Args {
             "--ramp-ms" => args.ramp_ms = v.parse().unwrap(),
             "--expect-mbps" => args.expect_mbps = v.parse().unwrap(),
             "--samples" => args.samples = v.parse().unwrap(),
+            "--report-interval" => args.report_interval = v.parse().unwrap(),
             _ => usage(),
         }
     }
@@ -153,7 +161,8 @@ fn parse_args() -> Args {
 fn usage() -> ! {
     eprintln!(
         "usage: caudal-bench-client <hls|rtsp|whep|latency-hls|latency-rtsp|latency-flv> <url> \
-         [--viewers N] [--warmup S] [--duration S] [--ramp-ms MS] [--expect-mbps M] [--samples N]"
+         [--viewers N] [--warmup S] [--duration S] [--ramp-ms MS] [--expect-mbps M] [--samples N] \
+         [--report-interval S]"
     );
     std::process::exit(2)
 }
@@ -197,7 +206,23 @@ async fn load(args: Args) {
     tokio::time::sleep_until(warm_end.into()).await;
     let a: Vec<Snap> = viewers.iter().map(|v| v.snap()).collect();
     let t0 = Instant::now();
-    tokio::time::sleep(Duration::from_secs_f64(args.duration)).await;
+    if args.report_interval > 0.0 {
+        let mut prev = a.clone();
+        let mut elapsed = 0.0;
+        while elapsed + args.report_interval < args.duration {
+            tokio::time::sleep(Duration::from_secs_f64(args.report_interval)).await;
+            elapsed += args.report_interval;
+            let cur: Vec<Snap> = viewers.iter().map(|v| v.snap()).collect();
+            print_tick(&args.mode, &prev, &cur, args.report_interval, t0.elapsed().as_secs_f64());
+            prev = cur;
+        }
+        let remaining = args.duration - elapsed;
+        if remaining > 0.0 {
+            tokio::time::sleep(Duration::from_secs_f64(remaining)).await;
+        }
+    } else {
+        tokio::time::sleep(Duration::from_secs_f64(args.duration)).await;
+    }
     let b: Vec<Snap> = viewers.iter().map(|v| v.snap()).collect();
     let secs = t0.elapsed().as_secs_f64();
 
@@ -269,6 +294,37 @@ async fn load(args: Args) {
         tot.lost,
         FIRST_ERRORS.lock().unwrap().iter().map(|e| format!("\"{e}\"")).collect::<Vec<_>>().join(",")
     );
+}
+
+/// One `--report-interval` progress line: the diff between two snapshots,
+/// summed over every viewer. Cheap and reuses the same `Snap` diff shape as
+/// the final summary; a long-running caller (e.g. a soak test) tails stdout
+/// for these instead of waiting for the process to exit.
+fn print_tick(mode: &str, a: &[Snap], b: &[Snap], interval_s: f64, t_s: f64) {
+    let mut bytes = 0u64;
+    let mut requests = 0u64;
+    let mut errors = 0u64;
+    let mut timeouts = 0u64;
+    let mut lost = 0u64;
+    let mut reconnected = 0usize;
+    for (x, y) in a.iter().zip(b) {
+        bytes += y.bytes - x.bytes;
+        requests += y.requests - x.requests;
+        errors += y.errors - x.errors;
+        timeouts += y.timeouts - x.timeouts;
+        lost += y.lost - x.lost;
+        if y.sessions > x.sessions {
+            reconnected += 1;
+        }
+    }
+    println!(
+        "{{\"kind\":\"tick\",\"mode\":\"{mode}\",\"t_s\":{t_s:.1},\"egress_mbps\":{:.2},\
+         \"requests\":{requests},\"errors\":{errors},\"timeouts\":{timeouts},\
+         \"reconnected\":{reconnected},\"rtp_lost\":{lost}}}",
+        bytes as f64 * 8.0 / 1e6 / interval_s.max(0.001)
+    );
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
 }
 
 fn pct(v: &[f64], p: f64) -> f64 {

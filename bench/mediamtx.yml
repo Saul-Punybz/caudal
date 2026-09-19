@@ -1,0 +1,37 @@
+# MediaMTX v1.21 config for bench/run.sh. Everything not set here keeps the
+# release default. Loopback only, like bench/caudal.toml.
+logLevel: warn
+logDestinations: [stdout]
+
+rtsp: true
+rtspAddress: 127.0.0.1:8554
+rtpAddress: 127.0.0.1:8000
+rtcpAddress: 127.0.0.1:8001
+
+rtmp: true
+rtmpAddress: 127.0.0.1:1935
+
+# LL-HLS with the same part/segment durations as Caudal (200 ms / 2 s).
+# hlsAlwaysRemux: package as soon as a stream is published, like Caudal
+# does, instead of on the first viewer request (default false).
+hls: true
+hlsAddress: 127.0.0.1:8888
+hlsVariant: lowLatency
+hlsSegmentDuration: 2s
+hlsPartDuration: 200ms
+hlsAlwaysRemux: true
+
+webrtc: true
+webrtcAddress: 127.0.0.1:8889
+webrtcLocalUDPAddress: 127.0.0.1:8189
+webrtcIPsFromInterfaces: false
+webrtcAdditionalHosts: [127.0.0.1]
+
+srt: true
+srtAddress: 127.0.0.1:8890
+
+# MoQ is on by default in both servers; left on in both.
+moq: true
+
+paths:
+  all_others:

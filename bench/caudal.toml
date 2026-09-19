@@ -1,0 +1,30 @@
+# Caudal config for bench/run.sh. Loopback only (no [admin] needed).
+# LL-HLS: 200 ms parts, 2 s segments (same as MediaMTX in bench/mediamtx.yml).
+# The live buffer stays at the shipped default (50 s); see the report.
+[server]
+http_bind = "127.0.0.1:8080"
+
+[rtmp]
+bind = "127.0.0.1:1935"
+app = "live"
+
+[srt]
+bind = "127.0.0.1:9000"
+
+[hls]
+part_ms = 200
+segment_ms = 2000
+
+[buffer]
+window_secs = 50
+max_mb = 256
+
+[rtsp]
+bind = "127.0.0.1:8554"
+
+[webrtc]
+udp_bind = "127.0.0.1:8189"
+
+# MoQ is on by default (as in MediaMTX); loopback like everything else.
+[moq]
+bind = "127.0.0.1:4443"

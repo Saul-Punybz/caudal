@@ -1,3 +1,8 @@
 /target
 /.claude/
 target/
+
+# bench/: downloaded MediaMTX, rendered media, raw run output
+/bench/.cache/
+/bench/results/*.log
+/bench/results/client.out

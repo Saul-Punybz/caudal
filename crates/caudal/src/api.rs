@@ -33,6 +33,7 @@ pub struct AppState {
     access: std::sync::OnceLock<Arc<caudal_access::Checker>>,
     /// Set once, if `[captions]` captions any stream; read by `/metrics`
     /// for `caudal_captions_*`.
+    #[cfg(feature = "captions")]
     captions: std::sync::OnceLock<caudal_captions::Captions>,
     /// Set once on a cluster edge; `/metrics` appends its pull metrics.
     edge: std::sync::OnceLock<caudal_cluster::Edge>,
@@ -46,6 +47,7 @@ impl AppState {
             cue_seq: AtomicU32::new(1),
             health: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
+            #[cfg(feature = "captions")]
             captions: std::sync::OnceLock::new(),
             edge: std::sync::OnceLock::new(),
         })
@@ -67,6 +69,7 @@ impl AppState {
         let _ = self.access.set(checker);
     }
 
+    #[cfg(feature = "captions")]
     pub fn set_captions(&self, captions: caudal_captions::Captions) {
         let _ = self.captions.set(captions);
     }
@@ -250,6 +253,7 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
         state.health.get().map(|h| h.as_ref()),
         state.access.get().map(|a| a.as_ref()),
     );
+    #[cfg(feature = "captions")]
     if let Some(c) = state.captions.get() {
         body.push_str(&crate::captions::render_metrics(c));
     }

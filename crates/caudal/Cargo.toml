@@ -7,6 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["captions"]
+# Live captions (`[captions]`, `caudal captions fetch-model`). Without it the
+# binary has no speech-to-text engine (no candle); a config that sets
+# `[captions]` is rejected at `caudal check` and startup.
+captions = ["dep:caudal-captions"]
+
 [dependencies]
 caudal-core.workspace = true
 caudal-rtmp.workspace = true
@@ -26,7 +33,8 @@ caudal-scte35.workspace = true
 caudal-admin.workspace = true
 caudal-health.workspace = true
 caudal-access.workspace = true
-caudal-captions.workspace = true
+# Live captions (Whisper on candle): the `captions` feature, on by default.
+caudal-captions = { workspace = true, optional = true }
 # `caudal captions fetch-model` verifies every downloaded file.
 sha2 = "=0.10.9"
 caudal-cluster.workspace = true

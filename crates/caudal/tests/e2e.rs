@@ -853,9 +853,11 @@ impl Drop for KillOnDrop {
 
 /// The speech in the captions test: original text, spoken by a
 /// text-to-speech voice (no recorded audio in the repo).
+#[cfg(feature = "captions")]
 const SPEECH_ES: &str = "Buenas tardes y bienvenidos a la transmisión en vivo. Hoy vamos a hablar del clima en Puerto Rico durante la temporada de huracanes. Se esperan lluvias fuertes durante la noche del jueves. Les recomendamos preparar agua, comida y baterías para varios días.";
 
 /// `HH:MM:SS.mmm` → µs.
+#[cfg(feature = "captions")]
 fn vtt_time(t: &str) -> i64 {
     let (hms, ms) = t.trim().split_once('.').expect("vtt time");
     let p: Vec<i64> = hms.split(':').map(|x| x.parse().unwrap()).collect();
@@ -869,6 +871,7 @@ fn vtt_time(t: &str) -> i64 {
 ///
 /// Needs a Whisper model (`CAUDAL_WHISPER_MODELS`, a directory holding
 /// `whisper-tiny/`; CI fetches it) and `say` or `espeak-ng` for the speech.
+#[cfg(feature = "captions")]
 #[test]
 fn live_captions_reach_ll_hls_as_webvtt() {
     if !enabled() {
@@ -972,6 +975,7 @@ fn live_captions_reach_ll_hls_as_webvtt() {
 
 /// Lower-case words, punctuation stripped (same rule as
 /// `caudal_captions::eval::words`).
+#[cfg(feature = "captions")]
 fn words(text: &str) -> Vec<String> {
     text.split(|c: char| c.is_whitespace() || (c.is_ascii_punctuation() && c != '\'') || "¿¡«»“”…".contains(c))
         .map(|w| w.trim_matches('\'').to_lowercase())

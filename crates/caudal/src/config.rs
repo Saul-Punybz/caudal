@@ -977,7 +977,7 @@ impl Config {
             admin.validate()?;
         }
         self.health.to_health_config()?;
-        self.captions.to_runtime(self.hls.segment_ms)?;
+        self.captions.validate(self.hls.segment_ms)?;
         if let Some(c) = &self.cluster {
             c.edge_config(self.buffer.to_buffer_config())?;
             if c.role == ClusterRole::Origin && !self.moq.enabled {

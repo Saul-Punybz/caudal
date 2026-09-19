@@ -1,13 +1,23 @@
 //! `[captions]`: automatic live captions (`caudal-captions`), their
 //! `/metrics` lines, and `caudal captions fetch-model`.
+//!
+//! Captions are the `captions` cargo feature (on by default). Without it
+//! the section still parses, so the config schema is the same in every
+//! build, but setting anything in it is an error that names the feature.
 
+#[cfg(feature = "captions")]
 use std::fmt::Write as _;
+#[cfg(feature = "captions")]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde::Deserialize;
+#[cfg(feature = "captions")]
 use sha2::{Digest, Sha256};
+
+/// Why a build without the `captions` feature rejects `[captions]`.
+pub const NOT_BUILT: &str = "this build has no captions; rebuild with --features captions";
 
 /// `[captions]` with one or more `[[captions.stream]]`. Off unless a
 /// stream rule is present.
@@ -54,6 +64,21 @@ pub struct CaptionsStreamEntry {
     pub language: String,
 }
 
+impl CaptionsSection {
+    /// Checks the section (`caudal check`, startup). Without the `captions`
+    /// feature, any key set in `[captions]` is an error.
+    pub fn validate(&self, segment_ms: u32) -> Result<(), String> {
+        #[cfg(feature = "captions")]
+        return self.to_runtime(segment_ms).map(|_| ());
+        #[cfg(not(feature = "captions"))]
+        {
+            let _ = segment_ms;
+            if *self == Self::default() { Ok(()) } else { Err(format!("[captions]: {NOT_BUILT}")) }
+        }
+    }
+}
+
+#[cfg(feature = "captions")]
 impl CaptionsSection {
     /// The runtime config, or `None` when no stream is captioned.
     /// `segment_ms` is `[hls] segment_ms`: the last cue of each chunk stays
@@ -111,9 +136,11 @@ impl CaptionsSection {
 }
 
 /// One per-stream metric: name, type, help, value.
+#[cfg(feature = "captions")]
 type Series = (&'static str, &'static str, &'static str, fn(&caudal_captions::StreamMetrics) -> f64);
 
 /// Prometheus lines for captioned streams.
+#[cfg(feature = "captions")]
 pub fn render_metrics(c: &caudal_captions::Captions) -> String {
     let m = c.metrics();
     let mut out = String::new();
@@ -170,6 +197,7 @@ pub fn render_metrics(c: &caudal_captions::Captions) -> String {
 /// `caudal captions fetch-model <name> --dir <dir>`: downloads a pinned
 /// Whisper model from Hugging Face, checks every file's size and SHA-256,
 /// and only then moves it into place.
+#[cfg(feature = "captions")]
 pub fn fetch_model_cmd(name: &str, dir: &Path) -> ExitCode {
     let Some(model) = caudal_captions::models::known(name) else {
         let names: Vec<&str> = caudal_captions::models::KNOWN.iter().map(|m| m.name).collect();
@@ -206,6 +234,14 @@ pub fn fetch_model_cmd(name: &str, dir: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `caudal captions fetch-model` in a build without captions.
+#[cfg(not(feature = "captions"))]
+pub fn fetch_model_cmd(_name: &str, _dir: &Path) -> ExitCode {
+    eprintln!("{NOT_BUILT}");
+    ExitCode::FAILURE
+}
+
+#[cfg(feature = "captions")]
 fn download(url: &str, path: &Path, size: u64, sha256: &str) -> Result<(), String> {
     let tmp = path.with_extension("part");
     let mut resp = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
@@ -241,12 +277,29 @@ mod tests {
         cfg.captions
     }
 
+    #[cfg(not(feature = "captions"))]
+    #[test]
+    fn a_build_without_captions_rejects_the_section_and_fetch_model() {
+        assert_eq!(CaptionsSection::default().validate(2000), Ok(()));
+        let err = section("[captions]\nmodel = \"small\"\n").validate(2000).unwrap_err();
+        assert!(err.contains(NOT_BUILT), "{err}");
+        let err =
+            toml::from_str::<crate::config::Config>("[[captions.stream]]\nstreams = [\"a\"]\nlanguage = \"es\"\n")
+                .unwrap()
+                .validate()
+                .unwrap_err();
+        assert!(err.contains(NOT_BUILT), "{err}");
+        assert_eq!(fetch_model_cmd("tiny", Path::new("unused")), ExitCode::FAILURE);
+    }
+
+    #[cfg(feature = "captions")]
     #[test]
     fn off_by_default() {
         assert_eq!(CaptionsSection::default().to_runtime(2000).unwrap(), None);
         assert_eq!(section("[captions]\nmodel = \"small\"\n").to_runtime(2000).unwrap(), None);
     }
 
+    #[cfg(feature = "captions")]
     #[test]
     fn stream_rules_become_the_runtime_config() {
         let s = section(
@@ -262,6 +315,7 @@ mod tests {
         assert_eq!(rt.rules[1].language, caudal_captions::Language::Auto);
     }
 
+    #[cfg(feature = "captions")]
     #[test]
     fn bad_values_name_the_key() {
         let base = "[[captions.stream]]\nstreams = [\"a\"]\nlanguage = \"es\"\n";

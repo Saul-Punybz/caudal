@@ -39,13 +39,17 @@ mod clip;
 mod http;
 mod meta;
 mod recorder;
+mod schedule;
 mod segmenter;
 mod upload;
+
+pub use schedule::{ScheduleConfig, validate_schedules};
 
 #[derive(Debug, Clone)]
 pub struct RecordConfig {
     pub dir: PathBuf,
-    /// Stream names or `prefix*` patterns to record; `["*"]` = everything.
+    /// Stream names or `prefix*` patterns to record always, regardless of
+    /// `schedules`; `["*"]` = everything.
     pub streams: Vec<String>,
     /// Target segment length; segments are cut on the first keyframe after it.
     pub segment_secs: u32,
@@ -54,6 +58,10 @@ pub struct RecordConfig {
     /// Also upload each closed segment and playlist to object storage,
     /// e.g. `s3://bucket/prefix` (credentials from the environment).
     pub upload_url: Option<String>,
+    /// `[[record.schedule]]`: start/stop windows for streams not already
+    /// covered by `streams`. Validate with [`validate_schedules`] before
+    /// passing here (`start` does this).
+    pub schedules: Vec<ScheduleConfig>,
 }
 
 /// How often the retention sweep runs.
@@ -70,6 +78,7 @@ pub(crate) struct Shared {
     /// One recorder task per live stream.
     pub recorders: Mutex<HashMap<String, Arc<Stream>>>,
     pub uploader: Option<Arc<upload::Uploader>>,
+    pub scheduler: schedule::Scheduler,
 }
 
 pub struct RecordService {
@@ -118,6 +127,7 @@ pub fn start(
             None
         }
     });
+    let scheduler = schedule::Scheduler::start(&cfg.schedules);
     let shared = Arc::new(Shared {
         registry: registry.clone(),
         cfg,
@@ -125,6 +135,7 @@ pub fn start(
         active: Mutex::default(),
         recorders: Mutex::default(),
         uploader,
+        scheduler,
     });
 
     // Subscribe before listing, so a publish in between is seen at least
@@ -155,7 +166,11 @@ pub(crate) fn matches(patterns: &[String], name: &str) -> bool {
 }
 
 fn spawn_recorder(shared: &Arc<Shared>, rt: &tokio::runtime::Handle, stream: Arc<Stream>) {
-    if !matches(&shared.cfg.streams, stream.name()) {
+    // `[record] streams` always wins: a stream listed there records
+    // continuously even if a schedule also names it.
+    let always = matches(&shared.cfg.streams, stream.name());
+    let gate = if always { None } else { shared.scheduler.gate_for(stream.name()) };
+    if !always && gate.is_none() {
         return;
     }
     {
@@ -168,8 +183,8 @@ fn spawn_recorder(shared: &Arc<Shared>, rt: &tokio::runtime::Handle, stream: Arc
     // Subscribe now, so no frame pushed before the task runs is missed.
     // A recorder is not a viewer.
     let sub = stream.subscribe_internal(StartAt::Oldest);
-    tracing::debug!(stream = %stream.name(), "recorder started");
-    rt.spawn(recorder::run(shared.clone(), stream, sub));
+    tracing::debug!(stream = %stream.name(), scheduled = !always, "recorder started");
+    rt.spawn(recorder::run(shared.clone(), stream, sub, gate));
 }
 
 async fn listen(shared: Arc<Shared>, rt: tokio::runtime::Handle, mut publishes: broadcast::Receiver<Arc<Stream>>) {

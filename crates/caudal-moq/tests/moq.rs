@@ -56,6 +56,7 @@ async fn stream_plays_over_moq_and_ends() {
         MoqConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
             cert: MoqCert::SelfSigned { hosts: vec!["localhost".into()] },
+            buffer: BufferConfig::default(),
         },
     )
     .expect("start");

@@ -31,6 +31,7 @@ fn cfg(dir: &Path) -> RecordConfig {
         segment_secs: 4,
         retention_hours: None,
         upload_url: None,
+        schedules: Vec::new(),
     }
 }
 
@@ -453,4 +454,92 @@ async fn unmatched_streams_are_not_recorded_and_restart_closes_interrupted() {
     assert!(!tmp.path().join("other").exists());
     let _: &RecordService = &svc;
     let _: PathBuf = tmp.path().to_owned();
+}
+
+/// A `[[record.schedule]]` window starts and stops a recording by time, on
+/// a stream not in `[record] streams`. Real wall clock (not the paused
+/// clock `caudal-record`'s own unit tests use), so the window is kept to a
+/// few seconds: it opens 2 s after the schedule starts and stays open for 3.
+#[tokio::test]
+async fn schedule_window_starts_and_stops_recording() {
+    let tmp = tempfile::tempdir().unwrap();
+    let reg = Registry::new();
+
+    let start_at = jiff::Timestamp::from_second(jiff::Timestamp::now().as_second() + 2).unwrap().to_string();
+    let schedule = caudal_record::ScheduleConfig {
+        streams: vec!["sched1".into()],
+        start: Some(start_at),
+        cron: None,
+        tz: None,
+        duration_secs: 3,
+    };
+    let svc = caudal_record::start(
+        reg.clone(),
+        RecordConfig { streams: vec![], schedules: vec![schedule], ..cfg(tmp.path()) },
+        Vec::new(),
+    )
+    .unwrap();
+    let app = svc.router();
+    let fx = fixture();
+
+    let p = publish(&reg, "sched1", &fx).await;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let feeder = {
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let start = Instant::now();
+            for n in 0.. {
+                for f in fx.looped(n) {
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        drop(p);
+                        return;
+                    }
+                    let at = start + Duration::from_micros(fx.micros(&f) as u64);
+                    tokio::time::sleep_until(at.into()).await;
+                    p.push(f).unwrap();
+                }
+            }
+        })
+    };
+
+    // Before the window opens: nothing recorded yet, even though the
+    // stream has been live and pushing frames the whole time.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(recordings(&app).await.is_empty(), "recorded before the schedule opened its window");
+
+    // The window opens: a recording starts.
+    let t0 = Instant::now();
+    let live = loop {
+        let l = recordings(&app).await;
+        if l.len() == 1 && l[0]["ended_at"].is_null() {
+            break l;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "recording never started: {l:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let id = live[0]["id"].as_str().unwrap().to_owned();
+
+    // The window closes on its own: the recording ends cleanly, VOD ENDLIST,
+    // no error, while the stream itself is still live and feeding frames.
+    let t0 = Instant::now();
+    let ended = loop {
+        let l = recordings(&app).await;
+        if l.len() == 1 && !l[0]["ended_at"].is_null() {
+            break l;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "recording never closed: {l:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(ended[0]["id"].as_str().unwrap(), id);
+    assert!(ended[0]["error"].is_null(), "schedule close must not be reported as an error: {ended:?}");
+    let pl = std::fs::read_to_string(tmp.path().join("sched1").join(&id).join("index.m3u8")).unwrap();
+    assert!(pl.ends_with("#EXT-X-ENDLIST\n"), "{pl}");
+
+    // The schedule was a one-off `start`: it does not fire again, so no
+    // second recording appears even though the stream keeps publishing.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(recordings(&app).await.len(), 1, "a one-off `start` must not record a second window");
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    feeder.await.unwrap();
 }

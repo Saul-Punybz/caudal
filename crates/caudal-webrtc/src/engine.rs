@@ -5,8 +5,19 @@
 //! `poll_output` is drained after every input; its next timeout is kept and
 //! the loop sleeps until the earliest one. HTTP handlers and WHEP
 //! forwarders talk to the loop over channels.
+//!
+//! The loop never waits on the socket. Sends use `try_send_to`; whatever
+//! the kernel refuses waits in an [`Outbox`] flushed when the socket turns
+//! writable, so one full send buffer can't stall reads, commands or other
+//! peers. After every wake-up the loop drains a burst of incoming
+//! datagrams, so STUN consent and RTCP are read even while media is busy.
+//! Benchmark 18 Sep 2026 (`docs/research/BENCH-MEDIAMTX.md`): the old loop
+//! awaited every `send_to` behind a `biased` select that served media
+//! before the socket; at 300 WHEP viewers it delivered 245 Mbps on 47 % of
+//! one core while the kernel dropped 12,700 datagrams.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +36,63 @@ use crate::net::Destinations;
 const IDLE: Duration = Duration::from_secs(30);
 const PLI_EVERY: Duration = Duration::from_millis(500);
 const MEDIA_QUEUE: usize = 4096;
+/// Datagrams held while the kernel's send buffer is full. Past this the
+/// newest are dropped (RTP recovers through NACK/PLI; blocking would stall
+/// every peer).
+const OUTBOX_MAX: usize = 65_536;
+/// Queued frames handled per loop turn.
+const MEDIA_BURST: usize = 2048;
+/// Incoming datagrams read per loop turn before other work runs again.
+const RECV_BURST: usize = 256;
+
+/// Datagrams the socket would not take yet, in send order.
+#[derive(Default)]
+struct Outbox {
+    queue: VecDeque<(Vec<u8>, SocketAddr)>,
+    dropped: u64,
+}
+
+impl Outbox {
+    fn send(&mut self, socket: &UdpSocket, data: Vec<u8>, to: SocketAddr) {
+        // Only bypass the queue when it is empty, so order is kept.
+        if self.queue.is_empty() {
+            match socket.try_send_to(&data, to) {
+                Ok(_) => return,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, to = %to, "webrtc: udp send failed");
+                    return;
+                }
+            }
+        }
+        if self.queue.len() >= OUTBOX_MAX {
+            self.dropped += 1;
+            if self.dropped.is_power_of_two() {
+                tracing::warn!(dropped = self.dropped, "webrtc: udp send queue full; dropping datagrams");
+            }
+            return;
+        }
+        self.queue.push_back((data, to));
+    }
+
+    /// Sends queued datagrams until the socket refuses one.
+    fn flush(&mut self, socket: &UdpSocket) {
+        while let Some((data, to)) = self.queue.front() {
+            match socket.try_send_to(data, *to) {
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+                Err(e) => tracing::debug!(error = %e, to = %to, "webrtc: udp send failed"),
+            }
+            self.queue.pop_front();
+        }
+    }
+}
+
+/// Where each incoming datagram goes.
+struct Router {
+    dest: Destinations,
+    by_source: HashMap<SocketAddr, u64>,
+}
 
 pub(crate) enum Role {
     Whip(Box<Ingest>),
@@ -57,10 +125,12 @@ struct Slot {
     last_pli: Option<Instant>,
 }
 
-pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mpsc::Receiver<Cmd>) {
+pub(crate) async fn run(socket: UdpSocket, dest: Destinations, mut cmds: mpsc::Receiver<Cmd>) {
     let (media_tx, mut media_rx) = mpsc::channel::<(u64, Out)>(MEDIA_QUEUE);
     let mut slots: HashMap<u64, Slot> = HashMap::new();
-    let mut by_source: HashMap<SocketAddr, u64> = HashMap::new();
+    let mut router = Router { dest, by_source: HashMap::new() };
+    let mut outbox = Outbox::default();
+    let mut queue_full_seen = 0u64;
     let mut bframes_warned: HashSet<Arc<str>> = HashSet::new();
     let mut next_id: u64 = 0;
     let mut buf = vec![0u8; 2048];
@@ -71,8 +141,8 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
         let wake = slots.values().map(|s| s.deadline).min().unwrap_or(now + Duration::from_secs(1));
         let wake = wake.min(now + Duration::from_millis(250)).max(now);
 
+        // Unbiased: under load no branch may starve another.
         tokio::select! {
-            biased;
             cmd = cmds.recv() => match cmd {
                 None => break,
                 Some(Cmd::Add(peer)) => {
@@ -89,7 +159,7 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
                     tracing::info!(stream = %peer.name, session = %peer.session, kind = kind(&peer), "webrtc: session created");
                     let now = Instant::now();
                     slots.insert(id, Slot { peer, deadline: now, last_activity: now, video_mid: None, last_pli: None });
-                    drive(&socket, id, &mut slots).await;
+                    drive(&socket, &mut outbox, id, &mut slots);
                 }
                 Some(Cmd::Delete { whip, name, session, reply }) => {
                     let found = slots.iter().find(|(_, s)| {
@@ -104,56 +174,36 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
             m = media_rx.recv() => {
                 // `media_tx` is held here, so the channel never closes.
                 let Some((id, out)) = m else { continue };
-                if let Some(slot) = slots.get_mut(&id) {
-                    if let Role::Whep(e) = &mut slot.peer.role {
-                        match out {
-                            Out::Tracks(t) => e.set_tracks(&t),
-                            Out::Frame(f) => e.write(&mut slot.peer.rtc, &f, &mut bframes_warned),
-                            Out::End => {
-                                bframes_warned.remove(&slot.peer.name);
-                                slot.peer.rtc.disconnect();
-                            }
-                        }
-                    }
-                    drive(&socket, id, &mut slots).await;
+                on_media(id, out, &socket, &mut outbox, &mut slots, &mut bframes_warned);
+                // Take what else is queued in the same turn: the per-turn
+                // scans below cost O(peers), so one turn per frame made the
+                // loop quadratic (300 viewers: 80 % of a core, queue full).
+                for _ in 0..MEDIA_BURST {
+                    let Ok((id, out)) = media_rx.try_recv() else { break };
+                    on_media(id, out, &socket, &mut outbox, &mut slots, &mut bframes_warned);
+                }
+            }
+            r = socket.writable(), if !outbox.queue.is_empty() => {
+                if r.is_ok() {
+                    outbox.flush(&socket);
                 }
             }
             r = socket.recv_from(&mut buf) => match r {
-                Ok((n, source)) => {
-                    let Some(destination) = dest.for_source(source) else { continue };
-                    let Ok(recv) = Receive::new(Protocol::Udp, source, destination, &buf[..n]) else { continue };
-                    let now = Instant::now();
-                    let input = Input::Receive(now, recv);
-                    let cached = by_source.get(&source).copied().filter(|id| {
-                        slots.get(id).is_some_and(|s| s.peer.rtc.accepts(&input))
-                    });
-                    let id = cached.or_else(|| {
-                        slots.iter().find(|(_, s)| s.peer.rtc.accepts(&input)).map(|(id, _)| *id)
-                    });
-                    let Some(id) = id else { continue };
-                    if cached.is_none() {
-                        if by_source.len() > 65_536 {
-                            by_source.retain(|_, v| slots.contains_key(v));
-                        }
-                        by_source.insert(source, id);
-                    }
-                    let Some(slot) = slots.get_mut(&id) else { continue };
-                    if matches!(slot.peer.role, Role::Whep(_)) {
-                        slot.last_activity = now;
-                    }
-                    if let Err(e) = slot.peer.rtc.handle_input(input) {
-                        tracing::debug!(session = %slot.peer.session, error = %e, "webrtc: bad input");
-                        slot.peer.rtc.disconnect();
-                    }
-                    drive(&socket, id, &mut slots).await;
-                }
-                Err(e) => {
-                    // ICMP port unreachable and friends surface here; they
-                    // concern one remote, never the socket as a whole.
-                    tracing::debug!(error = %e, "webrtc: udp recv error");
-                }
+                Ok((n, source)) => on_datagram(&buf[..n], source, &socket, &mut outbox, &mut router, &mut slots),
+                // ICMP port unreachable and friends surface here; they
+                // concern one remote, never the socket as a whole.
+                Err(e) => tracing::debug!(error = %e, "webrtc: udp recv error"),
             },
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(wake)) => {}
+        }
+
+        // Read what else arrived, without waiting.
+        for _ in 0..RECV_BURST {
+            match socket.try_recv_from(&mut buf) {
+                Ok((n, source)) => on_datagram(&buf[..n], source, &socket, &mut outbox, &mut router, &mut slots),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => tracing::debug!(error = %e, "webrtc: udp recv error"),
+            }
         }
 
         // Drive every peer whose timeout passed.
@@ -166,7 +216,7 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
                 tracing::debug!(session = %slot.peer.session, error = %e, "webrtc: timeout error");
                 slot.peer.rtc.disconnect();
             }
-            drive(&socket, id, &mut slots).await;
+            drive(&socket, &mut outbox, id, &mut slots);
         }
 
         let closed: Vec<u64> = slots.iter().filter(|(_, s)| !s.peer.rtc.is_alive()).map(|(id, _)| *id).collect();
@@ -200,7 +250,17 @@ pub(crate) async fn run(socket: UdpSocket, mut dest: Destinations, mut cmds: mps
             for (id, why) in dead {
                 remove(id, &mut slots, why);
             }
-            by_source.retain(|_, v| slots.contains_key(v));
+            router.by_source.retain(|_, v| slots.contains_key(v));
+            let full = egress::QUEUE_FULL.load(std::sync::atomic::Ordering::Relaxed);
+            if full != queue_full_seen {
+                tracing::warn!(
+                    total = full,
+                    outbox = outbox.queue.len(),
+                    peers = slots.len(),
+                    "webrtc: media queue full; viewers skipped to the next keyframe"
+                );
+                queue_full_seen = full;
+            }
         }
     }
 }
@@ -221,9 +281,66 @@ fn remove(id: u64, slots: &mut HashMap<u64, Slot>, why: &str) {
     }
 }
 
+/// Writes one forwarded frame (or track change / end) into its WHEP peer.
+fn on_media(
+    id: u64,
+    out: Out,
+    socket: &UdpSocket,
+    outbox: &mut Outbox,
+    slots: &mut HashMap<u64, Slot>,
+    bframes_warned: &mut HashSet<Arc<str>>,
+) {
+    let Some(slot) = slots.get_mut(&id) else { return };
+    if let Role::Whep(e) = &mut slot.peer.role {
+        match out {
+            Out::Tracks(t) => e.set_tracks(&t),
+            Out::Frame(f) => e.write(&mut slot.peer.rtc, &f, bframes_warned),
+            Out::End => {
+                bframes_warned.remove(&slot.peer.name);
+                slot.peer.rtc.disconnect();
+            }
+        }
+    }
+    drive(socket, outbox, id, slots);
+}
+
+/// Hands one datagram to the peer that accepts it and drives that peer.
+fn on_datagram(
+    data: &[u8],
+    source: SocketAddr,
+    socket: &UdpSocket,
+    outbox: &mut Outbox,
+    router: &mut Router,
+    slots: &mut HashMap<u64, Slot>,
+) {
+    let Some(destination) = router.dest.for_source(source) else { return };
+    let Ok(recv) = Receive::new(Protocol::Udp, source, destination, data) else { return };
+    let now = Instant::now();
+    let input = Input::Receive(now, recv);
+    let cached =
+        router.by_source.get(&source).copied().filter(|id| slots.get(id).is_some_and(|s| s.peer.rtc.accepts(&input)));
+    let id = cached.or_else(|| slots.iter().find(|(_, s)| s.peer.rtc.accepts(&input)).map(|(id, _)| *id));
+    let Some(id) = id else { return };
+    if cached.is_none() {
+        if router.by_source.len() > 65_536 {
+            router.by_source.retain(|_, v| slots.contains_key(v));
+        }
+        router.by_source.insert(source, id);
+    }
+    let Some(slot) = slots.get_mut(&id) else { return };
+    if matches!(slot.peer.role, Role::Whep(_)) {
+        slot.last_activity = now;
+    }
+    if let Err(e) = slot.peer.rtc.handle_input(input) {
+        tracing::debug!(session = %slot.peer.session, error = %e, "webrtc: bad input");
+        slot.peer.rtc.disconnect();
+    }
+    drive(socket, outbox, id, slots);
+}
+
 /// Drains one peer's output: sends datagrams, handles events, records the
 /// next timeout.
-async fn drive(socket: &UdpSocket, id: u64, slots: &mut HashMap<u64, Slot>) {
+fn drive(socket: &UdpSocket, outbox: &mut Outbox, id: u64, slots: &mut HashMap<u64, Slot>) {
     let Some(slot) = slots.get_mut(&id) else { return };
     loop {
         if !slot.peer.rtc.is_alive() {
@@ -244,11 +361,7 @@ async fn drive(socket: &UdpSocket, id: u64, slots: &mut HashMap<u64, Slot>) {
                 slot.deadline = t;
                 return;
             }
-            Output::Transmit(t) => {
-                if let Err(e) = socket.send_to(&t.contents, t.destination).await {
-                    tracing::debug!(error = %e, to = %t.destination, "webrtc: udp send failed");
-                }
-            }
+            Output::Transmit(t) => outbox.send(socket, t.contents.into(), t.destination),
             Output::Event(ev) => on_event(slot, ev),
         }
     }

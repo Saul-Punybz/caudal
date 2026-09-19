@@ -77,6 +77,7 @@ pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig) -> axum::Router {
 fn start(cfg: &WebRtcConfig) -> std::io::Result<(mpsc::Sender<Cmd>, Vec<SocketAddr>)> {
     let std_sock = std::net::UdpSocket::bind(cfg.udp_bind)?;
     std_sock.set_nonblocking(true)?;
+    grow_buffers(&std_sock);
     let sock = tokio::net::UdpSocket::from_std(std_sock)?;
     let local = sock.local_addr()?;
     let candidates = net::candidate_addrs(local, &cfg.public_ips);
@@ -88,6 +89,29 @@ fn start(cfg: &WebRtcConfig) -> std::io::Result<(mpsc::Sender<Cmd>, Vec<SocketAd
     let (tx, rx) = mpsc::channel(256);
     tokio::spawn(engine::run(sock, dest, rx));
     Ok((tx, candidates))
+}
+
+/// Asks for large socket buffers: every WHEP viewer shares this one
+/// socket, and the defaults (9 KB to send on macOS) filled in a few
+/// packets. The kernel may cap the request (Linux: `net.core.wmem_max` /
+/// `rmem_max`); the sizes granted are logged.
+fn grow_buffers(sock: &std::net::UdpSocket) {
+    let s = socket2::SockRef::from(sock);
+    for mb in [8, 4, 2, 1] {
+        if s.set_send_buffer_size(mb << 20).is_ok() {
+            break;
+        }
+    }
+    for mb in [8, 4, 2, 1] {
+        if s.set_recv_buffer_size(mb << 20).is_ok() {
+            break;
+        }
+    }
+    tracing::info!(
+        send_bytes = s.send_buffer_size().unwrap_or(0),
+        recv_bytes = s.recv_buffer_size().unwrap_or(0),
+        "webrtc: udp socket buffers"
+    );
 }
 
 // ---- HTTP ----

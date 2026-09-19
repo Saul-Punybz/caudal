@@ -187,3 +187,26 @@ max_mb = 256  # Maximum buffer size in megabytes
 # streams = ["live-*"]
 # play_deny = ["203.0.113.0/24", "country:KP"]
 # publish_allow = ["10.0.0.0/8"]   # only this network may publish live-*
+
+# Origin-edge clustering (docs/research/CLUSTER.md). Publishers push to any
+# origin; viewers connect to any edge. An edge pulls a stream over MoQ from
+# the first origin that has it when its first viewer asks (LL-HLS, WHEP,
+# RTSP or SRT play), shares that one pull between all its viewers, stops it
+# idle_timeout_secs after the last viewer leaves, and moves to the next
+# origin without restarting its viewers when the current one goes away.
+# Origins need [moq] enabled. Every node uses the same `secret`; a node's
+# token plays any stream on an origin, past [auth] and [[access.rules]]
+# (the edge applies its own to its viewers). Absent: a standalone server.
+#
+# [cluster]
+# role = "origin"
+# node_id = "origin-a"                     # logs and tokens; default "caudal"
+# secret = "change-me-shared-cluster-secret" # >= 16 bytes, same on every node
+#
+# [cluster]
+# role = "edge"
+# node_id = "edge-1"
+# secret = "change-me-shared-cluster-secret"
+# origins = ["http://origin-a:8080", "http://origin-b:8080"]  # HTTP base URLs, tried in order
+# idle_timeout_secs = 30                   # stop pulling this long after the last viewer
+# source_timeout_secs = 10                 # end the stream when no origin has it this long

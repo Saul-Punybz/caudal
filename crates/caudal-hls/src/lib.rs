@@ -388,13 +388,19 @@ async fn hls_file(
     RawQuery(query): RawQuery,
     req: Request,
 ) -> Response {
-    let Some(entry) = hls.get(&name) else { return error(StatusCode::NOT_FOUND) };
     let query = query.as_deref().unwrap_or("");
     let token = request_token(query, &req);
+    let ip = client_ip(&req, &hls.trusted_proxies);
+    let entry = match hls.get(&name) {
+        Some(e) => e,
+        None => match demand(&hls, &name, token, ip).await {
+            Some(e) => e,
+            None => return error(StatusCode::NOT_FOUND),
+        },
+    };
     if token.is_some_and(|t| !token_is_url_safe(t)) {
         return error(StatusCode::FORBIDDEN);
     }
-    let ip = client_ip(&req, &hls.trusted_proxies);
     match hls.registry.authorize(caudal_core::Access::Play, &name, token, ip).await {
         Ok(()) => {}
         Err(caudal_core::Denied::Missing) => {
@@ -429,6 +435,29 @@ async fn hls_file(
             Some((msn, part)) => media(&entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
+    }
+}
+
+/// A request for a name with no packager: on a cluster edge, an
+/// authorized viewer's first request starts the pull
+/// ([`Registry::get_or_demand`]) and waits for its packager. Refusals and
+/// names nobody has stay a plain 404, as before clustering.
+async fn demand(hls: &Arc<Hls>, name: &str, token: Option<&str>, ip: Option<std::net::IpAddr>) -> Option<Arc<Entry>> {
+    if token.is_some_and(|t| !token_is_url_safe(t)) {
+        return None;
+    }
+    hls.registry.authorize(caudal_core::Access::Play, name, token, ip).await.ok()?;
+    hls.registry.get_or_demand(name).await?;
+    // The packager starts from the publish event, on another task.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(e) = hls.get(name) {
+            return Some(e);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 

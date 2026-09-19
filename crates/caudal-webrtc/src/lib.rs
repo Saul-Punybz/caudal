@@ -482,7 +482,8 @@ async fn whep_post(
     if let Err(d) = st.registry.authorize(Access::Play, &name, tok.as_deref(), ip).await {
         return denied(d);
     }
-    let Some(sub) = st.registry.subscribe(&name, StartAt::LiveEdge) else {
+    // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
+    let Some(sub) = st.registry.get_or_demand(&name).await.map(|s| s.subscribe(StartAt::LiveEdge)) else {
         return plain(StatusCode::NOT_FOUND, "no such stream");
     };
     let (rtc, sdp) = match negotiate(&st, &body) {

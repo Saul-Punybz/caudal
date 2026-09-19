@@ -199,6 +199,88 @@ pub struct Config {
     /// the server refuses to listen on a non-loopback address.
     pub admin: Option<caudal_admin::AdminSection>,
     pub health: HealthSection,
+    /// Origin-edge clustering. Absent: a standalone server.
+    pub cluster: Option<ClusterSection>,
+}
+
+/// `[cluster]`: this node's part in an origin-edge cluster (see
+/// `docs/research/CLUSTER.md`). Origins take publishers and serve their
+/// streams to edges over MoQ; edges pull a stream from the first origin
+/// that has it when their first viewer asks for it.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterSection {
+    pub role: ClusterRole,
+    /// Names this node in inter-node tokens and logs (default: `caudal`).
+    #[serde(default)]
+    pub node_id: Option<String>,
+    /// Shared by every node of the cluster; signs inter-node tokens.
+    pub secret: String,
+    /// Edge only: HTTP base URLs of the origins (`http://origin-a:8080`),
+    /// tried in order.
+    #[serde(default)]
+    pub origins: Vec<String>,
+    /// Edge only: stop pulling a stream this long after its last viewer.
+    #[serde(default = "default_cluster_idle_secs")]
+    pub idle_timeout_secs: u64,
+    /// Edge only: end a pulled stream when no origin has had it this long.
+    #[serde(default = "default_cluster_source_secs")]
+    pub source_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClusterRole {
+    Origin,
+    Edge,
+}
+
+fn default_cluster_idle_secs() -> u64 {
+    30
+}
+
+fn default_cluster_source_secs() -> u64 {
+    10
+}
+
+impl ClusterSection {
+    pub fn secret(&self) -> Result<caudal_cluster::Secret, String> {
+        caudal_cluster::Secret::new(&self.secret).map_err(|e| e.to_string())
+    }
+
+    pub fn node_id(&self) -> String {
+        self.node_id.clone().unwrap_or_else(|| "caudal".into())
+    }
+
+    /// The edge's runtime config; `None` on an origin.
+    pub fn edge_config(&self, buffer: BufferConfig) -> Result<Option<caudal_cluster::EdgeConfig>, String> {
+        let secret = self.secret()?;
+        if self.role == ClusterRole::Origin {
+            if !self.origins.is_empty() {
+                return Err(r#"[cluster] `origins` is for role = "edge""#.into());
+            }
+            return Ok(None);
+        }
+        if self.origins.is_empty() {
+            return Err(r#"[cluster] role = "edge" needs at least one entry in `origins`"#.into());
+        }
+        let mut origins = Vec::new();
+        for o in &self.origins {
+            let u: url::Url = o.parse().map_err(|e| format!("[cluster] origin {o:?}: {e}"))?;
+            if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+                return Err(format!("[cluster] origin {o:?}: expected an http(s)://host[:port] URL"));
+            }
+            origins.push(u);
+        }
+        Ok(Some(caudal_cluster::EdgeConfig {
+            node_id: self.node_id(),
+            secret,
+            origins,
+            idle_timeout: Duration::from_secs(self.idle_timeout_secs.max(1)),
+            source_timeout: Duration::from_secs(self.source_timeout_secs.max(1)),
+            buffer,
+        }))
+    }
 }
 
 /// One restream target: push `stream` to `url` (`rtmp://` or `rtmps://`,
@@ -851,6 +933,12 @@ impl Config {
             admin.validate()?;
         }
         self.health.to_health_config()?;
+        if let Some(c) = &self.cluster {
+            c.edge_config(self.buffer.to_buffer_config())?;
+            if c.role == ClusterRole::Origin && !self.moq.enabled {
+                return Err(r#"[cluster] role = "origin" needs [moq] enabled (edges pull over MoQ)"#.into());
+            }
+        }
         self.failovers()?;
         Ok(())
     }
@@ -982,6 +1070,42 @@ mod tests {
         assert_eq!(cfg.hls.reconnect_grace_secs, 10, "reconnect grace defaults to 10 s");
         let cfg: Config = toml::from_str("[hls]\nreconnect_grace_secs = 0\n").unwrap();
         assert_eq!(cfg.hls.reconnect_grace_secs, 0);
+    }
+
+    #[test]
+    fn cluster_section() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.cluster.is_none(), "standalone by default");
+
+        let edge = r#"[cluster]
+role = "edge"
+secret = "0123456789abcdef"
+origins = ["http://origin-a:8080", "https://origin-b"]
+"#;
+        let cfg: Config = toml::from_str(edge).unwrap();
+        cfg.validate().unwrap();
+        let c = cfg.cluster.as_ref().unwrap();
+        assert_eq!(c.node_id(), "caudal");
+        let e = c.edge_config(BufferConfig::default()).unwrap().expect("edge");
+        assert_eq!(e.origins.len(), 2);
+        assert_eq!(e.idle_timeout, Duration::from_secs(30));
+        assert_eq!(e.source_timeout, Duration::from_secs(10));
+
+        let origin = "[cluster]\nrole = \"origin\"\nnode_id = \"o1\"\nsecret = \"0123456789abcdef\"\n";
+        let cfg: Config = toml::from_str(origin).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.cluster.as_ref().unwrap().edge_config(BufferConfig::default()).unwrap().is_none());
+
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[cluster]\nrole = \"edge\"\nsecret = \"0123456789abcdef\"\n").contains("origins"));
+        assert!(bad("[cluster]\nrole = \"edge\"\nsecret = \"short\"\norigins = [\"http://a\"]\n").contains("16"));
+        assert!(
+            bad("[cluster]\nrole = \"edge\"\nsecret = \"0123456789abcdef\"\norigins = [\"rtmp://a\"]\n")
+                .contains("http")
+        );
+        assert!(bad(&format!("{origin}origins = [\"http://a\"]\n")).contains("edge"));
+        assert!(bad(&format!("[moq]\nenabled = false\n\n{origin}")).contains("[moq]"));
+        assert!(toml::from_str::<Config>("[cluster]\nrole = \"relay\"\nsecret = \"x\"\n").is_err());
     }
 
     #[test]

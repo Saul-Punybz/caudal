@@ -139,16 +139,21 @@ async fn short_chunks_on_a_slow_engine_are_coalesced_not_dropped() {
     assert_eq!(m.dropped_chunks, 0, "{m:?}");
     assert_eq!(m.dropped_audio_seconds, 0.0, "{m:?}");
     assert!(heard_s() >= sent_s * 0.9, "{:.2} s heard of {sent_s:.2} s", heard_s());
-    // Fewer, fuller inferences: never one per short chunk.
-    assert!(calls.len() <= RUNS / 3, "{} calls for {RUNS} short chunks", calls.len());
+    // Fewer, fuller inferences: never one per short chunk. How many chunks
+    // share a call depends on how far behind the engine falls, which
+    // depends on the machine (M4: 4 calls; 4-core CI runner: 8 calls of two
+    // runs each, 19 Sep 2026), so the bound is "at most one call per two".
+    assert!(calls.len() <= RUNS / 2, "{} calls for {RUNS} short chunks", calls.len());
     // No call on a short scrap while more audio was on its way (the last
     // one may be the stream's tail).
     for n in &calls[..calls.len() - 1] {
         assert!(*n >= 16_000, "a {:.2} s call", *n as f64 / 16_000.0);
     }
-    // Bounded latency: the backlog clears within a few inference calls of
-    // the audio ending, not a queue's worth of stale jobs later.
-    assert!(done < 5 * COST, "backlog cleared {done:?} after the last push");
+    // Bounded latency: the backlog clears within the calls it needs (each
+    // costs COST, one at a time), plus a second of slack, never a queue's
+    // worth of stale jobs later.
+    let bound = COST * calls.len() as u32 + Duration::from_secs(1);
+    assert!(done < bound, "backlog cleared {done:?} after the last push (bound {bound:?})");
     // RTF over everything (a fixed cost spread over longer calls), not the
     // last call's.
     let expected = calls.len() as f64 * COST.as_secs_f64() / heard_s();

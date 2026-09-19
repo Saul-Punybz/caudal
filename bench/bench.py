@@ -157,8 +157,24 @@ def cputime(s):
     return days * 86400 + secs
 
 
+LINUX = sys.platform.startswith("linux")
+
+
 def ps(pid):
     """(rss_mb, cpu_seconds) or None."""
+    if LINUX:
+        # /proc, not ps: Linux ps prints TIME in whole seconds, too coarse
+        # for a 28 s window.
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            ticks = os.sysconf("SC_CLK_TCK")
+            cpu = (int(fields[11]) + int(fields[12])) / ticks
+            with open(f"/proc/{pid}/status") as f:
+                rss_kb = next(int(l.split()[1]) for l in f if l.startswith("VmRSS:"))
+            return rss_kb / 1024.0, cpu
+        except (OSError, StopIteration, IndexError, ValueError):
+            return None
     out = subprocess.run(["ps", "-o", "rss=,time=", "-p", str(pid)], capture_output=True, text=True).stdout.split()
     if len(out) < 2:
         return None
@@ -310,6 +326,16 @@ def kernel_counters():
     """Machine-wide limits a single-box fan-out can hit: mbuf allocations the
     kernel refused, and UDP datagrams dropped on full socket buffers."""
     import re
+    if LINUX:
+        # /proc/net/snmp "Udp:" header + values; buffer errors = drops on
+        # full socket buffers (receive and send). No mbuf counter on Linux.
+        try:
+            lines = [l.split() for l in open("/proc/net/snmp") if l.startswith("Udp:")]
+            row = dict(zip(lines[0][1:], (int(x) for x in lines[1][1:])))
+            return {"mbuf_denied": None,
+                    "udp_full_drops": row.get("RcvbufErrors", 0) + row.get("SndbufErrors", 0)}
+        except (OSError, IndexError, ValueError):
+            return {"mbuf_denied": None, "udp_full_drops": None}
     m = subprocess.run(["netstat", "-m"], capture_output=True, text=True).stdout
     u = subprocess.run(["netstat", "-s", "-p", "udp"], capture_output=True, text=True).stdout
     denied = re.search(r"(\d+) requests for memory denied", m)
@@ -421,6 +447,25 @@ def machine():
             return None
 
     git = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    if LINUX:
+        def first(path, key):
+            try:
+                return next(l.split(":", 1)[1].strip() for l in open(path) if l.startswith(key))
+            except (OSError, StopIteration):
+                return None
+        mem_kb = first("/proc/meminfo", "MemTotal") or "0 kB"
+        return {
+            "cpu": first("/proc/cpuinfo", "model name"),
+            "ncpu": str(os.cpu_count()),
+            "mem_gb": round(int(mem_kb.split()[0]) / 2**20, 1),
+            "os": (first("/etc/os-release", "PRETTY_NAME") or "Linux").strip('"') + f" ({platform.release()})",
+            "ffmpeg": ver(["ffmpeg", "-version"]),
+            "rustc": ver(["rustc", "--version"]),
+            "mediamtx": ver([MTX_BIN, "--version"]),
+            "caudal_git": git,
+            "ulimit_n": resource.getrlimit(resource.RLIMIT_NOFILE)[0],
+            "portrange": open("/proc/sys/net/ipv4/ip_local_port_range").read().split() if os.path.exists("/proc/sys/net/ipv4/ip_local_port_range") else None,
+        }
     return {
         "cpu": sc("machdep.cpu.brand_string"),
         "ncpu": sc("hw.ncpu"),

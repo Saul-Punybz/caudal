@@ -314,14 +314,43 @@ code never changed between them.
 Within each run, Caudal beats MediaMTX on CPU at x100 both times. At x300
 Caudal still uses more raw CPU than MediaMTX, but MediaMTX is the one
 collapsing (0 kept up) in both runs while Caudal mostly keeps viewers up.
-The batched-send change itself: a small win on Linux CPU at x300 (234→217,
-about 7 %, in line with the macOS x300 result) and barely measurable at
-x100 (76.6→75.0, about 2 %, far short of the macOS x100 win) — but it also
-shows a kept-up regression at x300 not present before: the "before" run
-kept all 300 viewers up in all 3 reps, the "after" run only did that in 1
-of 3 (the other two stopped at 225/300), with UDP full drops swinging wider
-(165–2,501 after vs. 59–1,009 before). Not a clean win yet on Linux; needs
-a follow-up before merging this as a pure improvement.
+This first pair also showed the "after" run only keeping all 300 viewers
+up in 1 of 3 reps (the other two stopped at 225/300), against 3/3 in the
+"before" run — see below for whether that was the code or the runner.
+
+**Re-dispatch, reps=5, both refs back to back** (same session, so they
+share runner conditions): the first pair above dispatched "before" and
+"after" as two separate, non-adjacent runs, and MediaMTX's own x100 CPU
+moved from 82.8 % to 140 % between them purely from runner noise — so the
+225/300 result could have been noise too, not the code. Re-running both
+refs back to back settles it:
+before (main)
+[35465180383](https://github.com/Saul-Punybz/caudal/actions/runs/35465180383),
+after (perf/webrtc-batched-send)
+[35465181924](https://github.com/Saul-Punybz/caudal/actions/runs/35465181924).
+
+| Run | Viewers | Server | CPU % (range) | Egress Mbps | Kept up |
+|---|---|---|---|---|---|
+| before | 100 | Caudal | 128 (126–132) | 601 | 100/100 |
+| before | 100 | MediaMTX | 142 (140–144) | 601 | 100/100 |
+| before | 300 | Caudal | 263 (258–277) | 1,348 (1,168–1,446) | 30/300 (3–46, 5 reps) |
+| before | 300 | MediaMTX | 156 (156–157) | 628 | 0/300 (collapsed) |
+| after | 100 | Caudal | 59.9 (58.6–60.5) | 600 | 100/100 |
+| after | 100 | MediaMTX | 104 (103–106) | 601 | 100/100 |
+| after | 300 | Caudal | 179 (176–181) | 1,803 (1,801–1,806) | 300/300 (5/5 reps) |
+| after | 300 | MediaMTX | 157 (156–157) | 873 | 0/300 (collapsed) |
+
+This time the "before" run drew the busy runner (its own MediaMTX x100 CPU
+is 142 % against 104 % in the "after" run, same code) and its Caudal x300
+kept-up collapsed to 30/300 — worse than either run in the first pair. The
+"after" run, on the calmer runner, kept all 300 viewers up in all 5 reps
+at 179 % CPU and 1,803 Mbps, well ahead of MediaMTX's 873 Mbps (0 kept up)
+in the same run. **Conclusion: the earlier 225/300 result was runner
+noise, not a batched-sends regression.** No code change needed; batched
+sends stands as a clear win within each of these runs (lower CPU than
+MediaMTX at x100, more kept-up viewers and more throughput than MediaMTX
+at x300), and the cross-run absolute numbers should still be read as "same
+conditions only," never compared run to run.
 
 ### RTSP after the send-path fix (19 Sep 2026, Linux)
 

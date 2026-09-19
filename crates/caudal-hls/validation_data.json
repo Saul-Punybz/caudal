@@ -39,7 +39,7 @@
       "parse-playlist-only" : false,
       "rate" : 1000,
       "timeout" : 20,
-      "url" : "http:\/\/127.0.0.1:58633\/hls\/v2main\/master.m3u8",
+      "url" : "http:\/\/127.0.0.1:64843\/hls\/v2main\/master.m3u8",
       "validation-data-path" : "validation_data.json"
     },
     "fetch" : {
@@ -50,9 +50,9 @@
     }
   },
   "sslContentDeliveredSecurely" : false,
-  "url" : "http:\/\/127.0.0.1:58633\/hls\/v2main\/master.m3u8",
+  "url" : "http:\/\/127.0.0.1:64843\/hls\/v2main\/master.m3u8",
   "validatorName" : "mediastreamvalidator",
-  "validatorTimestamp" : "2026-09-18T19:38:23.911-04:00",
+  "validatorTimestamp" : "2026-09-18T17:44:22.669-04:00",
   "validatorVersion" : "1.26.143 (1.26.143-260527)",
   "variants" : [
     {
@@ -265,7 +265,7 @@
               ],
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:01.869-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:00.629-04:00",
               "segmentDurationTag" : 2,
               "sslContentDeliveredSecurely" : false,
               "startTime" : 10.0667,
@@ -274,7 +274,7 @@
               "videoStartsWithIDR" : true
             },
             {
-              "dataID" : 7,
+              "dataID" : 8,
               "discontinuityDomain" : 0,
               "mediaSequence" : 1,
               "partialSegments" : [
@@ -367,12 +367,12 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:03.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:02.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
             {
-              "dataID" : 9,
+              "dataID" : 10,
               "discontinuityDomain" : 0,
               "mediaSequence" : 2,
               "partialSegments" : [
@@ -435,7 +435,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:05.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:04.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -503,7 +503,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:07.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:06.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -571,7 +571,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:09.872-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:08.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -639,7 +639,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:11.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:10.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -707,7 +707,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:13.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:12.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -775,7 +775,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:15.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:14.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -843,7 +843,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:17.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:16.629-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -911,7 +911,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:19.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:18.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -979,7 +979,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:21.872-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:20.629-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             }
@@ -1257,7 +1257,7 @@
               ],
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:01.869-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:00.629-04:00",
               "segmentDurationTag" : 2,
               "sslContentDeliveredSecurely" : false,
               "startTime" : 10.0667,
@@ -1266,7 +1266,7 @@
               "videoStartsWithIDR" : true
             },
             {
-              "dataID" : 8,
+              "dataID" : 7,
               "discontinuityDomain" : 0,
               "mediaSequence" : 1,
               "partialSegments" : [
@@ -1359,12 +1359,12 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:03.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:02.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
             {
-              "dataID" : 10,
+              "dataID" : 9,
               "discontinuityDomain" : 0,
               "mediaSequence" : 2,
               "partialSegments" : [
@@ -1427,7 +1427,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:05.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:04.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1495,7 +1495,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:07.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:06.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1563,7 +1563,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:09.872-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:08.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1631,7 +1631,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:11.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:10.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1699,7 +1699,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:13.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:12.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1767,7 +1767,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:15.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:14.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1835,7 +1835,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:17.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:16.629-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1903,7 +1903,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:19.871-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:18.630-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             },
@@ -1971,7 +1971,7 @@
               "processed" : false,
               "segmentByteRangeLength" : 0,
               "segmentByteRangeOffset" : 0,
-              "segmentDateStamp" : "2026-09-18T19:38:21.872-04:00",
+              "segmentDateStamp" : "2026-09-18T17:44:20.629-04:00",
               "segmentDurationTag" : 0,
               "sslContentDeliveredSecurely" : false
             }

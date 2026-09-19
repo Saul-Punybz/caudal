@@ -1,21 +1,19 @@
 # STATUS — Caudal
 
-**Last updated:** 19 Sep 2026, ~05:15 UTC (PRs #1–#4 merged, main green; see RESUME HERE)
+**Last updated:** 19 Sep 2026, ~09:00 UTC (13 PRs merged today; #14, #15 open; see RESUME HERE)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (19 Sep 2026, ~05:15 UTC) — read this first in a new session
+## RESUME HERE (19 Sep 2026, ~09:00 UTC) — read this first in a new session
 **Saul's permissions for finishing Caudal** (memory `caudal-permisos`): merge to main + push when CI and local gate are green; up to 3 agents at a time; upstream bug reports, GitHub Releases and GHCR images OK; crates.io NOT. Hard rule: never saturate CPU/RAM, no processes that never end.
 
-**main = `0e861a9`, all CI green including the browser suite** (first time in days). Merged today: PR #1 (crash safety, honest CI, killpg fix), PR #2 (LL-HLS latency gap was the bench client: tie 212 vs 210 ms), PR #3 (WHEP 406 instead of a black session; Firefox on Linux has no H.264 for WebRTC), PR #4 (WebRTC: ARM hardware AES, non-blocking sends, one SO_REUSEPORT engine per core; WHEP x300 1,799 vs 1,666 Mbps, 300/300 kept up vs 262, RSS 829 vs 1,394 MB, CPU 315 vs 178 %). Details: `docs/research/BENCH-MEDIAMTX.md` "WHEP after the fixes".
+**main = `b132cb6`.** Merged 19 Sep: #1 crash safety + killpg fix, #2 LL-HLS latency tie (bench client bug), #3 WHEP 406, #4 WebRTC ARM AES + engines per core (WHEP x300 1,799 vs 1,666 Mbps, 300/300 kept up), #5 validator output, #6 LL-HLS survives publisher reconnect, #7 `caudal doctor` + Helm chart, #8 IP/CIDR/country access rules, #9 fuzzing (6 targets, 7 crashes fixed; upstream private advisory GHSA-3gqf-85hw-q8xf to ScuffleCloud/scuffle), #10 backup-source failover, #11 `caudal import-mist`, #12 CI robustness, #13 origin-edge clustering.
+**Open PRs:** #14 recording schedules + MoQ ingest; #15 live captions (candle Whisper, es/en WebVTT, default device cpu). Merge when CI is green.
 
-**Running (agents, own branches, pushed to origin when done; merge after CI):** `fix/hls-publisher-reconnect` (LL-HLS viewers survive a republish: same playlist, DISCONTINUITY, grace window), `test/fuzz-parsers` (cargo-fuzz targets for RTMP/FLV/AMF, TS, SCTE-35, RTSP, SDP/STUN + CI smoke).
+**Known flaky/limits:** Firefox LL-HLS on the 4-core CI runner stalls sometimes (load 3–4, no leftover processes) → 1 CI retry for Firefox, reported as flaky. Docker Desktop hung on this Mac today (mounting a 61 GB target dir); Helm chart not deployed on a real cluster.
 
-**Findings today:** (1) `/bin/kill -KILL -<pgid>` on Linux procps killed every process of the user (runner deaths in CI; `caudal-transcode` in production) — now `rustix::process::kill_process_group`. (2) aarch64 AES was software without `--cfg aes_armv8/polyval_armv8`. (3) One UDP socket shared by several threads serializes on the kernel send lock (`__sendto`). (4) Firefox never gathers 127.0.0.1 candidates: browser tests bind WebRTC on 0.0.0.0.
-
-**Queue:** (1) WHEP CPU per packet at 300 (Vec per datagram, batched sendmmsg/GSO on Linux) — CPU 315 vs 178 %; (2) RTSP ~15 % more CPU than MediaMTX: profile at 300 viewers (release build with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none`, `sample <pid>`); (3) RSS per live stream (98 vs 80 MB); (4) `crates/caudal-hls/validation_data.json` is rewritten by e2e validator runs — write it outside the repo; (5) WebKit steady.spec `video.muted` flake on Linux (diagnostics added; play.html sets muted in script); (6) TEST-AUDIT Phase 1/2 rest; (7) batches 10–12 in PLAN.md (clustering, captions, DASH/geo/schedules, Helm/Pi/MistServer import, OMT); (8) release v0.x + GHCR image when the roadmap warrants.
-**Housekeeping:** `target/` ~61 GB (disk has 450 GB free). Docker Desktop hung mounting the repo with that target dir; mount a clean `git worktree add --detach` instead, remove it after.
+**Queue:** (1) WHEP CPU per packet at 300 viewers (315 vs 178 % CPU; Vec per datagram, sendmmsg/GSO on Linux); (2) RTSP ~15 % more CPU than MediaMTX; (3) RSS per live stream (98 vs 80 MB); (4) remaining roadmap: DASH (low priority), MoQ on Safari 26.4+, Raspberry Pi image, OMT protocol + discovery, player SDKs, watermarking, CEA-608 in TS, GPU transcoding; (5) release v0.x + GHCR image; (6) TEST-AUDIT Phase 2/3 rest (proptest, interop nightly, soak, mutants).
 **Rule from Saul:** verify with tools outside Claude (memory `saul-verificacion-externa`); say what is not verified.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps

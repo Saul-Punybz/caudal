@@ -245,3 +245,10 @@ repo re-checked by hand with crates.io and `gh api`.
 - **Clustering**: better than xiu for us is **`moq-relay` 0.14.18** (MIT/Apache, same moq-dev family we already pin, released 17 Sep 2026): it has `cluster.rs`/`nodes.rs` for relay-to-relay fan-out. Plan for M10: origins publish over MoQ to a relay cluster, edges subscribe on demand; xiu's RTMP push/pull stays a reference for non-MoQ relays (we already have SRT push/pull, RTSP pull and RTMP push for that).
 - **Watermarking**: no video watermarking crate exists in Rust (crates.io search). The Rust repo Gemini named works on still images (BSD-3, 2022). The industry approach to forensic watermarking needs no per-frame DCT in the server: **A/B segment watermarking** — encode two variants that differ invisibly (transcode ladder), then build each viewer's playlist from a per-token A/B sequence. That is a packager feature Caudal can do in Rust; the pixel embedding can be an ffmpeg filter step in `caudal-transcode`. Visible watermark (ffmpeg overlay) first.
 - **DASH**: `dash-mpd` 0.20.5 (MIT, active) for the MPD.
+
+## Batch 13 · IP multicast output (19 Sep 2026)
+
+- **Multicast socket options:** `socket2` 0.6 (MIT OR Apache-2.0), already in the tree through `caudal-webrtc` and tokio: `IP_MULTICAST_TTL`/`IF`/`LOOP` and the IPv6 counterparts. std and tokio expose TTL and loop but not the outgoing interface.
+- **TS muxing:** our own `caudal-ts` (`TsMux`, on `mpeg2ts`), given a media-clock mode so the PSI/PCR cadence follows the frames' timestamps once the output is paced.
+- **RTP header (RFC 2250, PT 33) and 7x188 datagram framing:** written in `caudal-multicast`: a 12-byte header and a chunker. The `rtp` crate (webrtc-rs) would add a dependency for less code than it replaces, the same call `caudal-rtsp` made.
+- **Pacing:** written (`crates/caudal-multicast/src/pacer.rs`, pure functions of `now`). Kernel pacing (`SO_TXTIME` + `fq`, Linux only) is batch 13 item 4; this user-space pacer works on every OS and is the baseline that item would measure against.

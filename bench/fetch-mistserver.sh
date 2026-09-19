@@ -91,6 +91,16 @@ Linux)
   for b in "${BINARIES[@]}"; do
     cp "$build/$b" "$dir.tmp/"
   done
+  # `library()` builds a *shared* libmist by default (meson's default_library
+  # is 'shared' and this project never overrides it); every Mist* binary
+  # links against it dynamically. It lands under $build/lib/ (mirrors the
+  # source layout) with build-tree RPATH baked in, which stops resolving the
+  # moment $build is deleted below -- copy the .so next to the binaries and
+  # bench.py sets LD_LIBRARY_PATH to that directory at run time so the
+  # dynamic linker finds it there instead.
+  mist_libs=$(find "$build" -maxdepth 3 -name 'libmist*.so*')
+  [ -n "$mist_libs" ] || { echo "fetch-mistserver.sh: no libmist*.so under $build" >&2; exit 1; }
+  cp $mist_libs "$dir.tmp/"
   mv "$dir.tmp" "$dir"
   rm -rf "$build"
   ;;

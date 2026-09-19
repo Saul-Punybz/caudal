@@ -84,7 +84,12 @@ SERVERS = {
     # duration is fixed at 500 ms at compile time (see the report).
     "mistserver": {
         "cmd": lambda: mist_cmd(),
-        "env": {"TMP": MIST_TMP},
+        # LD_LIBRARY_PATH: the Linux build (fetch-mistserver.sh) copies
+        # libmist.so next to the binaries because its build-tree RPATH
+        # stops resolving once the build directory it was compiled in is
+        # gone; this is where the dynamic linker finds it instead. Harmless
+        # on macOS (the official zip has no such library to find).
+        "env": {"TMP": MIST_TMP, "LD_LIBRARY_PATH": MIST_DIR},
         "tree": MIST_DIR + "/",
         "ready": [("127.0.0.1", 8080), ("127.0.0.1", 1935), ("127.0.0.1", 8554)],
         "rtmp": "rtmp://127.0.0.1:1935/live/bench",
@@ -106,7 +111,12 @@ def mist_cmd():
     os.makedirs(MIST_TMP)
     cfg = os.path.join(MIST_TMP, "config.json")
     shutil.copy(os.path.join(HERE, "mistserver.json"), cfg)
-    return [os.path.join(MIST_DIR, "MistController"), "--config", cfg, "--configrw", "none"]
+    # --account: creates a login non-interactively (harmless either way --
+    # MistController only warns and keeps going without one -- but it heads
+    # off the interactive first-time-setup path entirely rather than relying
+    # on it detecting a non-terminal stdin).
+    return [os.path.join(MIST_DIR, "MistController"), "--config", cfg, "--configrw", "none",
+            "--account", "bench:bench"]
 
 CHILDREN = []  # every process we start, killed on exit
 
@@ -389,11 +399,41 @@ def kill_tree(prefix, grace=10.0):
         time.sleep(0.5)
 
 
+def dump_diagnostics(server, p, logf):
+    """A server never became ready: print everything needed to diagnose it
+    straight to this run's own log (stderr, so it lands in the CI job log,
+    not just the uploaded results artifact) -- the process's own
+    stdout/stderr tail, its directory listing, its effective config, and
+    the ports/URLs we were polling."""
+    alive = p.poll() is None
+    log(f"READINESS FAILURE: {server} pid {p.pid} {'still running' if alive else f'exited {p.poll()}'}")
+    logf.flush()
+    try:
+        with open(logf.name) as f:
+            tail = f.readlines()[-200:]
+        log(f"---- tail of {logf.name} ----")
+        sys.stderr.write("".join(tail))
+    except OSError as e:
+        log("could not read", logf.name, ":", e)
+    tree = SERVERS[server].get("tree")
+    if tree:
+        d = tree.rstrip("/")
+        log(f"---- ls -la {d} ----")
+        subprocess.run(["ls", "-la", d])
+    if server == "mistserver":
+        cfg = os.path.join(MIST_TMP, "config.json")
+        if os.path.exists(cfg):
+            log(f"---- {cfg} ----")
+            sys.stderr.write(open(cfg).read() + "\n")
+    log("---- ready target(s) ----", SERVERS[server]["ready"])
+
+
 def start_server(server, logf):
     env = dict(os.environ, **SERVERS[server].get("env", {}))
     p = spawn(SERVERS[server]["cmd"](), stdout=logf, stderr=subprocess.STDOUT, cwd=CACHE, env=env)
     p.bench_server = server
     if not wait_ready(server):
+        dump_diagnostics(server, p, logf)
         stop_server(p)
         raise RuntimeError(f"{server} did not become ready")
     return p

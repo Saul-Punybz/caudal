@@ -181,7 +181,7 @@ max_mb = 256  # Maximum buffer size in megabytes
 # model_dir = "models"      # holds whisper-<model>/ (config.json, tokenizer.json, model.safetensors)
 # model = "base"            # tiny (~150 MB), base (~290 MB) or small (~970 MB, best Spanish)
 # threads = 2               # inference threads, all streams together (1-64)
-# device = "auto"           # auto | cpu | metal
+# device = "cpu"            # cpu | metal | auto (GPU is opt-in: a driver abort would stop the server)
 # max_streams = 2           # streams captioned at once; later ones get none
 # [[captions.stream]]
 # streams = ["noticias*"]   # names or prefix* globs; renditions (name+label) share the source's captions

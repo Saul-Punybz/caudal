@@ -35,7 +35,10 @@ impl Default for CaptionsSection {
             model_dir: "models".into(),
             model: "base".into(),
             threads: 2,
-            device: "auto".into(),
+            // CPU by default: a GPU driver abort (below Rust) would take the
+            // whole server down; tiny/base still run 4-8x faster than real
+            // time on CPU (docs/research/CAPTIONS.md). Metal is opt-in.
+            device: "cpu".into(),
             max_streams: 2,
             stream: Vec::new(),
         }

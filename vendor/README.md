@@ -28,8 +28,8 @@ publisher, found within the first fuzzing run of
 by discarding the stale buffered bytes before the subtraction whenever they
 would otherwise exceed the new `msg_length`; regression test
 `a_smaller_msg_length_on_a_fresh_header_abandons_the_old_partial_message`.
-Not yet reported upstream (issue #650 above is unrelated); do the same when
-filing it.
+Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (issue #650
+above is unrelated).
 
 A third patch, same file, same fuzzing run: the Type 2 branch of
 `read_message_header` computed `previous_header.timestamp + timestamp_delta`
@@ -42,8 +42,7 @@ than Type 1's `checked_add` fallback (reusing the previous timestamp) since
 it actually produces the wrapped value instead of silently freezing it —
 Type 1's fallback was not touched, since fuzzing did not show it panicking
 and it is out of this pass's scope. Regression test
-`a_type2_delta_wraps_the_32_bit_timestamp_instead_of_panicking`. Not yet
-reported upstream.
+`a_type2_delta_wraps_the_32_bit_timestamp_instead_of_panicking`. Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).
 
 ## scuffle-amf0 0.2.4 (MIT OR Apache-2.0), patched
 
@@ -65,8 +64,7 @@ capacity *hint* at `MAX_PREALLOC_HINT` (4096) — the loop itself still runs
 the full declared count, so a legitimately large array just reallocates a
 few extra times; nothing about correct input changes. Regression tests
 `a_huge_ecma_array_size_does_not_preallocate_it` and
-`a_huge_strict_array_size_does_not_preallocate_it`. Not yet reported
-upstream.
+`a_huge_strict_array_size_does_not_preallocate_it`. Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).
 
 ## scuffle-h264 0.2.2 (MIT OR Apache-2.0), patched
 
@@ -87,7 +85,7 @@ Patch: `src/sps/mod.rs`, both functions marked `Caudal patch`, switched to
 saturating arithmetic throughout (every valid SPS's answer is unchanged;
 every other input now returns 0 instead of panicking or wrapping).
 Regression test `width_and_height_saturate_on_crop_offsets_bigger_than_the_frame`.
-Not yet reported upstream.
+Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).
 
 ## scuffle-expgolomb 0.1.5 (MIT OR Apache-2.0), patched
 
@@ -107,8 +105,7 @@ codeNum needing 64+ leading zero bits instead of computing it -- 63 is the
 most a u64 can represent (`test_exp_glob_encode`/`test_signed_exp_glob_encode`
 round-trip exactly that many, at `u64::MAX - 1`/`i64::MAX`, and still pass).
 Regression test
-`a_codenum_of_64_or_more_leading_zeros_errors_instead_of_panicking`. Not yet
-reported upstream.
+`a_codenum_of_64_or_more_leading_zeros_errors_instead_of_panicking`. Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).
 
 While making `read_exp_golomb` safe, its sibling `read_signed_exp_golomb`
 (same file) got a defense-in-depth pass too: its `as i64` cast plus `-`/`+ 1`
@@ -134,5 +131,4 @@ Fixed with `saturating_add`/`rem_euclid(256)`, which changes nothing about
 `next_scale`'s value for any real encoder (whose deltas are always small)
 and produces a normal `[0, 256)` value for anything else, matching what
 that comment already promised. Regression test
-`a_delta_scale_near_i64_max_does_not_overflow_next_scale`. Not yet reported
-upstream.
+`a_delta_scale_near_i64_max_does_not_overflow_next_scale`. Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).

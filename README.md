@@ -15,6 +15,13 @@ cargo test --workspace
 cargo build --release
 ```
 
+Live captions (local Whisper speech-to-text, `[captions]`) are the
+`captions` cargo feature, on by default. `cargo build --release -p caudal
+--no-default-features` builds without them: 2.9 MiB smaller on
+x86_64-linux-musl (37.3 to 34.3 MiB) and 1.9 MiB on aarch64 (31.3 to
+29.4 MiB), and a config that sets `[captions]` is rejected. See
+[docs/research/CAPTIONS.md](docs/research/CAPTIONS.md).
+
 ## Operate
 
 `caudal doctor` diagnoses a setup before you go live: config, ports, NAT,

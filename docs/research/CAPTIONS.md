@@ -10,6 +10,26 @@ Code: `crates/caudal-captions` (engine, audio, chunking, cues),
 `crates/caudal-hls/src/vtt.rs` + `lib.rs` (the rendition),
 `crates/caudal/src/captions.rs` (config, `/metrics`, `fetch-model`).
 
+## Build feature and binary size
+
+Captions are the `captions` cargo feature of the `caudal` binary, on by
+default. `cargo build --release -p caudal --no-default-features` leaves
+out `caudal-captions` and candle; `[captions]` still parses there, but
+setting anything in it fails `caudal check` and startup with "this build
+has no captions; rebuild with --features captions" (`caudal doctor` and
+`caudal captions fetch-model` say the same). CI's `test-no-captions` job
+checks that build's dependency tree, lints it and runs caudal's tests.
+
+Release binary, static musl, stripped, fat LTO (CI `build-static`, 19 Sep
+2026, commit 59d58f9):
+
+| target | with captions | without | captions add |
+|---|---:|---:|---:|
+| x86_64-unknown-linux-musl | 39,085,512 B (37.3 MiB) | 35,996,680 B (34.3 MiB) | 3,088,832 B (2.9 MiB) |
+| aarch64-unknown-linux-musl | 32,781,040 B (31.3 MiB) | 30,807,280 B (29.4 MiB) | 1,973,760 B (1.9 MiB) |
+
+The model is not in the binary (`caudal captions fetch-model`, 151-967 MB).
+
 ## Engine: candle, not whisper.cpp
 
 Whisper (OpenAI) run by `candle-transformers` 0.9.2 (pure Rust; Metal on
@@ -82,7 +102,7 @@ trained on about 99 languages. `[[captions.stream]] language` accepts
 
 ```
 Subscriber (tokio task) --bounded 2048 AUs--> decoder thread per stream
-  AAC: rusty_aac (Apache-2.0)      \
+  AAC: rusty_aac (Apache-2.0, patched) \
   Opus: opus-decoder (MIT/Apache)  -> 16 kHz mono -> Chunker -> job queue (4, coalescing)
                                                                   |
                               one engine thread + rayon pool (`threads`)
@@ -96,7 +116,12 @@ Subscriber (tokio task) --bounded 2048 AUs--> decoder thread per stream
   `rusty_aac` (same Remade-With-Rust family as `rusty_h264`, already used)
   and Opus uses `opus-decoder`, which decodes straight to 16 kHz mono. AAC
   goes through our windowed-sinc resampler (`audio.rs`, tested for passband
-  level and aliasing at 48/44.1/32/22.05 kHz).
+  level and aliasing at 48/44.1/32/22.05 kHz). rusty_aac 0.5.0 ran a
+  direct O(N^2) IMDCT: 24.4 ms to decode a 21.3 ms frame on GitHub's
+  4-vCPU runner (AMD EPYC 7763), 6.1 ms on an M4, so on that CPU the
+  decoder could not keep up with one live stream. `vendor/rusty_aac` adds
+  an FFT IMDCT (vendor/README.md); a test holds AAC decoding to at least
+  10x faster than real time (5 s decoded in 0.108 s on the same runner).
 - **Never blocks ingest.** The stream task `try_send`s access units; when
   the decoder queue is full the frame is dropped and counted
   (`caudal_captions_dropped_audio_seconds_total`). The queue holds 2048
@@ -136,6 +161,15 @@ Subscriber (tokio task) --bounded 2048 AUs--> decoder thread per stream
   (a stand-in costing 1 s per call, 16 runs of 0.5 s separated by
   timestamp gaps): before, 8 of 15 chunks dropped, every call on a 0.51 s
   scrap; after, 4 calls, 0 dropped, done 2.7 s after the last audio.
+  On the 4-vCPU Linux runner it still ran 8 calls of two chunks each and
+  took 7.5-10.8 s to clear. Timing probes there showed the engine idle
+  every time a chunk arrived: the AAC decoder (above), not the engine, was
+  the bottleneck, handing out one 0.5 s chunk every ~0.59 s. With the FFT
+  IMDCT the runner matches the M4: 4 calls (1.02, 4.10, 2.05, 0.51 s),
+  0 dropped, clear 2.6 s after the last push. The test's bounds come from
+  the work: at most one call per second of pushing plus the first and the
+  tail, no sub-second call but the tail, clearing within 1 s per call
+  plus 1 s, RTF over everything.
   With the real model on the M4's efficiency cores (`taskpolicy -c
   background`, `device = "cpu"`, espeak-ng speech), where tiny runs slower
   than real time: 1 thread, before: 16 chunks, 15 dropped, 1 transcribed;
@@ -247,6 +281,7 @@ span.
   `CAUDAL_CAPTIONS_THREADS=1` for a slower machine), but not on x86 Linux
   locally; CI is the check there. Its thresholds are looser (WER <= 60%,
   recall >= 50%).
-- Static musl builds with candle were not built locally (no zig).
+- Static musl builds with candle are built only in CI (`build-static`,
+  x86_64 and aarch64); they were not run, only built and measured.
 - Speaker changes, music, noisy audio, and languages other than es/en:
   not measured.

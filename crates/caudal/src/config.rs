@@ -49,11 +49,27 @@ fn default_max_mb() -> usize {
 pub struct ServerSection {
     #[serde(default = "default_http_bind")]
     pub http_bind: SocketAddr,
+    /// Reverse proxies allowed to set `X-Forwarded-For` for the resolved
+    /// client address, CIDRs or bare addresses. HTTP protocols only (LL-HLS,
+    /// WHIP/WHEP, recordings/VOD/clips, the channel skip endpoint): RTMP,
+    /// SRT, RTSP and MoQ have no such header and always see the raw
+    /// transport peer. Empty (the default): every peer is trusted as the
+    /// real client, i.e. `X-Forwarded-For` is never honored.
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for ServerSection {
     fn default() -> Self {
-        Self { http_bind: default_http_bind() }
+        Self { http_bind: default_http_bind(), trusted_proxies: Vec::new() }
+    }
+}
+
+impl ServerSection {
+    pub fn trusted_proxy_cidrs(&self) -> Result<Vec<caudal_core::Cidr>, String> {
+        self.trusted_proxies
+            .iter()
+            .map(|s| caudal_core::Cidr::parse(s).map_err(|e| format!("[server] trusted_proxies: {e}")))
+            .collect()
     }
 }
 
@@ -164,6 +180,7 @@ pub struct Config {
     pub buffer: BufferSection,
     pub tls: TlsSection,
     pub auth: AuthSection,
+    pub access: AccessSection,
     pub hooks: HooksSection,
     pub webrtc: WebRtcSection,
     pub moq: MoqSection,
@@ -602,6 +619,64 @@ impl AuthSection {
     }
 }
 
+/// Per-stream IP/CIDR and country allow/deny rules (geo-blocking), enforced
+/// on every protocol through `Registry::authorize`. See `caudal_access`'s
+/// crate docs for the precedence rules (first matching `[[access.rules]]`
+/// entry wins; deny beats allow within it).
+///
+/// `[[access]]` (a bare top-level array) can't coexist with `[access]`
+/// `geoip_db` in TOML — the key `access` can't be both a table and an
+/// array of tables — so rules nest as `[[access.rules]]`, the same
+/// dotted-array convention already used by `[[admin.users]]`,
+/// `[[health.stream]]` and `[[transcode.ladder]]` in this file.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct AccessSection {
+    /// MaxMind DB or DB-IP `.mmdb` file for `country:` entries. Required
+    /// when any rule below has one; the operator's own file, never
+    /// bundled or downloaded.
+    pub geoip_db: Option<std::path::PathBuf>,
+    pub rules: Vec<AccessRuleEntry>,
+}
+
+/// One `[[access.rules]]` entry: `streams` glob patterns (trailing `*` is a
+/// prefix match, same convention as `[auth]` token `sub` claims) plus the
+/// four allow/deny lists, each a CIDR (bare address = host route) or
+/// `country:XX` (ISO 3166-1 alpha-2).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct AccessRuleEntry {
+    pub streams: Vec<String>,
+    pub play_allow: Vec<String>,
+    pub play_deny: Vec<String>,
+    pub publish_allow: Vec<String>,
+    pub publish_deny: Vec<String>,
+}
+
+impl AccessSection {
+    pub fn to_access_config(&self) -> Result<caudal_access::AccessConfig, String> {
+        let parse_list = |xs: &[String]| -> Result<Vec<caudal_access::Entry>, String> {
+            xs.iter().map(|s| caudal_access::Entry::parse(s).map_err(|e| format!("[[access.rules]] {e}"))).collect()
+        };
+        let mut rules = Vec::with_capacity(self.rules.len());
+        for r in &self.rules {
+            if r.streams.is_empty() {
+                return Err("[[access.rules]] needs at least one `streams` pattern".into());
+            }
+            rules.push(caudal_access::Rule {
+                streams: r.streams.clone(),
+                play_allow: parse_list(&r.play_allow)?,
+                play_deny: parse_list(&r.play_deny)?,
+                publish_allow: parse_list(&r.publish_allow)?,
+                publish_deny: parse_list(&r.publish_deny)?,
+            });
+        }
+        let cfg = caudal_access::AccessConfig { rules, geoip_db: self.geoip_db.clone() };
+        cfg.validate()?;
+        Ok(cfg)
+    }
+}
+
 /// Signed webhooks (Standard Webhooks) on stream start and end.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
@@ -766,6 +841,8 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         self.tls.to_tls_config()?;
         self.auth.to_auth_config()?;
+        self.access.to_access_config()?;
+        self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
         self.moq.to_moq_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
@@ -933,6 +1010,83 @@ mod tests {
         let ok: Config = toml::from_str("[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n[auth]\nsecret = \"0123456789abcdef0123456789abcdef\"\nplay = true").unwrap();
         assert!(ok.validate().is_ok());
         assert!(ok.auth.publish, "publish defaults to required once keys exist");
+    }
+
+    #[test]
+    fn access_section_parses_nested_rules() {
+        // No `country:` entry here, so no `geoip_db` is needed to validate
+        // (that combination is `access_section_with_geoip_db_validates`,
+        // below, which needs a real openable fixture file).
+        let src = "[[access.rules]]\nstreams = [\"live-*\"]\nplay_deny = [\"203.0.113.0/24\"]\npublish_allow = [\"10.0.0.0/8\"]\n";
+        let cfg: Config = toml::from_str(src).unwrap();
+        assert!(cfg.validate().is_ok());
+        assert_eq!(cfg.access.rules.len(), 1);
+        assert_eq!(cfg.access.rules[0].streams, vec!["live-*".to_string()]);
+        let runtime = cfg.access.to_access_config().unwrap();
+        assert_eq!(runtime.rules.len(), 1);
+    }
+
+    #[test]
+    fn access_section_with_geoip_db_validates() {
+        use std::io::Write as _;
+        // A minimal but real MaxMind DB, built the same way
+        // `caudal-access`'s own tests do (see crates/caudal-access/src/geo.rs).
+        let mut db = maxminddb_writer::Database::default();
+        db.metadata.binary_format_major_version = 2;
+        db.metadata.database_type = "GeoIP2-Country-Test".to_owned();
+        let data = db.insert_value(std::collections::BTreeMap::from([("x", 1u32)])).unwrap();
+        db.insert_node("0.0.0.0/0".parse::<maxminddb_writer::paths::IpAddrWithMask>().unwrap(), data);
+        let bytes = db.write_to(Vec::new()).unwrap();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+
+        let src = format!(
+            "[access]\ngeoip_db = {:?}\n[[access.rules]]\nstreams = [\"*\"]\nplay_deny = [\"country:KP\"]\n",
+            file.path()
+        );
+        let cfg: Config = toml::from_str(&src).unwrap();
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    #[test]
+    fn access_country_rule_without_geoip_db_is_a_config_error() {
+        let src = "[[access.rules]]\nstreams = [\"*\"]\nplay_deny = [\"country:KP\"]\n";
+        let cfg: Config = toml::from_str(src).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("geoip_db"), "{err}");
+    }
+
+    #[test]
+    fn access_rule_needs_a_streams_pattern() {
+        let src = "[[access.rules]]\nplay_deny = [\"1.2.3.4\"]\n";
+        let cfg: Config = toml::from_str(src).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("streams"), "{err}");
+    }
+
+    #[test]
+    fn access_rule_rejects_a_bad_entry() {
+        let src = "[[access.rules]]\nstreams = [\"*\"]\nplay_deny = [\"not-a-cidr-or-country\"]\n";
+        let cfg: Config = toml::from_str(src).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn access_unknown_key_reports_name_and_line() {
+        let src = "[[access.rules]]\nstreams = [\"*\"]\nplay_dney = [\"1.2.3.4\"]\n";
+        let err = toml::from_str::<Config>(src).unwrap_err().to_string();
+        assert!(err.contains("play_dney"), "{err}");
+        assert!(err.contains("line 3"), "{err}");
+    }
+
+    #[test]
+    fn trusted_proxies_parses_and_rejects_garbage() {
+        let cfg: Config = toml::from_str("[server]\ntrusted_proxies = [\"10.0.0.0/8\", \"192.168.1.1\"]\n").unwrap();
+        assert_eq!(cfg.server.trusted_proxy_cidrs().unwrap().len(), 2);
+
+        let bad: Config = toml::from_str("[server]\ntrusted_proxies = [\"not-an-ip\"]\n").unwrap();
+        let err = bad.validate().unwrap_err();
+        assert!(err.contains("trusted_proxies"), "{err}");
     }
 
     #[test]

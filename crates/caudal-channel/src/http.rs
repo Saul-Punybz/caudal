@@ -1,8 +1,10 @@
 //! `GET /api/v1/channels` and `POST /api/v1/channels/{name}/skip`.
 
+use std::net::SocketAddr;
+
 use axum::Router;
-use axum::extract::{Path, RawQuery, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::extract::{ConnectInfo, Path, RawQuery, State};
+use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use caudal_core::{Access, Denied};
@@ -30,6 +32,7 @@ async fn list(State(handle): State<ChannelHandle>) -> Response {
 async fn skip(
     State(handle): State<ChannelHandle>,
     Path(name): Path<String>,
+    extensions: Extensions,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
@@ -37,7 +40,11 @@ async fn skip(
         return (StatusCode::NOT_FOUND, "no such channel").into_response();
     }
     let token = request_token(query.as_deref().unwrap_or(""), &headers);
-    match handle.registry().authorize(Access::Publish, &name, token).await {
+    let ip = extensions.get::<ConnectInfo<SocketAddr>>().map(|ConnectInfo(p)| {
+        let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+        caudal_core::net::resolve_forwarded(p.ip(), xff, handle.trusted_proxies())
+    });
+    match handle.registry().authorize(Access::Publish, &name, token, ip).await {
         Ok(()) => {}
         Err(Denied::Missing) => {
             let mut r = (StatusCode::UNAUTHORIZED, "token required").into_response();

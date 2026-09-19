@@ -54,7 +54,10 @@ fn failover(sources: &[&str]) -> Failover {
 }
 
 fn start_one(registry: &Arc<Registry>, f: Failover) -> FailoverHandle {
-    start(registry.clone(), FailoverConfig { entries: vec![f], buffer: BufferConfig::default() })
+    start(
+        registry.clone(),
+        FailoverConfig { entries: vec![f], buffer: BufferConfig::default(), trusted_proxies: Vec::new() },
+    )
 }
 
 /// A simulated encoder: 30 fps video with a keyframe every second, plus
@@ -311,10 +314,14 @@ async fn reload_keeps_unchanged_entries_running() {
     let mut cam = Enc::new(&registry, "cam", "P", 1280, 0);
     run(&mut [&mut cam], 500).await;
     let stream = registry.get("main").unwrap();
-    h.reload(FailoverConfig { entries: vec![failover(&["cam", "cam-backup"])], buffer: BufferConfig::default() });
+    h.reload(FailoverConfig {
+        entries: vec![failover(&["cam", "cam-backup"])],
+        buffer: BufferConfig::default(),
+        trusted_proxies: Vec::new(),
+    });
     run(&mut [&mut cam], 300).await;
     assert!(Arc::ptr_eq(&stream, &registry.get("main").unwrap()), "same publish");
-    h.reload(FailoverConfig { entries: Vec::new(), buffer: BufferConfig::default() });
+    h.reload(FailoverConfig { entries: Vec::new(), buffer: BufferConfig::default(), trusted_proxies: Vec::new() });
     run(&mut [&mut cam], 100).await;
     assert!(registry.get("main").is_none(), "dropped entry ends its stream");
     assert!(h.status().is_empty());

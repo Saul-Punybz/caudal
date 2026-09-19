@@ -23,6 +23,8 @@ another language; write it only if nothing exists.
 | RIST | `rist-core` + `rist-mio` | 0.1.0 | MIT | github.com/wavey-ai/rist-rs | Aug 2026 | trial. Pure-Rust sans-I/O engine with a C-parity checklist: Simple + Main profiles, SRP/PSK, NACK/recovery, IPv4/6 done; multicast, multipath, Advanced profile not. 210 tests, interop suite vs librist. Repo also ships `rist-sys` (C bindings): not used |
 | RTSP client (pull) | `retina` | 0.4.20 | MIT/Apache-2.0 | github.com/scottlamb/retina | Aug 2026 | dependency |
 | JWT | `jsonwebtoken` | 11.1.0 | MIT | github.com/Keats/jsonwebtoken | Sep 2026 | dependency |
+| GeoIP lookup (`[[access.rules]]` `country:` entries) | `maxminddb` | 0.32.0 | ISC | github.com/oschwald/maxminddb-rust | 2026 | dependency in `caudal-access`; reads an operator-supplied MaxMind DB / DB-IP `.mmdb` file, never bundled |
+| Test-only `.mmdb` fixtures | `maxminddb-writer` | 0.1.2 | MIT OR Apache-2.0 | github.com/pierd/maxminddb-writer | 2026 | dev-dependency only (`caudal-access`, `caudal`): builds a tiny in-memory database for unit/config tests instead of shipping a real one |
 | Signed webhooks | `standardwebhooks` | 1.0.1 | MIT | github.com/standard-webhooks/standard-webhooks | Sep 2026 | dependency |
 | Automatic HTTPS | `rustls-acme` | 0.15.4 | Apache-2.0 OR MIT | github.com/FlorianUekermann/rustls-acme | Jul 2026 | dependency |
 | Cluster membership | `chitchat` | 0.13.0 | MIT | github.com/quickwit-oss/chitchat | Sep 2026 | dependency (gossip: who is alive) |

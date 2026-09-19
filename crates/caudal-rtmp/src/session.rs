@@ -3,6 +3,7 @@
 //! stream.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -147,12 +148,15 @@ pub(crate) struct Handler {
     registry: Arc<Registry>,
     app: String,
     buffer: BufferConfig,
+    /// The TCP peer's address, passed to every `authorize` call on this
+    /// connection.
+    peer_ip: IpAddr,
     streams: HashMap<u32, Arc<Shared>>,
 }
 
 impl Handler {
-    pub(crate) fn new(registry: Arc<Registry>, app: String, buffer: BufferConfig) -> Self {
-        Self { registry, app, buffer, streams: HashMap::new() }
+    pub(crate) fn new(registry: Arc<Registry>, app: String, buffer: BufferConfig, peer_ip: IpAddr) -> Self {
+        Self { registry, app, buffer, peer_ip, streams: HashMap::new() }
     }
 }
 
@@ -188,7 +192,9 @@ impl SessionHandler for Handler {
         // rtmp://host/live/<name>?token=<jwt>
         let (stream_name, query) = stream_name.split_once('?').unwrap_or((stream_name, ""));
         let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).filter(|t| !t.is_empty());
-        if let Err(denied) = self.registry.authorize(caudal_core::Access::Publish, stream_name, token).await {
+        if let Err(denied) =
+            self.registry.authorize(caudal_core::Access::Publish, stream_name, token, Some(self.peer_ip)).await
+        {
             tracing::info!(app = %app_name, stream = %stream_name, reason = ?denied, "rtmp publish rejected");
             return Err(reject_error());
         }

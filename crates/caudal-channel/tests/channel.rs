@@ -27,8 +27,10 @@ async fn start(ch: Channel) -> (Arc<Registry>, ChannelHandle, Arc<Stream>) {
     let registry = Registry::new();
     let mut publishes = registry.subscribe_publishes();
     let name = ch.name.clone();
-    let handle =
-        caudal_channel::start(registry.clone(), ChannelConfig { channels: vec![ch], buffer: Default::default() });
+    let handle = caudal_channel::start(
+        registry.clone(),
+        ChannelConfig { channels: vec![ch], buffer: Default::default(), trusted_proxies: Vec::new() },
+    );
     let stream = loop {
         let s = tokio::time::timeout(Duration::from_secs(30), publishes.recv()).await.expect("publish").unwrap();
         if s.name() == name {
@@ -169,8 +171,10 @@ async fn paced_in_real_time() {
 async fn nothing_playable_stays_idle() {
     let ch = channel("empty", vec![PathBuf::from("/nonexistent/a.mp4")], true);
     let registry = Registry::new();
-    let handle =
-        caudal_channel::start(registry.clone(), ChannelConfig { channels: vec![ch], buffer: Default::default() });
+    let handle = caudal_channel::start(
+        registry.clone(),
+        ChannelConfig { channels: vec![ch], buffer: Default::default(), trusted_proxies: Vec::new() },
+    );
     tokio::time::sleep(Duration::from_secs(25)).await;
     let s = &handle.status()[0];
     assert_eq!(s.state, ChannelState::Idle);
@@ -184,8 +188,10 @@ async fn name_already_published_waits() {
     let registry = Registry::new();
     let taken = registry.publish("busy", Default::default()).unwrap();
     let ch = channel("busy", vec![fixture("av.mp4")], true);
-    let handle =
-        caudal_channel::start(registry.clone(), ChannelConfig { channels: vec![ch], buffer: Default::default() });
+    let handle = caudal_channel::start(
+        registry.clone(),
+        ChannelConfig { channels: vec![ch], buffer: Default::default(), trusted_proxies: Vec::new() },
+    );
     tokio::time::sleep(Duration::from_secs(1)).await;
     let s = handle.status()[0].clone();
     assert!(s.error.as_deref().is_some_and(|e| e.contains("already published")), "{s:?}");

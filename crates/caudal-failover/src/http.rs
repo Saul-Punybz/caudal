@@ -2,7 +2,8 @@
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, RawQuery, State};
+use axum::extract::{ConnectInfo, Path, RawQuery, State};
+use axum::http::Extensions;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -39,6 +40,7 @@ struct SwitchBody {
 async fn switch(
     State(handle): State<FailoverHandle>,
     Path(stream): Path<String>,
+    extensions: Extensions,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
     body: Bytes,
@@ -47,7 +49,11 @@ async fn switch(
         return (StatusCode::NOT_FOUND, "no such failover stream").into_response();
     }
     let token = request_token(query.as_deref().unwrap_or(""), &headers);
-    match handle.registry().authorize(Access::Publish, &stream, token).await {
+    let ip = extensions.get::<ConnectInfo<std::net::SocketAddr>>().map(|ConnectInfo(p)| {
+        let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+        caudal_core::net::resolve_forwarded(p.ip(), xff, handle.trusted_proxies())
+    });
+    match handle.registry().authorize(Access::Publish, &stream, token, ip).await {
         Ok(()) => {}
         Err(Denied::Missing) => {
             let mut r = (StatusCode::UNAUTHORIZED, "token required").into_response();

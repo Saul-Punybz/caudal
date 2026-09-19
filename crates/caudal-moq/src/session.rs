@@ -73,27 +73,38 @@ async fn serve(
 }
 
 /// What a session may see, or the HTTP-style status to close it with.
+///
+/// `ip` is always `None` here: `moq_native::Request` (0.19.19) doesn't
+/// expose the transport's peer address for any of its backends (quinn,
+/// quiche, iroh, the `noq`/websocket in-process transports), only the MoQ
+/// SETUP's URL/path/authority and, for mTLS, the peer's certificate
+/// identity. A stream matched by an IP/CIDR `[[access.rules]]` entry is
+/// therefore denied here with `reason: "no_ip"` (fail closed, see
+/// `caudal_access::rule::evaluate`) rather than silently let through;
+/// `country:`-only or token-only rules are unaffected. Revisit if a future
+/// `moq-native` release adds a `Request::remote_addr()`.
 async fn allowed(
     registry: &Registry,
     origin: &moq_net::origin::Producer,
     path: &str,
     token: Option<&str>,
 ) -> Result<moq_net::origin::Consumer, u16> {
+    let ip = None;
     let all = origin.consume();
     if !path.is_empty() {
         if !caudal_core::media::valid_stream_name(path) {
             return Err(404);
         }
-        registry.authorize(Access::Play, path, token).await.map_err(status)?;
+        registry.authorize(Access::Play, path, token, ip).await.map_err(status)?;
         return all.scope(&[moq_net::Path::new(path)]).ok_or(403);
     }
-    if registry.authorize(Access::Play, "", token).await.is_ok() {
+    if registry.authorize(Access::Play, "", token, ip).await.is_ok() {
         return Ok(all);
     }
     let mut names = Vec::new();
     let mut refusal = Denied::Missing;
     for stream in registry.list() {
-        match registry.authorize(Access::Play, stream.name(), token).await {
+        match registry.authorize(Access::Play, stream.name(), token, ip).await {
             Ok(()) => names.push(stream.name().to_owned()),
             Err(d) => refusal = d,
         }
@@ -155,7 +166,13 @@ mod tests {
 
     struct OnlyCam1;
     impl caudal_core::Gate for OnlyCam1 {
-        fn check<'a>(&'a self, _: Access, stream: &'a str, token: Option<&'a str>) -> caudal_core::GateFuture<'a> {
+        fn check<'a>(
+            &'a self,
+            _: Access,
+            stream: &'a str,
+            token: Option<&'a str>,
+            _ip: Option<std::net::IpAddr>,
+        ) -> caudal_core::GateFuture<'a> {
             Box::pin(async move {
                 match token {
                     None => Err(Denied::Missing),

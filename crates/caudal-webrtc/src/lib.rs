@@ -24,8 +24,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use caudal_core::{Access, Denied, PublishError, Registry, StartAt};
@@ -102,11 +102,14 @@ struct AppState {
     engines: Option<Arc<Engines>>,
     candidates: Arc<Vec<SocketAddr>>,
     buffer: caudal_core::BufferConfig,
+    /// `[server] trusted_proxies`, for resolving `X-Forwarded-For` on WHIP/
+    /// WHEP (HTTP); see `caudal_core::net::resolve_forwarded`.
+    trusted_proxies: Arc<Vec<caudal_core::Cidr>>,
 }
 
 /// Must be called inside a tokio runtime (it binds the UDP socket and spawns
-/// the peer loop).
-pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig) -> axum::Router {
+/// the peer loop). `trusted_proxies`: see [`AppState::trusted_proxies`].
+pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig, trusted_proxies: Vec<caudal_core::Cidr>) -> axum::Router {
     let (engines, candidates) = match start(&cfg) {
         Ok((e, c)) => (Some(Arc::new(e)), c),
         Err(e) => {
@@ -114,7 +117,13 @@ pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig) -> axum::Router {
             (None, Vec::new())
         }
     };
-    let state = AppState { registry, engines, candidates: Arc::new(candidates), buffer: cfg.buffer };
+    let state = AppState {
+        registry,
+        engines,
+        candidates: Arc::new(candidates),
+        buffer: cfg.buffer,
+        trusted_proxies: Arc::new(trusted_proxies),
+    };
     axum::Router::new()
         .route("/whip/{name}", post(whip_post).options(preflight))
         .route("/whip/{name}/{session}", axum::routing::delete(whip_delete).options(preflight))
@@ -229,6 +238,17 @@ async fn preflight() -> Response {
 }
 
 /// `Authorization: Bearer <t>` first, then `?token=<t>`.
+/// The address `Registry::authorize` should judge this WHIP/WHEP request
+/// by: the TCP peer, or (only if it is itself a trusted proxy) the
+/// right-most untrusted `X-Forwarded-For` hop. `None` when the server
+/// wasn't served with `into_make_service_with_connect_info` (true in
+/// `crate::main::run`; a test harness may skip it).
+fn client_ip(extensions: &Extensions, headers: &HeaderMap, trusted_proxies: &[caudal_core::Cidr]) -> Option<IpAddr> {
+    let peer = extensions.get::<ConnectInfo<SocketAddr>>()?.0;
+    let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    Some(caudal_core::net::resolve_forwarded(peer.ip(), xff, trusted_proxies))
+}
+
 fn token(headers: &HeaderMap, uri: &Uri) -> Option<String> {
     if let Some(v) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
         let v = v.trim();
@@ -374,6 +394,7 @@ fn created(location: String, sdp: String) -> Response {
 async fn whip_post(
     State(st): State<AppState>,
     Path(name): Path<String>,
+    extensions: Extensions,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
@@ -385,7 +406,8 @@ async fn whip_post(
         return plain(StatusCode::UNSUPPORTED_MEDIA_TYPE, "expected Content-Type: application/sdp");
     }
     let tok = token(&headers, &uri);
-    if let Err(d) = st.registry.authorize(Access::Publish, &name, tok.as_deref()).await {
+    let ip = client_ip(&extensions, &headers, &st.trusted_proxies);
+    if let Err(d) = st.registry.authorize(Access::Publish, &name, tok.as_deref(), ip).await {
         return denied(d);
     }
     let (rtc, sdp) = match negotiate(&st, &body) {
@@ -413,6 +435,7 @@ async fn whip_post(
 async fn whep_post(
     State(st): State<AppState>,
     Path(name): Path<String>,
+    extensions: Extensions,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
@@ -424,7 +447,8 @@ async fn whep_post(
         return plain(StatusCode::UNSUPPORTED_MEDIA_TYPE, "expected Content-Type: application/sdp");
     }
     let tok = token(&headers, &uri);
-    if let Err(d) = st.registry.authorize(Access::Play, &name, tok.as_deref()).await {
+    let ip = client_ip(&extensions, &headers, &st.trusted_proxies);
+    if let Err(d) = st.registry.authorize(Access::Play, &name, tok.as_deref(), ip).await {
         return denied(d);
     }
     let Some(sub) = st.registry.subscribe(&name, StartAt::LiveEdge) else {

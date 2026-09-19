@@ -3,12 +3,13 @@
 // Handlers return early with a ready response; boxing it buys nothing.
 #![allow(clippy::result_large_err)]
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, RawQuery, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::extract::{ConnectInfo, Path, RawQuery, State};
+use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use caudal_core::media::valid_stream_name;
@@ -66,11 +67,28 @@ fn token_is_url_safe(t: &str) -> bool {
     t.len() <= 4096 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
-async fn authorize(shared: &Shared, access: Access, stream: &str, token: Option<&str>) -> Result<(), Response> {
+/// The address `Registry::authorize` should judge this request by: the TCP
+/// peer, or (only if it is itself a trusted proxy) the right-most
+/// untrusted `X-Forwarded-For` hop. `None` when the server wasn't served
+/// with `into_make_service_with_connect_info` (true in `crate::main::run`;
+/// a test harness may skip it).
+fn client_ip(extensions: &Extensions, headers: &HeaderMap, trusted_proxies: &[caudal_core::Cidr]) -> Option<IpAddr> {
+    let peer = extensions.get::<ConnectInfo<SocketAddr>>()?.0;
+    let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    Some(caudal_core::net::resolve_forwarded(peer.ip(), xff, trusted_proxies))
+}
+
+async fn authorize(
+    shared: &Shared,
+    access: Access,
+    stream: &str,
+    token: Option<&str>,
+    ip: Option<IpAddr>,
+) -> Result<(), Response> {
     if token.is_some_and(|t| !token_is_url_safe(t)) {
         return Err(error(StatusCode::FORBIDDEN, "bad token"));
     }
-    match shared.registry.authorize(access, stream, token).await {
+    match shared.registry.authorize(access, stream, token, ip).await {
         Ok(()) => Ok(()),
         Err(Denied::Missing) => {
             let mut r = error(StatusCode::UNAUTHORIZED, "token required");
@@ -89,9 +107,15 @@ fn check_names(stream: &str, id: &str) -> Result<(), Response> {
     }
 }
 
-async fn list(State(shared): State<Arc<Shared>>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+async fn list(
+    State(shared): State<Arc<Shared>>,
+    extensions: Extensions,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     let q = q.unwrap_or_default();
     let token = request_token(&q, &headers);
+    let ip = client_ip(&extensions, &headers, &shared.trusted_proxies);
     let root = shared.cfg.dir.clone();
     let dirs = tokio::task::spawn_blocking(move || crate::recording_dirs(&root)).await.unwrap_or_default();
     let mut out: Vec<Meta> = Vec::new();
@@ -101,7 +125,7 @@ async fn list(State(shared): State<Arc<Shared>>, RawQuery(q): RawQuery, headers:
         let ok = match allowed.get(&stream) {
             Some(&ok) => ok,
             None => {
-                let res = authorize(&shared, Access::Play, &stream, token).await;
+                let res = authorize(&shared, Access::Play, &stream, token, ip).await;
                 if let Err(r) = &res {
                     missing |= r.status() == StatusCode::UNAUTHORIZED;
                 }
@@ -125,6 +149,7 @@ async fn list(State(shared): State<Arc<Shared>>, RawQuery(q): RawQuery, headers:
 async fn get_one(
     State(shared): State<Arc<Shared>>,
     Path((stream, id)): Path<(String, String)>,
+    extensions: Extensions,
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
@@ -132,7 +157,8 @@ async fn get_one(
         return r;
     }
     let q = q.unwrap_or_default();
-    if let Err(r) = authorize(&shared, Access::Play, &stream, request_token(&q, &headers)).await {
+    let ip = client_ip(&extensions, &headers, &shared.trusted_proxies);
+    if let Err(r) = authorize(&shared, Access::Play, &stream, request_token(&q, &headers), ip).await {
         return r;
     }
     match meta::read_meta(&shared.cfg.dir.join(&stream).join(&id)).await {
@@ -144,6 +170,7 @@ async fn get_one(
 async fn delete_one(
     State(shared): State<Arc<Shared>>,
     Path((stream, id)): Path<(String, String)>,
+    extensions: Extensions,
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
@@ -151,7 +178,8 @@ async fn delete_one(
         return r;
     }
     let q = q.unwrap_or_default();
-    if let Err(r) = authorize(&shared, Access::Publish, &stream, request_token(&q, &headers)).await {
+    let ip = client_ip(&extensions, &headers, &shared.trusted_proxies);
+    if let Err(r) = authorize(&shared, Access::Publish, &stream, request_token(&q, &headers), ip).await {
         return r;
     }
     if shared.active.lock().contains(&(stream.clone(), id.clone())) {
@@ -174,6 +202,7 @@ async fn delete_one(
 async fn vod_file(
     State(shared): State<Arc<Shared>>,
     Path((stream, id, file)): Path<(String, String, String)>,
+    extensions: Extensions,
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
@@ -188,7 +217,8 @@ async fn vod_file(
     };
     let q = q.unwrap_or_default();
     let token = request_token(&q, &headers);
-    if let Err(r) = authorize(&shared, Access::Play, &stream, token).await {
+    let ip = client_ip(&extensions, &headers, &shared.trusted_proxies);
+    if let Err(r) = authorize(&shared, Access::Play, &stream, token, ip).await {
         return r;
     }
     let path = shared.cfg.dir.join(&stream).join(&id).join(&file);
@@ -248,6 +278,7 @@ struct ClipRequest {
 
 async fn clip_route(
     State(shared): State<Arc<Shared>>,
+    extensions: Extensions,
     RawQuery(q): RawQuery,
     headers: HeaderMap,
     body: Bytes,
@@ -259,7 +290,8 @@ async fn clip_route(
         return r;
     }
     let q = q.unwrap_or_default();
-    if let Err(r) = authorize(&shared, Access::Play, &req.stream, request_token(&q, &headers)).await {
+    let ip = client_ip(&extensions, &headers, &shared.trusted_proxies);
+    if let Err(r) = authorize(&shared, Access::Play, &req.stream, request_token(&q, &headers), ip).await {
         return r;
     }
     let dir = shared.cfg.dir.join(&req.stream).join(&req.id);

@@ -67,6 +67,10 @@ const HISTORY: usize = 20;
 pub struct FailoverConfig {
     pub entries: Vec<Failover>,
     pub buffer: BufferConfig,
+    /// `[server] trusted_proxies`, for resolving `X-Forwarded-For` on the
+    /// manual switch route; see `caudal_core::net::resolve_forwarded`. Fixed
+    /// for the process lifetime (`[server]` requires a restart).
+    pub trusted_proxies: Vec<caudal_core::Cidr>,
 }
 
 /// One `[[failover]]` entry.
@@ -218,11 +222,18 @@ pub struct FailoverHandle {
     inner: Arc<Inner>,
 }
 
+impl FailoverHandle {
+    pub(crate) fn trusted_proxies(&self) -> &[caudal_core::Cidr] {
+        &self.inner.trusted_proxies
+    }
+}
+
 struct Inner {
     registry: Arc<Registry>,
     buffer: BufferConfig,
     entries: Mutex<Vec<Entry>>,
     switches: broadcast::Sender<SwitchEvent>,
+    trusted_proxies: Vec<caudal_core::Cidr>,
 }
 
 fn initial_status(cfg: &Failover) -> FailoverStatus {
@@ -330,6 +341,7 @@ pub fn start(registry: Arc<Registry>, cfg: FailoverConfig) -> FailoverHandle {
         buffer: cfg.buffer,
         entries: Mutex::new(Vec::new()),
         switches: broadcast::channel(64).0,
+        trusted_proxies: cfg.trusted_proxies,
     });
     let entries = cfg.entries.into_iter().map(|f| spawn_entry(&inner, f)).collect();
     *inner.entries.lock() = entries;
@@ -515,7 +527,8 @@ impl Runner {
             };
             let handle = caudal_channel::start(
                 self.registry.clone(),
-                caudal_channel::ChannelConfig { channels: vec![ch], buffer: self.buffer },
+                // Internal slate: nothing reaches its skip route.
+                caudal_channel::ChannelConfig { channels: vec![ch], buffer: self.buffer, trusted_proxies: Vec::new() },
             );
             self.files[i] = Some(FilePlayer(handle));
         }

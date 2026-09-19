@@ -413,7 +413,7 @@ async fn handle_describe(req: &Request<Vec<u8>>, registry: &Arc<Registry>, state
     let Some((name, _segments, token)) = parse_uri(req) else {
         return simple(StatusCode::BadRequest);
     };
-    if let Err(d) = registry.authorize(Access::Play, &name, token.as_deref()).await {
+    if let Err(d) = registry.authorize(Access::Play, &name, token.as_deref(), Some(state.peer_ip)).await {
         return denied(d);
     }
     let Some(stream) = registry.get(&name) else {
@@ -587,7 +587,7 @@ async fn handle_play(
         return simple(StatusCode::MethodNotValidInThisState);
     };
     let token = parse_uri(req).and_then(|(_, _, t)| t);
-    if let Err(d) = registry.authorize(Access::Play, &stream_name, token.as_deref()).await {
+    if let Err(d) = registry.authorize(Access::Play, &stream_name, token.as_deref(), Some(state.peer_ip)).await {
         return denied(d);
     }
     let Some(stream) = state.stream.clone() else {

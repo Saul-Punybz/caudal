@@ -28,6 +28,7 @@ async fn main() {
     let app = router(
         registry.clone(),
         HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
+        Vec::new(),
     );
 
     let publisher = registry.publish("demo", BufferConfig::default()).unwrap();

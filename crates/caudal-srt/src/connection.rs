@@ -184,7 +184,9 @@ async fn handle_publish(
     name: &str,
     token: Option<&str>,
 ) {
-    if let Err(denied) = registry.authorize(caudal_core::Access::Publish, name, token).await {
+    if let Err(denied) =
+        registry.authorize(caudal_core::Access::Publish, name, token, Some(std::net::IpAddr::V4(*peer.ip()))).await
+    {
         tracing::info!(%peer, stream = %name, reason = ?denied, "srt publish rejected");
         return;
     }

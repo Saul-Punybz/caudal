@@ -1,0 +1,87 @@
+{{- include "caudal.checkAdmin" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "caudal.fullname" . }}
+  labels:
+    {{- include "caudal.labels" . | nindent 4 }}
+data:
+  # Everything except the admin password hash, which is never put in a
+  # ConfigMap — see templates/secret-admin.yaml and the initContainer in
+  # templates/deployment.yaml that merges the two into one file at
+  # startup, since `caudal --config` only takes a single path.
+  caudal.toml: |
+    [server]
+    http_bind = "0.0.0.0:8080"
+
+    [rtmp]
+    bind = "0.0.0.0:1935"
+    app = {{ .Values.rtmp.app | quote }}
+
+    [hls]
+    part_ms = {{ .Values.hls.partMs }}
+    segment_ms = {{ .Values.hls.segmentMs }}
+
+    [buffer]
+    window_secs = {{ .Values.buffer.windowSecs }}
+    max_mb = {{ .Values.buffer.maxMb }}
+
+    {{- if .Values.webrtc.enabled }}
+
+    [webrtc]
+    udp_bind = "0.0.0.0:{{ .Values.webrtc.udpPort }}"
+    threads = {{ .Values.webrtc.threads }}
+    {{- if .Values.webrtc.publicIps }}
+    public_ips = [{{ range $i, $ip := .Values.webrtc.publicIps }}{{ if $i }}, {{ end }}{{ $ip | quote }}{{ end }}]
+    {{- else }}
+    # No webrtc.publicIps set: WHIP/WHEP will only work from inside the
+    # cluster network until you set one. See the "Networking" comment in
+    # values.yaml (udp.service vs udp.hostNetwork).
+    {{- end }}
+    {{- end }}
+
+    {{- if .Values.srt.enabled }}
+
+    [srt]
+    bind = "0.0.0.0:{{ .Values.srt.udpPort }}"
+    latency_ms = {{ .Values.srt.latencyMs }}
+    {{- end }}
+
+    [moq]
+    enabled = {{ .Values.moq.enabled }}
+    {{- if .Values.moq.enabled }}
+    bind = "0.0.0.0:{{ .Values.moq.udpPort }}"
+    {{- end }}
+
+    {{- if .Values.record.enabled }}
+
+    [record]
+    enabled = true
+    dir = {{ .Values.persistence.mountPath | quote }}
+    streams = [{{ range $i, $s := .Values.record.streams }}{{ if $i }}, {{ end }}{{ $s | quote }}{{ end }}]
+    segment_secs = {{ .Values.record.segmentSecs }}
+    {{- if .Values.record.retentionHours }}
+    retention_hours = {{ .Values.record.retentionHours }}
+    {{- end }}
+    {{- end }}
+
+    {{- if .Values.admin.enabled }}
+
+    [admin]
+    session_ttl_secs = {{ .Values.admin.sessionTtlSecs }}
+    public_metrics = {{ .Values.admin.publicMetrics }}
+    secure_cookies = {{ .Values.admin.secureCookies }}
+    allow_unauthenticated = false
+    # [[admin.users]] is appended at container start from the Secret named
+    # by templates/_helpers.tpl's "caudal.adminSecretName" — see the
+    # `merge-config` initContainer in templates/deployment.yaml.
+    {{- else }}
+
+    [admin]
+    allow_unauthenticated = true
+    {{- end }}
+
+    {{- with .Values.extraConfig }}
+
+    {{ . }}
+    {{- end }}

@@ -262,7 +262,13 @@ fn internal_readers_are_not_viewers_and_outputs_report_their_own() {
 async fn gate_decides_and_ends_are_announced() {
     struct OnlyAlice;
     impl Gate for OnlyAlice {
-        fn check<'a>(&'a self, _: Access, _: &'a str, token: Option<&'a str>) -> GateFuture<'a> {
+        fn check<'a>(
+            &'a self,
+            _: Access,
+            _: &'a str,
+            token: Option<&'a str>,
+            _ip: Option<std::net::IpAddr>,
+        ) -> GateFuture<'a> {
             Box::pin(async move {
                 match token {
                     None => Err(Denied::Missing),
@@ -273,11 +279,11 @@ async fn gate_decides_and_ends_are_announced() {
         }
     }
     let reg = Registry::new();
-    assert_eq!(reg.authorize(Access::Publish, "live", None).await, Ok(()), "no gate: open");
+    assert_eq!(reg.authorize(Access::Publish, "live", None, None).await, Ok(()), "no gate: open");
     reg.set_gate(Arc::new(OnlyAlice));
-    assert_eq!(reg.authorize(Access::Play, "live", None).await, Err(Denied::Missing));
-    assert!(matches!(reg.authorize(Access::Play, "live", Some("bob")).await, Err(Denied::Refused(_))));
-    assert_eq!(reg.authorize(Access::Play, "live", Some("alice")).await, Ok(()));
+    assert_eq!(reg.authorize(Access::Play, "live", None, None).await, Err(Denied::Missing));
+    assert!(matches!(reg.authorize(Access::Play, "live", Some("bob"), None).await, Err(Denied::Refused(_))));
+    assert_eq!(reg.authorize(Access::Play, "live", Some("alice"), None).await, Ok(()));
 
     let mut ends = reg.subscribe_ends();
     drop(reg.publish("live", cfg(1)).unwrap());

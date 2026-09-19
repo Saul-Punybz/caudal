@@ -577,6 +577,7 @@ name = "caudal"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "caudal-access",
  "caudal-admin",
  "caudal-auth",
  "caudal-channel",
@@ -598,19 +599,38 @@ dependencies = [
  "clap",
  "hex",
  "jsonwebtoken",
+ "maxminddb-writer",
  "parking_lot",
  "rcgen 0.14.10",
  "rustix",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "time",
  "tokio",
  "toml",
  "tower",
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "x509-parser",
+]
+
+[[package]]
+name = "caudal-access"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "caudal-core",
+ "maxminddb",
+ "maxminddb-writer",
+ "parking_lot",
+ "serde",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2564,6 +2584,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
+name = "ipnetwork"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
+
+[[package]]
 name = "is"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2889,6 +2915,28 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "maxminddb"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b43d2458d977b610b04a3858e6504f06133663d303a1a0606601b530bfc9bc6"
+dependencies = [
+ "ipnetwork",
+ "memchr",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "maxminddb-writer"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c310fee474c1e6358b4a6e8c41a63c9fc50a5a3d942863d1d0ac0e7c87e4a100"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "md-5"
@@ -5813,8 +5861,11 @@ dependencies = [
  "base64 0.23.1",
  "log",
  "percent-encoding",
+ "rustls",
+ "rustls-pki-types",
  "ureq-proto",
  "utf8-zero",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

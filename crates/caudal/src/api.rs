@@ -27,6 +27,10 @@ pub struct AppState {
     /// `/metrics` for `caudal_alerts_*`. `GET /api/v1/alerts` itself is
     /// mounted separately by `caudal_health::HealthService::router`.
     health: std::sync::OnceLock<Arc<caudal_health::HealthService>>,
+    /// Set once at startup (see `crate::main::run`); read by `/metrics` for
+    /// `caudal_access_denied_total`. Always present: `subsystems::Supervisor`
+    /// creates a `caudal_access::Checker` even with no `[[access.rules]]`.
+    access: std::sync::OnceLock<Arc<caudal_access::Checker>>,
 }
 
 impl AppState {
@@ -36,6 +40,7 @@ impl AppState {
             ready: AtomicBool::new(false),
             cue_seq: AtomicU32::new(1),
             health: std::sync::OnceLock::new(),
+            access: std::sync::OnceLock::new(),
         })
     }
 
@@ -49,6 +54,10 @@ impl AppState {
 
     pub fn set_health(&self, service: Arc<caudal_health::HealthService>) {
         let _ = self.health.set(service);
+    }
+
+    pub fn set_access(&self, checker: Arc<caudal_access::Checker>) {
+        let _ = self.access.set(checker);
     }
 }
 
@@ -221,7 +230,11 @@ async fn post_cue(State(state): State<Arc<AppState>>, Path(name): Path<String>, 
 }
 
 async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let body = metrics::render(&state.registry, state.health.get().map(|h| h.as_ref()));
+    let body = metrics::render(
+        &state.registry,
+        state.health.get().map(|h| h.as_ref()),
+        state.access.get().map(|a| a.as_ref()),
+    );
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 

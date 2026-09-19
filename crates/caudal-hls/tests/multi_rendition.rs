@@ -79,6 +79,7 @@ async fn abr_family_serves_and_ffprobes_clean() {
     let app = router(
         reg.clone(),
         HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
+        Vec::new(),
     );
 
     let port = free_port();
@@ -153,6 +154,7 @@ async fn abr_family_apple_validator_if_present() {
     let app = router(
         reg.clone(),
         HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
+        Vec::new(),
     );
     let port = free_port();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();

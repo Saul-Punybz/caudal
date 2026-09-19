@@ -6,3 +6,15 @@ slow-timeout = { period = "60s", terminate-after = 4 }
 # Print passing tests' output too, so the SKIP gate can see it.
 success-output = "immediate"
 failure-output = "immediate-final"
+
+# Real-time software encoding in a debug build (caudal-transcode's
+# rusty_h264): it keeps up alone but dropped half its frames on a 4-core CI
+# runner while other tests ran (115 of 240). It runs with the machine to
+# itself instead of loosening the assertion.
+[[profile.default.overrides]]
+filter = 'package(caudal-transcode) & test(rusty_h264_rendition)'
+threads-required = "num-cpus"
+
+[[profile.ci.overrides]]
+filter = 'package(caudal-transcode) & test(rusty_h264_rendition)'
+threads-required = "num-cpus"

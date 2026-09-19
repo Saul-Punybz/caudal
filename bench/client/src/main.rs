@@ -770,21 +770,38 @@ fn decode_stamp(strip: &[u8]) -> u32 {
     v
 }
 
+/// Output side of every latency decoder: the stamp strip as raw gray frames.
+///
+/// `-fps_mode passthrough` and `-threads 1` keep ffmpeg from adding delay of
+/// its own. With the default for rawvideo (constant frame rate), ffmpeg fills
+/// the gap between the input's start time and the first decodable frame with
+/// duplicates, all at once; the frame-threaded rawvideo encoder (one thread
+/// per core) then returns at most one packet per frame it is given, so that
+/// startup burst stays queued inside the encoder for the whole session:
+/// every frame reached the pipe several frames (up to a part) late. Whether
+/// the burst happens depends on the input (an unused audio track in the same
+/// file is enough), so it hit muxed LL-HLS and not video-only LL-HLS.
+const DECODE_OUTPUT: &[&str] = &[
+    "-an",
+    "-vf",
+    "crop=1920:40:0:0",
+    "-pix_fmt",
+    "gray",
+    "-fps_mode",
+    "passthrough",
+    "-threads",
+    "1",
+    "-f",
+    "rawvideo",
+    "-flush_packets",
+    "1",
+    "pipe:1",
+];
+
 fn ffmpeg_decoder(input: &[&str]) -> std::process::Child {
     let mut args: Vec<&str> = vec!["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay"];
     args.extend_from_slice(input);
-    args.extend_from_slice(&[
-        "-an",
-        "-vf",
-        "crop=1920:40:0:0",
-        "-pix_fmt",
-        "gray",
-        "-f",
-        "rawvideo",
-        "-flush_packets",
-        "1",
-        "pipe:1",
-    ]);
+    args.extend_from_slice(DECODE_OUTPUT);
     Command::new("ffmpeg")
         .args(&args)
         .stdin(if input.contains(&"pipe:0") { Stdio::piped() } else { Stdio::null() })
@@ -873,17 +890,8 @@ async fn latency_hls(args: Args) {
             "mp4",
             "-i",
             "pipe:0",
-            "-an",
-            "-vf",
-            "crop=1920:40:0:0",
-            "-pix_fmt",
-            "gray",
-            "-f",
-            "rawvideo",
-            "-flush_packets",
-            "1",
-            "pipe:1",
         ])
+        .args(DECODE_OUTPUT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

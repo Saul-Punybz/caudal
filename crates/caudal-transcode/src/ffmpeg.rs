@@ -47,13 +47,11 @@ struct ProcGuard {
 impl ProcGuard {
     fn kill_group(&mut self) {
         // `id()` is `None` once the child was reaped, so a recycled pid is
-        // never signalled.
-        if let Some(pid) = self.child.id() {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &format!("-{pid}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+        // never signalled. A direct killpg: `/bin/kill -KILL -<pgid>` from
+        // Linux procps signals every process of the user instead (it killed
+        // the GitHub runner, and would kill everything Caudal's user runs).
+        if let Some(pid) = self.child.id().and_then(|p| rustix::process::Pid::from_raw(p as i32)) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
         let _ = self.child.start_kill();
     }
@@ -512,5 +510,29 @@ async fn read_outputs(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod kill_tests {
+    use super::ProcGuard;
+    use std::time::Duration;
+    use tokio::process::Command;
+
+    /// Dropping a guard kills its own process group and nothing else. On
+    /// Linux, the old `/bin/kill -KILL -<pgid>` killed every process of the
+    /// user, the bystander below included (and the GitHub runner with it).
+    #[tokio::test]
+    async fn kills_its_group_and_spares_everyone_else() {
+        let spawn = || Command::new("sleep").arg("30").process_group(0).kill_on_drop(true).spawn().unwrap();
+        let mut bystander = spawn();
+        let mut guard = ProcGuard { child: spawn() };
+        let pid = guard.child.id().unwrap();
+        guard.kill_group();
+        let status = tokio::time::timeout(Duration::from_secs(5), guard.child.wait()).await.unwrap().unwrap();
+        assert!(!status.success(), "sleep {pid} was not killed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(bystander.try_wait().unwrap().is_none(), "a process outside the group was killed");
+        let _ = bystander.start_kill();
     }
 }

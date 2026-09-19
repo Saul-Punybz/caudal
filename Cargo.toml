@@ -11,6 +11,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Saul-Punybz/caudal"
 
 [workspace.dependencies]
+# Signals to process groups (`kill -KILL -<pgid>` via /bin/kill kills every
+# process of the user on Linux procps; see caudal-transcode ffmpeg.rs).
+rustix = { version = "1", features = ["process"] }
 arc-swap = "1"
 bytes = "1"
 parking_lot = "0.12"
@@ -44,6 +47,16 @@ caudal-health = { path = "crates/caudal-health", version = "0.1.0" }
 [profile.dev.package.argon2]
 opt-level = 3
 [profile.dev.package.blake2]
+opt-level = 3
+# The in-process H.264 engine encodes in real time; unoptimized it could not
+# keep up on a 4-core CI runner even alone (112 of 240 frames).
+[profile.dev.package.rusty_h264]
+opt-level = 3
+[profile.dev.package.rusty_h264-common]
+opt-level = 3
+[profile.dev.package.rusty_h264-encoder]
+opt-level = 3
+[profile.dev.package.rusty_h264-decoder]
 opt-level = 3
 
 [profile.release]

@@ -47,7 +47,7 @@ impl Drop for Guarded {
     fn drop(&mut self) {
         if let Some(child) = &mut self.child {
             let pgid = child.id();
-            let _ = Command::new("kill").args(["-KILL", &format!("-{pgid}")]).status();
+            kill_group(pgid);
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -195,4 +195,13 @@ async fn abr_family_apple_validator_if_present() {
     // unrelated to this batch (M7 territory). We only care that -50125 (no
     // rendition report) is gone now that there are two renditions.
     assert!(!text.contains("-50125"), "expected -50125 to clear with a second rendition:\n{text}");
+}
+
+/// SIGKILL to a whole process group. Never via `/bin/kill -KILL -<pgid>`:
+/// Linux procps reads that as "every process of this user" (it killed the
+/// GitHub runner mid-test).
+fn kill_group(pgid: u32) {
+    if let Some(pid) = rustix::process::Pid::from_raw(pgid as i32) {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
 }

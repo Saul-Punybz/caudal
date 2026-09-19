@@ -18,6 +18,7 @@ mp4-atom = "0.15.0"
 bytes.workspace = true
 
 [dev-dependencies]
+rustix.workspace = true
 tokio = { version = "1", features = ["full", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
 ureq = { version = "3", default-features = false }

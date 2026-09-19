@@ -45,13 +45,17 @@ jobs:
       - name: Tools for MistServer
         if: contains(inputs.servers, 'mistserver')
         run: |
-          # Meson/Ninja build MistServer from source (bench/fetch-mistserver.sh);
-          # mbedtls and libsrtp2 are its only mandatory library deps here
-          # (SRT, RIST and WebRTC data channels are compiled out -- not in
-          # the bench matrix, see BENCH-MISTSERVER.md). Meson falls back to
-          # building mbedtls/libsrtp2 from source itself if these system
-          # packages are missing or too old.
-          sudo apt-get install -y meson ninja-build pkg-config libmbedtls-dev libsrtp2-dev
+          # Meson/Ninja build MistServer from source (bench/fetch-mistserver.sh).
+          # Deliberately NOT installing libmbedtls-dev/libsrtp2-dev: Ubuntu
+          # 24.04 ships mbedtls 2.28, and MistServer 3.11.2 needs the mbedtls
+          # 3.6.6 API (pinned in subprojects/mbedtls.wrap) -- linking against
+          # the system's 2.28 headers compiled ('ssl_conf' was not declared
+          # in this scope in lib/socket.cpp; see git log). Leaving both dev
+          # packages uninstalled makes Meson build its own pinned mbedtls and
+          # libsrtp2 from source (subprojects/*.wrap) every time, which is
+          # slower but guaranteed API-compatible; the build is cached below.
+          sudo apt-get install -y meson ninja-build pkg-config
+          pkg-config --version
       - name: Cache MistServer build
         if: contains(inputs.servers, 'mistserver')
         uses: actions/cache@v4

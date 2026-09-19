@@ -8,7 +8,11 @@
 # benchmark runs (see BINARIES below) -- SRT and RIST support are compiled
 # out (bench/mistserver.json has no TSSRT connector) since neither protocol
 # is in the bench matrix; WebRTC data channels are compiled out too (WHEP is
-# recvonly media, no data channel).
+# recvonly media, no data channel). SSL/DTLS (needed for WHEP) stays on: the
+# CI workflow deliberately does not install libmbedtls-dev/libsrtp2-dev, so
+# Meson always builds its own pinned mbedtls (3.6.6) and libsrtp2 from their
+# subprojects/*.wrap -- Ubuntu 24.04's system mbedtls is 2.28, an API
+# mismatch that failed with "'ssl_conf' was not declared" in lib/socket.cpp.
 # Pinned version either way. Prints the directory that holds MistController
 # and the MistIn*/MistOut* binaries.
 #

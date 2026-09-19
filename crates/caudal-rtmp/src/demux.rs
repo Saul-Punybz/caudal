@@ -70,6 +70,18 @@ impl RtmpClock {
     }
 }
 
+/// A frame payload in an allocation of its own, exactly its size.
+///
+/// scuffle-rtmp hands out each message as a slice of the buffer it was
+/// reassembled in (grown by doubling) or of the connection's read buffer.
+/// The live buffer keeps frames for its whole window, and a slice keeps its
+/// entire backing allocation alive: measured with dhat (bench/heap.sh), a
+/// 6 Mbps stream's 38.6 MB of buffered frames held 63.8 MB. Copying costs
+/// one memcpy of the stream's bitrate.
+fn own(data: Bytes) -> Bytes {
+    Bytes::copy_from_slice(&data)
+}
+
 fn video_frame(timestamp_ms: i64, cts: i32, keyframe: bool, data: Bytes) -> Frame {
     // Saturating, not wrapping or plain arithmetic: `timestamp_ms` is
     // `RtmpClock`'s ever-growing extended series (see its doc comment), and
@@ -81,7 +93,7 @@ fn video_frame(timestamp_ms: i64, cts: i32, keyframe: bool, data: Bytes) -> Fram
     // meaningful.
     let dts = timestamp_ms.saturating_mul(90);
     let pts = timestamp_ms.saturating_add(i64::from(cts)).saturating_mul(90);
-    Frame { track: TrackId(0), dts, pts, keyframe, data }
+    Frame { track: TrackId(0), dts, pts, keyframe, data: own(data) }
 }
 
 /// Parses a `VIDEODATA` RTMP message.
@@ -197,14 +209,14 @@ pub(crate) fn demux_audio(data: Bytes) -> Option<AudioEvent> {
     match ad.body {
         AudioTagBody::Legacy(LegacyAudioTagBody::Aac(aac)) => match aac {
             AacAudioData::SequenceHeader(cfg) => audio_init(cfg).map(AudioEvent::Init),
-            AacAudioData::Raw(raw) => Some(AudioEvent::Frame(raw)),
+            AacAudioData::Raw(raw) => Some(AudioEvent::Frame(own(raw))),
             AacAudioData::Unknown { .. } => None,
         },
         AudioTagBody::Legacy(LegacyAudioTagBody::Other { .. }) => None,
         AudioTagBody::Enhanced(ExAudioTagBody::NoMultitrack { audio_four_cc: AudioFourCc::Aac, packet }) => {
             match packet {
                 AudioPacket::SequenceStart { header_data } => audio_init(header_data).map(AudioEvent::Init),
-                AudioPacket::CodedFrames { data } => Some(AudioEvent::Frame(data)),
+                AudioPacket::CodedFrames { data } => Some(AudioEvent::Frame(own(data))),
                 _ => None,
             }
         }

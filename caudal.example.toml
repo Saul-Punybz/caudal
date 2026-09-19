@@ -27,9 +27,19 @@ cue_tags = true  # SCTE-35 cues as EXT-X-DATERANGE (SCTE35-OUT/IN/CMD)
 cue_out_tags = false  # also legacy EXT-X-CUE-OUT / CUE-OUT-CONT / CUE-IN (many SSAI vendors)
 reconnect_grace_secs = 10  # encoder drops and republishes the same name within this: the playlist continues (0 = end at once)
 
+# The live buffer every stream keeps in memory, shared by all its viewers.
+# It holds about window_secs x bitrate (a 6 Mbps stream: 0.75 MB per second).
+# What it is for: a viewer or recorder that falls behind catches up from it
+# instead of skipping ahead, and a recording started while a stream is live
+# begins this far back. Players do not need it to join (they start at the
+# newest keyframe) and LL-HLS keeps its own segments.
+# Default 15 s: covers the LL-HLS playlist (6 segments of 2 s plus the open
+# one), about what MediaMTX keeps (7 segments). MistServer's default was 50 s,
+# which cost 26 MB more per 6 Mbps stream. Raise it for a DVR window or a
+# longer recording pre-roll (`caudal import-mist` sets it from Mist's DVR).
 [buffer]
-window_secs = 50  # Buffer window duration in seconds
-max_mb = 256  # Maximum buffer size in megabytes
+window_secs = 15  # Buffer window duration in seconds
+max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 
 # HTTPS next to HTTP, speaking HTTP/1.1 and HTTP/2. Needed for low-latency
 # HLS on Safari and for Apple's conformance. Uncomment one certificate source.

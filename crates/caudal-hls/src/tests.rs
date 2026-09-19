@@ -1104,3 +1104,21 @@ fn subtitle_playlist_keeps_discontinuities_and_ends_with_the_stream() {
     assert_eq!(with_parts.matches("#EXT-X-PART:").count(), main.matches("#EXT-X-PART:").count(), "{with_parts}");
     assert!(with_parts.contains(".p0.vtt\",INDEPENDENT=YES") && !with_parts.contains(".m4s"), "{with_parts}");
 }
+
+#[test]
+fn complete_segments_hold_their_bytes_once() {
+    let pkg = packager_with(CFG, 0..3, &[]);
+    let complete: Vec<_> = pkg.segments.iter().filter(|s| s.full.is_some()).collect();
+    assert!(complete.len() >= 2);
+    for seg in complete {
+        let full = seg.full.as_ref().unwrap();
+        let range = full.as_ptr() as usize..full.as_ptr() as usize + full.len();
+        let mut cat = Vec::new();
+        for p in &seg.parts {
+            // Each part is a view into the whole segment, not a copy.
+            assert!(range.contains(&(p.data.as_ptr() as usize)), "part of s{} is a separate copy", seg.msn);
+            cat.extend_from_slice(&p.data);
+        }
+        assert_eq!(cat[..], full[..]);
+    }
+}

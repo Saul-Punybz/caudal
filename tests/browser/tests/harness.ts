@@ -84,7 +84,7 @@ function logMachineLoad(): void {
   if (process.platform !== "linux") return;
   try {
     const load = execSync("cat /proc/loadavg").toString().trim();
-    const procs = execSync("ps -eo pcpu=,etimes=,args= | grep -E 'ffmpeg|caudal' | grep -v grep || true")
+    const procs = execSync("ps -eo pcpu=,etimes=,args= | grep -E 'ffmpeg|/caudal( |$)' | grep -vE 'grep|node' || true")
       .toString()
       .trim()
       .split("\n")

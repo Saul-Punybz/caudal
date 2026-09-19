@@ -29,6 +29,16 @@ jobs:
           sudo tar -xJf /tmp/ffmpeg.tar.xz -C /opt
           echo "/opt/ffmpeg-n8.1-latest-linux64-gpl-8.1/bin" >> "$GITHUB_PATH"
       - run: ffmpeg -hide_banner -muxers | grep -i whip && srt-live-transmit -version 2>&1 | head -1
+      # Live captions: espeak-ng speaks the test sentences (macOS uses `say`),
+      # and the Whisper tiny model (~150 MB, pinned revision, SHA-256
+      # checked by `caudal captions fetch-model`) is cached between runs, so
+      # the engine and e2e caption tests run instead of printing SKIP.
+      - run: sudo apt-get install -y espeak-ng
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/caudal-models
+          key: whisper-tiny-169d4a4341b33bc18d8881c4b69c2e104e1cc0af
+      - run: cargo run -p caudal -- captions fetch-model tiny --dir ~/.cache/caudal-models
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # --no-fail-fast: one failing crate used to hide every crate after it
@@ -45,6 +55,7 @@ jobs:
         timeout-minutes: 40
         env:
           CAUDAL_E2E: "1"
+          CAUDAL_WHISPER_MODELS: /home/runner/.cache/caudal-models
         run: |
           set -o pipefail
           status=0
@@ -79,6 +90,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: brew install ffmpeg
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/caudal-models
+          key: whisper-tiny-169d4a4341b33bc18d8881c4b69c2e104e1cc0af
+      - run: cargo run -p caudal -- captions fetch-model tiny --dir ~/.cache/caudal-models
       - name: Is Apple's validator installed?
         id: msv
         run: |
@@ -95,6 +111,7 @@ jobs:
           CAUDAL_E2E: "1"
           CAUDAL_REQUIRE_HLS_VALIDATOR: ${{ steps.msv.outputs.present }}
           CAUDAL_VALIDATION_DIR: ${{ github.workspace }}/hls-validation
+          CAUDAL_WHISPER_MODELS: /Users/runner/.cache/caudal-models
         run: cargo test -p caudal --test e2e -- --test-threads=1 --nocapture
       - name: Evidence the validator ran
         if: steps.msv.outputs.present == '1'

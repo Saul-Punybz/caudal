@@ -196,6 +196,8 @@ pub struct Config {
     /// the server refuses to listen on a non-loopback address.
     pub admin: Option<caudal_admin::AdminSection>,
     pub health: HealthSection,
+    /// Automatic live captions: `[captions]` + `[[captions.stream]]`.
+    pub captions: crate::captions::CaptionsSection,
 }
 
 /// One restream target: push `stream` to `url` (`rtmp://` or `rtmps://`,
@@ -824,6 +826,7 @@ impl Config {
             admin.validate()?;
         }
         self.health.to_health_config()?;
+        self.captions.to_runtime(self.hls.segment_ms)?;
         Ok(())
     }
 

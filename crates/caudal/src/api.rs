@@ -31,6 +31,9 @@ pub struct AppState {
     /// `caudal_access_denied_total`. Always present: `subsystems::Supervisor`
     /// creates a `caudal_access::Checker` even with no `[[access.rules]]`.
     access: std::sync::OnceLock<Arc<caudal_access::Checker>>,
+    /// Set once, if `[captions]` captions any stream; read by `/metrics`
+    /// for `caudal_captions_*`.
+    captions: std::sync::OnceLock<caudal_captions::Captions>,
 }
 
 impl AppState {
@@ -41,6 +44,7 @@ impl AppState {
             cue_seq: AtomicU32::new(1),
             health: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
+            captions: std::sync::OnceLock::new(),
         })
     }
 
@@ -58,6 +62,10 @@ impl AppState {
 
     pub fn set_access(&self, checker: Arc<caudal_access::Checker>) {
         let _ = self.access.set(checker);
+    }
+
+    pub fn set_captions(&self, captions: caudal_captions::Captions) {
+        let _ = self.captions.set(captions);
     }
 }
 
@@ -235,6 +243,10 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
         state.health.get().map(|h| h.as_ref()),
         state.access.get().map(|a| a.as_ref()),
     );
+    let body = match state.captions.get() {
+        Some(c) => body + &crate::captions::render_metrics(c),
+        None => body,
+    };
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 

@@ -365,3 +365,73 @@ pub fn serve_static(body: &'static str, content_type: &'static str) -> u16 {
     });
     port
 }
+
+/// Speech for the captions tests: `text` spoken in `lang` into a WAV at
+/// `path`, by macOS `say` (voices Paulina / Samantha) or `espeak-ng`.
+/// Returns which one, or `None` if neither is installed.
+pub fn speak(lang: &str, text: &str, path: &Path) -> Option<&'static str> {
+    if have("say") {
+        let voice = say_voice(lang);
+        let ok = Command::new("say")
+            .args(["-v", &voice, "-o"])
+            .arg(path)
+            .args(["--data-format=LEI16@16000", text])
+            .status()
+            .is_ok_and(|s| s.success());
+        return ok.then_some("say");
+    }
+    if have("espeak-ng") {
+        let ok = Command::new("espeak-ng")
+            .args(["-v", lang, "-s", "150", "-w"])
+            .arg(path)
+            .arg(text)
+            .status()
+            .is_ok_and(|s| s.success());
+        return ok.then_some("espeak-ng");
+    }
+    None
+}
+
+impl Publisher {
+    /// The test pattern with `wav` as its audio (then silence), AAC 48 kHz,
+    /// over RTMP in real time.
+    pub fn rtmp_with_audio(url: &str, wav: &Path, secs: u32) -> Self {
+        let child = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-re"])
+            .args(["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30"])
+            .arg("-i")
+            .arg(wav)
+            .args(["-af", "apad", "-t", &secs.to_string()])
+            .args(["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-g", "60", "-b:v", "1M"])
+            .args(["-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "128k"])
+            .args(["-f", "flv", url])
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn ffmpeg");
+        Self { child }
+    }
+}
+
+/// A `say` voice for `lang`: Paulina (es_MX) / Samantha (en_US) when
+/// installed, else the first installed voice of that language (CI runners
+/// do not always have the same voices).
+fn say_voice(lang: &str) -> String {
+    let want = if lang == "es" { "Paulina" } else { "Samantha" };
+    let list = Command::new("say").args(["-v", "?"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let list = list.unwrap_or_default();
+    let installed: Vec<(&str, &str)> = list
+        .lines()
+        .filter_map(|l| {
+            let (name, rest) = l.split_once("  ")?;
+            Some((name.trim(), rest.split_whitespace().next()?))
+        })
+        .collect();
+    if installed.iter().any(|(n, _)| *n == want) {
+        return want.to_owned();
+    }
+    installed
+        .iter()
+        .find(|(_, locale)| locale.starts_with(&format!("{lang}_")))
+        .map_or_else(|| want.to_owned(), |(n, _)| (*n).to_owned())
+}

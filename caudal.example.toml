@@ -164,3 +164,25 @@ max_mb = 256  # Maximum buffer size in megabytes
 # streams = ["live-*"]
 # play_deny = ["203.0.113.0/24", "country:KP"]
 # publish_allow = ["10.0.0.0/8"]   # only this network may publish live-*
+
+# Automatic live captions: speech-to-text on this machine (Whisper on the
+# pure-Rust `candle` engine; Metal on macOS, CPU elsewhere; no cloud
+# service). LL-HLS viewers get a WebVTT subtitle rendition ("Español
+# (auto)" / "English (auto)") a few seconds behind the audio. Off unless a
+# [[captions.stream]] entry names a stream. AAC or Opus audio.
+# The model is downloaded once by the operator, never bundled (Whisper
+# weights: MIT, OpenAI), checksum-verified:
+#   caudal captions fetch-model base --dir /var/lib/caudal/models
+# Measured on an Apple M4, 4 threads (docs/research/CAPTIONS.md): real-time
+# factor (inference time / audio time) tiny 0.04 Metal / 0.12 CPU, base
+# 0.08 / 0.24, small 0.22 / 0.80. One captioned stream costs about RTF x
+# `threads` cores; `threads` is a hard cap for all streams together.
+# [captions]
+# model_dir = "models"      # holds whisper-<model>/ (config.json, tokenizer.json, model.safetensors)
+# model = "base"            # tiny (~150 MB), base (~290 MB) or small (~970 MB, best Spanish)
+# threads = 2               # inference threads, all streams together (1-64)
+# device = "auto"           # auto | cpu | metal
+# max_streams = 2           # streams captioned at once; later ones get none
+# [[captions.stream]]
+# streams = ["noticias*"]   # names or prefix* globs; renditions (name+label) share the source's captions
+# language = "es"           # es | en | auto (detected per chunk)

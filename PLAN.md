@@ -181,7 +181,7 @@ claiming in public.
 | 9 | Stream health alerts (no keyframes, bitrate drop, publisher gone) → webhooks | Haiku/Sonnet | next |
 | 9 | **Close the gap with MediaMTX (Saul, 18 Sep 2026):** (1) RTSP over UDP + RTSPS in `caudal-rtsp` (today TCP only, UDP answers 461); (2) hot config reload without dropping viewers (SIGHUP + `POST /api/v1/config/reload`; diff sections, restart only what changed); (3) side-by-side benchmark vs MediaMTX v1.21 on the same machine: CPU, RSS, binary size, glass-to-glass latency at 1/100/1,000 viewers over LL-HLS, WHEP, RTSP; script in `bench/`, results in `docs/research/BENCH-MEDIAMTX.md`. No "faster" claim until (3) exists. | Sonnet (1, 2), Opus (3) | next |
 | 10 | M10 origin-edge clustering on `moq-relay` cluster (xiu as RTMP reference), failover/backup source | Opus | planned |
-| 10 | Live captions (Whisper-class, es/en) → WebVTT in LL-HLS | Opus | planned |
+| 10 | Live captions (Whisper-class, es/en) → WebVTT in LL-HLS: `caudal-captions` (candle, pure Rust), `[captions]`; design + measured RTF in docs/research/CAPTIONS.md. CEA-608 in TS not built | Opus | done (feat/live-captions) |
 | 11 | Recording schedules, geo-blocking/IP lists, DASH, MoQ ingest, MoQ on Safari 26.4+ | Sonnet | planned |
 | 12 | Helm chart, Raspberry Pi image, `caudal doctor`, hot config reload, MistServer config import | Haiku/Sonnet | planned |
 | 12 | OMT protocol + discovery (`open-media-transport`), player SDKs, watermarking (visible first, then A/B segment forensic) | Opus/Sonnet | planned |

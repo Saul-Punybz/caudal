@@ -481,7 +481,7 @@ fn render_master_formats_attrs_and_preserves_caller_order() {
             },
         ),
     ];
-    let m = render_master(&variants);
+    let m = render_master(&variants, None);
     assert!(m.starts_with("#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-INDEPENDENT-SEGMENTS\n"), "{m}");
     // Caller order is kept: sorting by bandwidth is `master()`'s job, not
     // `render_master`'s.
@@ -911,4 +911,164 @@ async fn endlist_only_after_the_grace_runs_out() {
     let pl = wait_playlist(&app, "late", |pl| !pl.contains("#EXT-X-ENDLIST") && pl.contains("s0.p")).await;
     assert!(!pl.contains("#EXT-X-DISCONTINUITY"), "{pl}");
     drop(p);
+}
+
+/// A caption source with one fixed cue per captioned stream, spanning
+/// everything.
+struct FixedCaptions;
+
+impl CaptionSource for FixedCaptions {
+    fn track(&self, stream: &str) -> Option<TextTrack> {
+        (stream == "cc").then(|| TextTrack { language: Some("es".into()), name: "Español (auto)".into() })
+    }
+    fn cues(&self, stream: &str, from_us: i64, to_us: i64) -> Vec<caudal_core::captions::TextCue> {
+        let all = caudal_core::captions::TextCue { start_us: 0, end_us: 1_000_000_000, text: "hola mundo".into() };
+        if stream == "cc" && all.start_us < to_us && all.end_us > from_us { vec![all] } else { Vec::new() }
+    }
+}
+
+#[tokio::test]
+async fn captioned_stream_gets_a_webvtt_rendition_aligned_with_its_segments() {
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router_with_captions(reg.clone(), CFG, Vec::new(), Some(Arc::new(FixedCaptions)));
+    let cc = publish(&reg, "cc", &fx, BufferConfig::default()).await;
+    let plain = publish(&reg, "plain", &fx, BufferConfig::default()).await;
+    push_loops(&cc, &fx, 0..4);
+    push_loops(&plain, &fx, 0..2);
+    wait_playlist(&app, "cc", |pl| pl.matches("#EXTINF").count() >= 2).await;
+    wait_playlist(&app, "plain", |pl| pl.contains("#EXTINF")).await;
+    // The packager may still be catching up with the pushed frames: take
+    // the two playlists at a moment they describe the same segments.
+    let complete = |pl: &str| {
+        pl.lines().filter(|l| l.ends_with(".m4s") || l.ends_with(".vtt")).filter(|l| !l.starts_with('#')).count()
+    };
+    let (index, subs) = {
+        let mut tries = 0;
+        loop {
+            let index = get(&app, "/hls/cc/index.m3u8").await.text();
+            let subs = get(&app, "/hls/cc/subs.m3u8").await;
+            assert_eq!(subs.status, StatusCode::OK);
+            assert_eq!(subs.headers[header::CONTENT_TYPE], PLAYLIST);
+            let subs = subs.text();
+            if complete(&index) == complete(&subs) || tries > 100 {
+                break (index, subs);
+            }
+            tries += 1;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+
+    // The multivariant playlist announces the rendition and ties every
+    // variant to it.
+    let master = get(&app, "/hls/cc/master.m3u8?token=a.b.c").await.text();
+    let media = tag_values(&master, "#EXT-X-MEDIA:");
+    assert_eq!(media.len(), 1, "{master}");
+    for kv in [
+        "TYPE=SUBTITLES",
+        "GROUP-ID=\"cc\"",
+        "NAME=\"Español (auto)\"",
+        "LANGUAGE=\"es\"",
+        "AUTOSELECT=YES",
+        "URI=\"../cc/subs.m3u8?token=a.b.c\"",
+    ] {
+        assert!(media[0].contains(kv), "{kv} missing: {master}");
+    }
+    assert!(tag_values(&master, "#EXT-X-STREAM-INF:").iter().all(|l| l.contains("SUBTITLES=\"cc\"")), "{master}");
+
+    // For other players (hls.js) the subtitle playlist mirrors the
+    // complete segments (same sequence numbers and durations); server
+    // control and part target like the main one, but no parts, no preload
+    // hint, no init segment.
+    assert_eq!(
+        tag_values(&subs, "#EXT-X-MEDIA-SEQUENCE:"),
+        tag_values(&index, "#EXT-X-MEDIA-SEQUENCE:"),
+        "{subs}\n---\n{index}"
+    );
+    for tag in ["#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,HOLD-BACK=6.000,", "#EXT-X-PART-INF:"] {
+        assert!(subs.contains(tag), "{tag}: {subs}");
+    }
+    for tag in ["#EXT-X-MAP", "#EXT-X-PART:", "#EXT-X-PRELOAD-HINT", "#EXT-X-RENDITION-REPORT"] {
+        assert!(!subs.contains(tag), "{tag}: {subs}");
+    }
+
+    // Apple's media stack (AppleCoreMedia) gets the parts too, like the
+    // main playlist; each part is WebVTT with the cue.
+    let apple = |path: &str| {
+        Request::get(path)
+            .header(header::USER_AGENT, "AppleCoreMedia/1.0.0.21A5248v (Macintosh; U; Intel Mac OS X 14_0)")
+    };
+    let res = app.clone().oneshot(apple("/hls/cc/subs.m3u8").body(Body::empty()).unwrap()).await.unwrap();
+    let lsubs = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).into_owned();
+    for tag in ["#EXT-X-PART:", "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"c"] {
+        assert!(lsubs.contains(tag), "{tag}: {lsubs}");
+    }
+    assert!(!lsubs.contains("HOLD-BACK=6"), "parts listed: PART-HOLD-BACK only, like the main playlist: {lsubs}");
+    let part_uri = tag_values(&lsubs, "#EXT-X-PART:").last().and_then(|l| attr(l, "URI")).unwrap().to_owned();
+    assert!(part_uri.starts_with('c') && part_uri.ends_with(".vtt") && part_uri.contains(".p"), "{part_uri}");
+    let part = get(&app, &format!("/hls/cc/{part_uri}")).await;
+    assert_eq!(part.status, StatusCode::OK);
+    assert!(part.text().contains("hola mundo"), "{}", part.text());
+    let full: Vec<&str> = index.lines().filter(|l| l.ends_with(".m4s") && !l.starts_with('#')).collect();
+    let vtts: Vec<&str> = subs.lines().filter(|l| l.ends_with(".vtt")).collect();
+    assert_eq!(vtts.len(), full.len(), "{subs}\n---\n{index}");
+    for (v, m) in vtts.iter().zip(&full) {
+        assert_eq!(
+            v.trim_end_matches(".vtt").trim_start_matches('c'),
+            m.trim_end_matches(".m4s").trim_start_matches('s')
+        );
+    }
+    assert_eq!(tag_values(&subs, "#EXTINF:"), tag_values(&index, "#EXTINF:"));
+
+    // Each segment is WebVTT holding the cue, mapped to the fMP4 timeline.
+    let seg = get(&app, &format!("/hls/cc/{}", vtts[0])).await;
+    assert_eq!(seg.status, StatusCode::OK);
+    assert!(seg.headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/vtt"));
+    let body = seg.text();
+    assert!(body.starts_with("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n"), "{body}");
+    let map = body.lines().nth(1).unwrap();
+    let mpegts: i64 = map.split("MPEGTS:").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
+    let local = map.split("LOCAL:").nth(1).unwrap();
+    let local_us = {
+        let (hms, ms) = local.split_once('.').unwrap();
+        let p: Vec<i64> = hms.split(':').map(|x| x.parse().unwrap()).collect();
+        ((p[0] * 3600 + p[1] * 60 + p[2]) * 1000 + ms.parse::<i64>().unwrap()) * 1000
+    };
+    assert_eq!(mpegts, vtt::mpegts(local_us), "{map}");
+    assert!(body.contains("\n00:00:00.000 --> 00:16:40.000\nhola mundo\n"), "{body}");
+    assert_eq!(get(&app, "/hls/cc/c999999.vtt").await.status, StatusCode::NOT_FOUND);
+
+    // A stream without captions has neither.
+    let pm = get(&app, "/hls/plain/master.m3u8").await.text();
+    assert!(!pm.contains("#EXT-X-MEDIA") && !pm.contains("SUBTITLES="), "{pm}");
+    assert_eq!(get(&app, "/hls/plain/subs.m3u8").await.status, StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn subtitle_playlist_keeps_discontinuities_and_ends_with_the_stream() {
+    let fx = fixture();
+    let mut p = packager_with(CFG, 0..3, &[]);
+    p.lagged();
+    // Timestamps jump after the lag: a discontinuity, like a reconnect.
+    for n in 10..12 {
+        for f in fx.looped(n) {
+            p.push(&f, SystemTime::now());
+        }
+    }
+    p.end();
+    let pl = p.subtitle_playlist(false);
+    let main = p.playlist();
+    let disc = |s: &str| s.matches("#EXT-X-DISCONTINUITY\n").count();
+    assert!(disc(&pl) >= 1, "{pl}");
+    assert_eq!(disc(&pl), disc(&main), "{pl}\n---\n{main}");
+    assert_eq!(
+        pl.lines().filter(|l| l.ends_with(".vtt") && !l.starts_with('#')).count(),
+        main.lines().filter(|l| l.ends_with(".m4s") && !l.starts_with('#')).count()
+    );
+    assert!(pl.ends_with("#EXT-X-ENDLIST\n"), "{pl}");
+    assert!(!pl.contains("#EXT-X-MAP") && !pl.contains("#EXT-X-PART:") && !pl.contains(".m4s"), "{pl}");
+    // With parts: the same parts as the main playlist, as WebVTT.
+    let with_parts = p.subtitle_playlist(true);
+    assert_eq!(with_parts.matches("#EXT-X-PART:").count(), main.matches("#EXT-X-PART:").count(), "{with_parts}");
+    assert!(with_parts.contains(".p0.vtt\",INDEPENDENT=YES") && !with_parts.contains(".m4s"), "{with_parts}");
 }

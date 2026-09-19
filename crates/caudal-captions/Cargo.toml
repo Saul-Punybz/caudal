@@ -1,0 +1,33 @@
+[package]
+name = "caudal-captions"
+description = "Live captions for Caudal: local speech-to-text (Whisper on candle) to WebVTT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+candle-core = "0.9.2"
+candle-nn = "0.9.2"
+candle-transformers = "0.9.2"
+rayon = "1"
+rustfft = "6.4.1"
+opus-decoder = "0.1.1"
+rusty_aac = "0.5.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.9.2", features = ["metal"] }
+candle-nn = { version = "0.9.2", features = ["metal"] }
+candle-transformers = { version = "0.9.2", features = ["metal"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

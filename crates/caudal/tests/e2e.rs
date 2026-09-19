@@ -666,3 +666,131 @@ impl Drop for KillOnDrop {
         }
     }
 }
+
+/// The speech in the captions test: original text, spoken by a
+/// text-to-speech voice (no recorded audio in the repo).
+const SPEECH_ES: &str = "Buenas tardes y bienvenidos a la transmisión en vivo. Hoy vamos a hablar del clima en Puerto Rico durante la temporada de huracanes. Se esperan lluvias fuertes durante la noche del jueves. Les recomendamos preparar agua, comida y baterías para varios días.";
+
+/// `HH:MM:SS.mmm` → µs.
+fn vtt_time(t: &str) -> i64 {
+    let (hms, ms) = t.trim().split_once('.').expect("vtt time");
+    let p: Vec<i64> = hms.split(':').map(|x| x.parse().unwrap()).collect();
+    ((p[0] * 3600 + p[1] * 60 + p[2]) * 1000 + ms.parse::<i64>().unwrap()) * 1000
+}
+
+/// Live captions end to end: ffmpeg publishes speech over RTMP; the
+/// multivariant playlist lists a WebVTT subtitle rendition; its segments
+/// carry the spoken words (fuzzy match), timed a few seconds after the
+/// speech on the stream's clock; Apple's validator finds nothing new.
+///
+/// Needs a Whisper model (`CAUDAL_WHISPER_MODELS`, a directory holding
+/// `whisper-tiny/`; CI fetches it) and `say` or `espeak-ng` for the speech.
+#[test]
+fn live_captions_reach_ll_hls_as_webvtt() {
+    if !enabled() {
+        return;
+    }
+    let Some(models) = std::env::var_os("CAUDAL_WHISPER_MODELS") else {
+        eprintln!("SKIP: CAUDAL_WHISPER_MODELS not set (`caudal captions fetch-model tiny --dir <dir>`)");
+        return;
+    };
+    let model = std::env::var("CAUDAL_WHISPER_MODEL").unwrap_or_else(|_| "tiny".into());
+    let dir = tempfile::tempdir().unwrap();
+    let wav = dir.path().join("es.wav");
+    let Some(voice) = support::speak("es", SPEECH_ES, &wav) else {
+        eprintln!("SKIP: no text-to-speech tool (say or espeak-ng)");
+        return;
+    };
+    let s = Server::start_with(&format!(
+        "\n[captions]\nmodel_dir = \"{}\"\nmodel = \"{model}\"\nthreads = 2\n\n[[captions.stream]]\nstreams = [\"cap*\"]\nlanguage = \"es\"\n",
+        std::path::Path::new(&models).display()
+    ));
+    s.wait_until("/metrics", Duration::from_secs(60), |b| b.contains("caudal_captions_model_ready 1"));
+    let _publ = Publisher::rtmp_with_audio(&s.rtmp_url("cap"), &wav, 90);
+
+    let master = s.wait_until("/hls/cap/master.m3u8", Duration::from_secs(20), |b| b.contains("#EXT-X-STREAM-INF"));
+    let media = master.lines().find(|l| l.starts_with("#EXT-X-MEDIA:")).unwrap_or_else(|| panic!("{master}"));
+    for kv in ["TYPE=SUBTITLES", "GROUP-ID=\"cc\"", "LANGUAGE=\"es\"", "URI=\"../cap/subs.m3u8\""] {
+        assert!(media.contains(kv), "{kv}: {master}");
+    }
+    assert!(master.contains("SUBTITLES=\"cc\""), "{master}");
+
+    // Collect every subtitle segment as it appears (the window is only a
+    // few segments long) until the captions have said most of the script.
+    let mut seen = std::collections::BTreeMap::<u64, String>::new();
+    let mut cues: Vec<(i64, i64, String)> = Vec::new();
+    let t0 = Instant::now();
+    let recall = |cues: &[(i64, i64, String)]| {
+        let said: std::collections::HashSet<String> = cues.iter().flat_map(|c| words(&c.2)).collect();
+        let want = words(SPEECH_ES);
+        want.iter().filter(|w| said.contains(*w)).count() as f64 / want.len() as f64
+    };
+    while t0.elapsed() < Duration::from_secs(70) && recall(&cues) < 0.9 {
+        let (code, subs) = s.get("/hls/cap/subs.m3u8").unwrap();
+        assert_eq!(code, 200);
+        assert!(subs.contains("#EXT-X-PART-INF") && !subs.contains("#EXT-X-MAP"), "{subs}");
+        for uri in subs.lines().filter(|l| l.ends_with(".vtt") && !l.starts_with('#')) {
+            let msn: u64 = uri[1..uri.len() - 4].parse().unwrap();
+            if seen.contains_key(&msn) {
+                continue;
+            }
+            let (code, body) = s.get(&format!("/hls/cap/{uri}")).unwrap();
+            assert_eq!(code, 200);
+            assert!(body.starts_with("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:"), "{body}");
+            // Cues: "start --> end" then text lines until a blank line.
+            let mut lines = body.lines();
+            while let Some(l) = lines.next() {
+                if let Some((a, b)) = l.split_once(" --> ") {
+                    let text: Vec<&str> = lines.by_ref().take_while(|t| !t.is_empty()).collect();
+                    let cue = (vtt_time(a), vtt_time(b), text.join(" "));
+                    if !cues.contains(&cue) {
+                        cues.push(cue);
+                    }
+                }
+            }
+            seen.insert(msn, body);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let text: Vec<&str> = cues.iter().map(|c| c.2.as_str()).collect();
+    let r = recall(&cues);
+    eprintln!(
+        "captions ({voice}, {model}): recall {:.0}% over {} segments: {}",
+        r * 100.0,
+        seen.len(),
+        text.join(" | ")
+    );
+    assert!(r >= if voice == "say" { 0.8 } else { 0.5 }, "recall {r:.2}: {text:?}");
+
+    // Timing: the stream's clock starts near 0 with the speech; captions
+    // come a few seconds after it, in order, and never before it began.
+    cues.sort();
+    let first = &cues[0];
+    assert!(first.0 >= 1_000_000 && first.0 <= 15_000_000, "first cue at {} s: {first:?}", first.0 as f64 / 1e6);
+    let speech_s = SPEECH_ES.split_whitespace().count() as i64 * 1_000_000 / 2; // ~2 words/s, generous
+    for c in &cues {
+        assert!(c.1 > c.0 && c.0 <= speech_s + 20_000_000, "{c:?}");
+    }
+    let m = s.get("/metrics").unwrap().1;
+    let latency =
+        m.lines().find(|l| l.starts_with("caudal_captions_latency_seconds{stream=\"cap\"}")).unwrap_or_default();
+    eprintln!("captions: first cue at {:.2} s media time; {latency}", first.0 as f64 / 1e6);
+    assert!(m.contains("caudal_captions_dropped_chunks_total{stream=\"cap\"} 0"), "{m}");
+
+    // Apple's validator on the multivariant playlist, subtitles included.
+    let vdir = tempfile::tempdir().unwrap();
+    match support::validate_hls(&s.url("/hls/cap/master.m3u8"), vdir.path(), "captions") {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("mediastreamvalidator reported errors with captions:\n{report}"),
+        None => eprintln!("NOT VERIFIED: mediastreamvalidator not installed; captions conformance unchecked"),
+    }
+}
+
+/// Lower-case words, punctuation stripped (same rule as
+/// `caudal_captions::eval::words`).
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace() || (c.is_ascii_punctuation() && c != '\'') || "¿¡«»“”…".contains(c))
+        .map(|w| w.trim_matches('\'').to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}

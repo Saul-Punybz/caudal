@@ -26,7 +26,7 @@
 //!   independently spawned task, not a child of the listener's accept
 //!   loop.
 //! - **`requires_restart`:** `[server]`, `[tls]`, `[webrtc]`, `[moq]`,
-//!   `[hls]`, `[record]`, `[buffer]`, `[admin]`, `[health]` are wired once at startup into the
+//!   `[hls]`, `[record]`, `[buffer]`, `[admin]`, `[health]`, `[captions]` are wired once at startup into the
 //!   single `axum::Router` passed to `axum::serve`; swapping them without
 //!   restarting the process is out of scope here. A reload reports these
 //!   sections changed, never silently ignoring them.
@@ -494,6 +494,10 @@ impl Supervisor {
         }
         if old.health != new_cfg.health {
             report.requires_restart.push("health".into());
+        }
+        // Captions load a model and wire into the LL-HLS router at startup.
+        if old.captions != new_cfg.captions {
+            report.requires_restart.push("captions".into());
         }
 
         *current = new_cfg;

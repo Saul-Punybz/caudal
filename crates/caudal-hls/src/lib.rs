@@ -7,8 +7,9 @@
 //! the preload-hinted part wait on a `watch` channel bumped by the packager.
 
 mod packager;
+mod vtt;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::SocketAddr;
@@ -22,6 +23,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bytes::Bytes;
+use caudal_core::captions::{CaptionSource, TextTrack};
 use caudal_core::{Event, Registry, StartAt, Stream, Subscriber};
 use tokio::runtime::Handle;
 use tokio::sync::{broadcast, watch};
@@ -84,6 +86,20 @@ const PLAY_HTML: &str = include_str!("../static/play.html");
 /// `caudal-access`'s `[[access.rules]]`) judges a play request by. Empty:
 /// every peer's own address is used as is.
 pub fn router(registry: Arc<Registry>, cfg: HlsConfig, trusted_proxies: Vec<caudal_core::Cidr>) -> axum::Router {
+    router_with_captions(registry, cfg, trusted_proxies, None)
+}
+
+/// [`router`], plus a WebVTT subtitle rendition for every stream
+/// `captions` has a text track for: `#EXT-X-MEDIA:TYPE=SUBTITLES` in the
+/// multivariant playlist and a subtitle playlist `/hls/{name}/subs.m3u8`
+/// whose segments (`c{msn}.vtt`) and parts (`c{msn}.p{i}.vtt`) mirror the
+/// media ones, each rendered once, when its media counterpart closes.
+pub fn router_with_captions(
+    registry: Arc<Registry>,
+    cfg: HlsConfig,
+    trusted_proxies: Vec<caudal_core::Cidr>,
+    captions: Option<Arc<dyn CaptionSource>>,
+) -> axum::Router {
     let cfg = HlsConfig {
         part_ms: cfg.part_ms.max(10),
         segment_ms: cfg.segment_ms.max(cfg.part_ms.max(10)),
@@ -91,7 +107,7 @@ pub fn router(registry: Arc<Registry>, cfg: HlsConfig, trusted_proxies: Vec<caud
         cue_out_tags: cfg.cue_out_tags,
         reconnect_grace: cfg.reconnect_grace,
     };
-    let hls = Arc::new(Hls { registry: registry.clone(), cfg, trusted_proxies, streams: Mutex::default() });
+    let hls = Arc::new(Hls { registry: registry.clone(), cfg, trusted_proxies, captions, streams: Mutex::default() });
     match Handle::try_current() {
         Ok(rt) => {
             // Subscribe before listing, so a publish in between is seen at
@@ -111,7 +127,15 @@ struct Hls {
     registry: Arc<Registry>,
     cfg: HlsConfig,
     trusted_proxies: Vec<caudal_core::Cidr>,
+    captions: Option<Arc<dyn CaptionSource>>,
     streams: Mutex<HashMap<String, Arc<Entry>>>,
+}
+
+impl Hls {
+    /// The text track of `name`'s family root, if it is captioned.
+    fn text_track(&self, name: &str) -> Option<TextTrack> {
+        self.captions.as_ref()?.track(family_root(name))
+    }
 }
 
 /// One stream name's packager and the channel its waiters sleep on. Outlives
@@ -126,6 +150,18 @@ struct Entry {
     tick: watch::Sender<u64>,
     /// Players seen recently, keyed by a hash of address + user agent.
     viewers: Mutex<HashMap<u64, Instant>>,
+    /// WebVTT parts and segments, rendered when their media counterparts
+    /// close, under the packager lock (so the subtitle playlist, rendered
+    /// under the same lock, never lists one that does not exist yet, and a
+    /// file's text never changes once listed).
+    subs: Mutex<VecDeque<SubSeg>>,
+}
+
+/// The WebVTT files of one media segment.
+struct SubSeg {
+    msn: u64,
+    parts: Vec<Bytes>,
+    full: Option<Bytes>,
 }
 
 #[derive(Default)]
@@ -239,6 +275,7 @@ impl Hls {
                 pkg: Mutex::new(Packager::new(self.cfg)),
                 tick: watch::channel(0).0,
                 viewers: Mutex::default(),
+                subs: Mutex::default(),
             });
             map.insert(stream.name().to_owned(), entry.clone());
             entry
@@ -304,19 +341,27 @@ fn viewer_key(req: &Request) -> u64 {
 async fn run(hls: Arc<Hls>, entry: Arc<Entry>, mut sub: Subscriber) {
     let grace = hls.cfg.reconnect_grace;
     loop {
-        pump(&entry, &mut sub, !grace.is_zero()).await;
+        pump(&hls, &entry, &mut sub, !grace.is_zero()).await;
         drop(sub);
         let next = if grace.is_zero() { None } else { entry.successor(tokio::time::Instant::now() + grace).await };
         match next {
             Some(next) => {
                 tracing::info!(stream = %next.stream().name(), "ll-hls packager resumed after a publisher reconnect");
                 *entry.stream.lock().unwrap_or_else(|e| e.into_inner()) = next.stream().clone();
-                entry.pkg().resume();
+                {
+                    let mut pkg = entry.pkg();
+                    pkg.resume();
+                    render_subs(&hls, &entry, &pkg);
+                }
                 entry.tick.send_modify(|v| *v = v.wrapping_add(1));
                 sub = next;
             }
             None => {
-                entry.pkg().end();
+                {
+                    let mut pkg = entry.pkg();
+                    pkg.end();
+                    render_subs(&hls, &entry, &pkg);
+                }
                 entry.tick.send_modify(|v| *v = v.wrapping_add(1));
                 break;
             }
@@ -332,7 +377,7 @@ async fn run(hls: Arc<Hls>, entry: Arc<Entry>, mut sub: Subscriber) {
 
 /// Feeds one publish into the packager until it ends. With `keep_open`, the
 /// end only suspends the playlist; the caller decides whether it ends.
-async fn pump(entry: &Entry, sub: &mut Subscriber, keep_open: bool) {
+async fn pump(hls: &Hls, entry: &Entry, sub: &mut Subscriber, keep_open: bool) {
     loop {
         let ev = sub.recv().await;
         let changed = {
@@ -351,13 +396,55 @@ async fn pump(entry: &Entry, sub: &mut Subscriber, keep_open: bool) {
                 Event::End if keep_open => pkg.suspend(),
                 Event::End => pkg.end(),
             }
-            pkg.ended || pkg.suspended || before != (pkg.last_part(), pkg.segments.len(), pkg.init.is_some())
+            let changed =
+                pkg.ended || pkg.suspended || before != (pkg.last_part(), pkg.segments.len(), pkg.init.is_some());
+            if changed {
+                render_subs(hls, entry, &pkg);
+            }
+            changed
         };
         if changed {
             entry.tick.send_modify(|v| *v = v.wrapping_add(1));
         }
         if ev == Event::End {
             return;
+        }
+    }
+}
+
+/// Renders the WebVTT file of every media part and segment that closed
+/// since the last call, and forgets those that left the window. Called with
+/// the packager locked. A no-op for a stream without captions.
+fn render_subs(hls: &Hls, entry: &Entry, pkg: &Packager) {
+    let Some(captions) = hls.captions.as_ref() else { return };
+    let name = entry.stream().name().to_owned();
+    if captions.track(&name).is_none() {
+        return;
+    }
+    let mut subs = entry.subs.lock().unwrap_or_else(|e| e.into_inner());
+    let first = pkg.segments.front().map_or(0, |s| s.msn);
+    while subs.front().is_some_and(|s| s.msn < first) {
+        subs.pop_front();
+    }
+    for (msn, part, start, end) in pkg.spans() {
+        let seg = match subs.iter().position(|s| s.msn == msn) {
+            Some(i) => &mut subs[i],
+            None => {
+                subs.push_back(SubSeg { msn, parts: Vec::new(), full: None });
+                subs.back_mut().expect("just pushed")
+            }
+        };
+        let done = match part {
+            Some(i) => i < seg.parts.len(),
+            None => seg.full.is_some(),
+        };
+        if done {
+            continue;
+        }
+        let body = Bytes::from(vtt::segment(&captions.cues(&name, start, end), start, end));
+        match part {
+            Some(_) => seg.parts.push(body),
+            None => seg.full = Some(body),
         }
     }
 }
@@ -410,6 +497,14 @@ async fn hls_file(
     match file.as_str() {
         "index.m3u8" => playlist(&hls, &name, &entry, query, token).await,
         "master.m3u8" => master(&hls, &entry, &name, token).await,
+        "subs.m3u8" if hls.text_track(&name).is_some() => {
+            let flavor = Flavor::Subtitles { parts: loads_subtitle_parts(&req) };
+            playlist_of(&hls, &name, &entry, query, token, flavor).await
+        }
+        other if hls.text_track(&name).is_some() && parse_vtt_name(other).is_some() => match parse_vtt_name(other) {
+            Some((msn, part)) => subtitle(&entry, msn, part).await,
+            None => error(StatusCode::NOT_FOUND),
+        },
         "init.mp4" => {
             // The first init segment while it is still listed; otherwise
             // the current one.
@@ -430,6 +525,25 @@ async fn hls_file(
             None => error(StatusCode::NOT_FOUND),
         },
     }
+}
+
+/// `c{msn}.vtt` → `(msn, None)`, `c{msn}.p{part}.vtt` → `(msn, Some(part))`:
+/// the WebVTT twins of `s{msn}.m4s` / `s{msn}.p{part}.m4s`.
+fn parse_vtt_name(file: &str) -> Option<(u64, Option<usize>)> {
+    let stem = file.strip_prefix('c')?.strip_suffix(".vtt")?;
+    parse_media_name(&format!("s{stem}.m4s"))
+}
+
+/// Whether to list parts in the subtitle playlist for this client: yes for
+/// Apple's own media stack (AVFoundation, `AppleCoreMedia` user agent:
+/// Safari's native player, iOS/tvOS apps, and Apple's validator), which
+/// Apple's LL-HLS rules are written for and which require them on every
+/// rendition; no for everyone else, because hls.js 1.7 stalls loading
+/// subtitle parts (it loads the first ones, then never finishes the
+/// fragment: browser check, 19 Sep 2026) and plays whole WebVTT segments
+/// fine. The segments and cue times are the same either way.
+fn loads_subtitle_parts(req: &Request) -> bool {
+    req.headers().get(header::USER_AGENT).and_then(|v| v.to_str().ok()).is_some_and(|ua| ua.contains("AppleCoreMedia"))
 }
 
 /// `init{gen}.m4s` (a later init segment, `gen` ≥ 1) → `gen`.
@@ -472,6 +586,33 @@ async fn media(entry: &Entry, msn: u64, part: Option<usize>) -> Response {
     }
 }
 
+/// A subtitle part or segment. Like [`media`], a request for the part the
+/// preload hint names waits for it.
+async fn subtitle(entry: &Entry, msn: u64, part: Option<usize>) -> Response {
+    let wait = entry.block_timeout();
+    let found = entry
+        .wait(wait, |p| match p.lookup(msn, part) {
+            // The media part or segment exists, so its WebVTT twin was
+            // rendered with it (same packager lock).
+            Lookup::Found(_) => {
+                let subs = entry.subs.lock().unwrap_or_else(|e| e.into_inner());
+                let seg = subs.iter().find(|s| s.msn == msn);
+                Some(seg.and_then(|s| match part {
+                    Some(i) => s.parts.get(i).cloned(),
+                    None => s.full.clone(),
+                }))
+            }
+            Lookup::Gone => Some(None),
+            Lookup::Pending => None,
+        })
+        .await
+        .flatten();
+    match found {
+        Some(b) => respond(StatusCode::OK, "text/vtt; charset=utf-8", "max-age=60", b),
+        None => error(StatusCode::NOT_FOUND),
+    }
+}
+
 /// The two blocking-reload directives, if present and well formed.
 struct Directives {
     msn: Option<u64>,
@@ -494,7 +635,28 @@ fn parse_directives(query: &str) -> Result<Directives, ()> {
     Ok(d)
 }
 
+/// Which media playlist of a stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flavor {
+    /// `index.m3u8`: the fMP4 audio/video.
+    Media,
+    /// `subs.m3u8`: the WebVTT captions, same segments (and, with
+    /// `parts`, parts).
+    Subtitles { parts: bool },
+}
+
 async fn playlist(hls: &Arc<Hls>, name: &str, entry: &Entry, query: &str, token: Option<&str>) -> Response {
+    playlist_of(hls, name, entry, query, token, Flavor::Media).await
+}
+
+async fn playlist_of(
+    hls: &Arc<Hls>,
+    name: &str,
+    entry: &Entry,
+    query: &str,
+    token: Option<&str>,
+    flavor: Flavor,
+) -> Response {
     let Ok(d) = parse_directives(query) else { return error(StatusCode::BAD_REQUEST) };
     if let Some(msn) = d.msn {
         // RFC 8216bis §6.2.5.2: too far past the live edge is a client bug.
@@ -512,14 +674,18 @@ async fn playlist(hls: &Arc<Hls>, name: &str, entry: &Entry, query: &str, token:
                     (Some(m), Some(i)) => p.last_part().is_some_and(|last| last >= (m, i)),
                     (Some(m), None) => p.last_complete().is_some_and(|last| last >= m),
                 };
-            (satisfied && p.ready()).then(|| p.playlist())
+            (satisfied && p.ready()).then(|| match flavor {
+                Flavor::Media => p.playlist(),
+                Flavor::Subtitles { parts } => p.subtitle_playlist(parts),
+            })
         })
         .await;
     match body {
         Some(mut b) => {
             // Never on a stream that has ended: its siblings, if any, are the
-            // ones still worth switching to.
-            if !entry.pkg().ended {
+            // ones still worth switching to. The subtitle rendition has no
+            // siblings in its group.
+            if !entry.pkg().ended && flavor == Flavor::Media {
                 b.push_str(&rendition_reports(hls, name));
             }
             respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&b, token))
@@ -580,15 +746,27 @@ async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) 
         }
     }
     variants.sort_by_key(|(_, a)| std::cmp::Reverse(a.peak));
-    respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&render_master(&variants), token))
+    let text = hls.text_track(name).map(|t| (family_root(name).to_owned(), t));
+    respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&render_master(&variants, text.as_ref()), token))
 }
 
 /// One `#EXT-X-STREAM-INF` + relative `URI` per variant, in the order given
 /// (callers sort). The URI is relative to `/hls/{requested-name}/master.m3u8`,
 /// so `../{name}/index.m3u8` reaches `/hls/{name}/index.m3u8` for every
 /// variant, itself included, keeping tokens and hosts out of it.
-fn render_master(variants: &[(String, VariantAttrs)]) -> String {
+///
+/// With `text` (the captioned family root and its track), one
+/// `#EXT-X-MEDIA:TYPE=SUBTITLES` rendition in group `cc`, which every
+/// variant names with `SUBTITLES="cc"`.
+fn render_master(variants: &[(String, VariantAttrs)], text: Option<&(String, TextTrack)>) -> String {
     let mut o = String::from("#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+    if let Some((root, t)) = text {
+        let _ = write!(o, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"cc\",NAME=\"{}\"", quoted_safe(&t.name));
+        if let Some(lang) = &t.language {
+            let _ = write!(o, ",LANGUAGE=\"{}\"", quoted_safe(lang));
+        }
+        let _ = writeln!(o, ",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,URI=\"../{root}/subs.m3u8\"");
+    }
     for (name, a) in variants {
         let _ = write!(o, "#EXT-X-STREAM-INF:BANDWIDTH={}", a.peak);
         if let Some(avg) = a.average {
@@ -601,10 +779,19 @@ fn render_master(variants: &[(String, VariantAttrs)]) -> String {
         if let Some(fps) = a.frame_rate {
             let _ = write!(o, ",FRAME-RATE={fps:.3}");
         }
+        if text.is_some() {
+            o.push_str(",SUBTITLES=\"cc\"");
+        }
         o.push('\n');
         let _ = writeln!(o, "../{name}/index.m3u8");
     }
     o
+}
+
+/// A quoted-string attribute value may not hold `"` or line breaks
+/// (RFC 8216 §4.2).
+fn quoted_safe(v: &str) -> String {
+    v.chars().filter(|c| *c != '"' && *c != '\r' && *c != '\n').collect()
 }
 
 /// `?token=` wins over `Authorization: Bearer`, so a player that can only

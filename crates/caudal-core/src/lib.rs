@@ -1,6 +1,7 @@
 //! Core of the Caudal media server: the media model and the live buffer
 //! that sits between one publisher and many viewers.
 
+pub mod captions;
 pub mod gate;
 pub mod media;
 pub mod net;

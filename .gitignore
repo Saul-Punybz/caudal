@@ -6,3 +6,6 @@ target/
 /bench/.cache/
 /bench/results/*.log
 /bench/results/client.out
+
+# Apple mediastreamvalidator output (tests pass --validation-data-path)
+validation_data.json

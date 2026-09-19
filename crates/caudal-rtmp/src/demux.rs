@@ -49,14 +49,35 @@ fn u24_to_i32(v: u32) -> i32 {
     if v & 0x0080_0000 != 0 { (v as i32) - 0x0100_0000 } else { v as i32 }
 }
 
-fn video_frame(timestamp_ms: u32, cts: i32, keyframe: bool, data: Bytes) -> Frame {
-    let dts = i64::from(timestamp_ms) * 90;
-    let pts = (i64::from(timestamp_ms) + i64::from(cts)) * 90;
+/// Extends RTMP's 32-bit millisecond timestamps into a 64-bit series, so a
+/// publish longer than 2^32 ms (49.7 days) keeps counting up instead of
+/// jumping back to 0. The step between messages is taken as a signed 32-bit
+/// delta, which also absorbs the small backward steps of interleaved audio
+/// and video. Same idea as `TsClock` in `caudal-ts` for the 33-bit TS clock.
+#[derive(Debug, Default)]
+pub(crate) struct RtmpClock {
+    last: Option<(u32, i64)>,
+}
+
+impl RtmpClock {
+    pub(crate) fn extend(&mut self, raw: u32) -> i64 {
+        let extended = match self.last {
+            None => i64::from(raw),
+            Some((last_raw, last_ext)) => last_ext + i64::from(raw.wrapping_sub(last_raw) as i32),
+        };
+        self.last = Some((raw, extended));
+        extended
+    }
+}
+
+fn video_frame(timestamp_ms: i64, cts: i32, keyframe: bool, data: Bytes) -> Frame {
+    let dts = timestamp_ms * 90;
+    let pts = (timestamp_ms + i64::from(cts)) * 90;
     Frame { track: TrackId(0), dts, pts, keyframe, data }
 }
 
 /// Parses a `VIDEODATA` RTMP message.
-pub(crate) fn demux_video(timestamp_ms: u32, data: Bytes) -> Option<VideoEvent> {
+pub(crate) fn demux_video(timestamp_ms: i64, data: Bytes) -> Option<VideoEvent> {
     let mut cursor = Cursor::new(data);
     let header = VideoTagHeader::demux(&mut cursor).ok()?;
     let keyframe = header.frame_type == VideoFrameType::KeyFrame;
@@ -210,7 +231,7 @@ fn audio_init(asc: Bytes) -> Option<TrackInfo> {
 /// The cue is placed at `time` (seconds on the stream clock) when present,
 /// else at the message timestamp. RTMP timestamps are milliseconds, and
 /// video/audio frames use the same clock, so `at_us` lines up with them.
-pub(crate) fn parse_cue_point(timestamp_ms: u32, data: Bytes, event_id: u32) -> Option<Cue> {
+pub(crate) fn parse_cue_point(timestamp_ms: i64, data: Bytes, event_id: u32) -> Option<Cue> {
     let mut decoder = Amf0Decoder::from_buf(data);
     let values = decoder.decode_all().ok()?;
     let mut values =
@@ -240,7 +261,7 @@ pub(crate) fn parse_cue_point(timestamp_ms: u32, data: Bytes, event_id: u32) -> 
             _ => None,
         })
     };
-    let at_us = number("time").map_or(i64::from(timestamp_ms) * 1000, |s| (s * 1e6).round() as i64);
+    let at_us = number("time").map_or(timestamp_ms * 1000, |s| (s * 1e6).round() as i64);
 
     for (_, v) in &fields {
         if let Amf0Value::String(s) = v
@@ -357,5 +378,24 @@ mod tests {
         let unknown = message(false, "onCuePoint", obj(vec![("name", Amf0Value::String("chapter".into()))]));
         assert!(parse_cue_point(1, unknown, 1).is_none());
         assert!(parse_cue_point(1, Bytes::from_static(&[0xFF, 0x00]), 1).is_none());
+    }
+
+    #[test]
+    fn rtmp_clock_counts_through_the_32_bit_wrap() {
+        let mut clock = RtmpClock::default();
+        let near = u32::MAX - 40;
+        assert_eq!(clock.extend(near), i64::from(near));
+        assert_eq!(clock.extend(u32::MAX), i64::from(u32::MAX));
+        // 40 ms after u32::MAX the wire value is 39; the series keeps going up.
+        assert_eq!(clock.extend(39), (1i64 << 32) + 39);
+        assert_eq!(clock.extend(79), (1i64 << 32) + 79);
+    }
+
+    #[test]
+    fn rtmp_clock_allows_small_backward_steps_from_interleaving() {
+        let mut clock = RtmpClock::default();
+        assert_eq!(clock.extend(1_000), 1_000);
+        assert_eq!(clock.extend(990), 990); // audio slightly behind video
+        assert_eq!(clock.extend(1_010), 1_010);
     }
 }

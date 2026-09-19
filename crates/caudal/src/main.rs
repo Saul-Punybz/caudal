@@ -129,6 +129,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             segment_ms: cfg.hls.segment_ms,
             cue_tags: cfg.hls.cue_tags,
             cue_out_tags: cfg.hls.cue_out_tags,
+            reconnect_grace: std::time::Duration::from_secs(cfg.hls.reconnect_grace_secs.into()),
         },
     );
 

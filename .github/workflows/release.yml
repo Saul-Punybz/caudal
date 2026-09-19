@@ -12,12 +12,6 @@ on:
   push:
     tags:
       - 'v*.*.*'
-    # TEMP, removed before merge: workflow_dispatch only runs for a workflow
-    # already on the default branch, and this one isn't yet — a branch push
-    # is the only way to dry-run it pre-merge. should-publish still requires
-    # ref_type == 'tag', so a plain branch push can never publish.
-    branches:
-      - 'release/v0.1-pipeline'
   workflow_dispatch:
     inputs:
       dry_run:

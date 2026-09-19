@@ -126,9 +126,10 @@ async fn no_keyframe_alert_then_resolved_with_valid_signatures() {
     // one second later, so resolving depended on where the 1 s ticks fell
     // (failed 2 runs in 5).
     let recovering = async {
-        for i in 1i64.. {
+        let mut ts = 0i64;
+        loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            let ts = i * 18_000; // 200ms at 90kHz
+            ts += 18_000; // 200ms at 90kHz
             publisher
                 .push(Frame { track: TrackId(0), dts: ts, pts: ts, keyframe: true, data: Default::default() })
                 .unwrap();

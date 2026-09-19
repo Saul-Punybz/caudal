@@ -17,6 +17,7 @@ the same evening with a corrected decoder command
 | Binary size | 21.8 MB | 54.1 MB | **Caudal 2.5x smaller** |
 | Idle RSS | 14.0 MB | 35.4 MB | **Caudal 2.5x less** |
 | RSS with 1 publisher (1080p30, 6 Mbps) | 97.9 MB (86.8 MB with a 14 s buffer) | 80.3 MB | **MediaMTX lighter** |
+| RSS with 1 publisher, steady state (Linux runner, after the 19 Sep memory fixes) | 65.4 MB (145 before) | 92.7 MB | **Caudal about 30 % less** (see "Memory per live stream after the fixes") |
 | CPU with 1 publisher | 1.0 % | 1.5 % | tie (both negligible) |
 | LL-HLS, 1,000 viewers: server CPU | 83 % | 168 % | **Caudal about 2x less CPU** |
 | LL-HLS, 1,000 viewers: server RSS | 215 MB | 339 MB | **Caudal less** |
@@ -166,6 +167,66 @@ Sensitivity (Caudal with a 14 s buffer, `bench/caudal-14s.toml`, 3 runs):
 MediaMTX per live stream at equal retention.
 
 Note: `PLAN.md` expected 10–20 MB for the full binary; it is 21.8 MB now.
+
+### Memory per live stream after the fixes (19 Sep 2026, Linux)
+
+Measured on GitHub's `ubuntu-latest` runners with `.github/workflows/bench.yml`
+(`only=idle servers=caudal,mediamtx reps=3`), not on the laptop. Compare
+Caudal and MediaMTX inside each run.
+
+**The M4 number was not steady state.** The publish window started 10 s
+after the stream went live and lasted 30 s, so Caudal's 50 s buffer was only
+12 to 42 s full. The new workflow input `settle` (`BENCH_SETTLE_S`) sets that
+wait; `settle=60` measures a full buffer.
+
+**Where the memory went.** A dhat heap profile of one publisher for 70 s
+(`bench/heap.sh`, workflow input `heap=70`, summary by `bench/dhat_top.py`):
+the heap peaked at 125.6 MB.
+
+| Site | MB at peak | Why |
+|---|---|---|
+| RTMP ingest, frames in the live buffer | 64.0 | 38.6 MB of payload (50 s) in 64 MB of allocations: scuffle-rtmp hands out each message as a slice of a buffer grown by doubling, or of the socket read buffer, and the slice keeps all of it alive |
+| MoQ publish | 37.4 + 3.1 | hang's default track cache is 30 s: a second copy of every stream, with or without MoQ viewers |
+| LL-HLS parts | 10.7 | parts of the listed segments |
+| LL-HLS whole segments | 9.2 | the same bytes again, concatenated |
+
+**Fixes.** RTMP frame payloads are copied into exact-size allocations
+(`crates/caudal-rtmp/src/demux.rs`, `own`). MoQ tracks cache 5 s, moq-net's
+own default (`crates/caudal-moq/src/publish.rs`, `LATENCY_MAX`). A completed
+LL-HLS segment's parts become slices of the whole segment
+(`crates/caudal-hls/src/packager.rs`, `close_segment`). The default live
+buffer is 15 s instead of 50 (`[buffer] window_secs`; reasons in
+`caudal.example.toml`). After: heap peak 35.0 MB (frames 12.5, LL-HLS 12.3,
+MoQ 9.3).
+
+**Result**, median (min–max) of 3 repetitions:
+
+| Build | Publish window | Caudal RSS MB | MediaMTX RSS MB (same run) | Caudal max MB | MediaMTX max MB |
+|---|---|---|---|---|---|
+| before (`main`) | 10 s after live (as on the M4) | 90.3 (90.2–90.6) | 84.5 (83.4–85.3) | 117 | 97.5 |
+| after | 10 s after live | 54.7 (54.6–57.0) | 83.7 (83.4–83.7) | 64.2 | 99.9 |
+| before (50 s buffer) | 60 s after live (steady) | 145 (145–151) | 93.6 (88.5–96.6) | 155 | 95.1 |
+| after | 60 s after live (steady) | 65.4 (65.0–65.8) | 92.7 (90.4–96.4) | 67.8 | 96.8 |
+
+Idle RSS in the same runs: Caudal 17.8–18.1 MB, MediaMTX 39.2–41.3 MB.
+Publish CPU unchanged (Caudal 0.7–1.2 %, MediaMTX 0.9–1.9 %).
+
+Runs: heap before
+[35463795166](https://github.com/Saul-Punybz/caudal/actions/runs/35463795166),
+heap after [35464901974](https://github.com/Saul-Punybz/caudal/actions/runs/35464901974);
+RSS before [35463651012](https://github.com/Saul-Punybz/caudal/actions/runs/35463651012)
+(settle 10, `main`) and
+[35463800075](https://github.com/Saul-Punybz/caudal/actions/runs/35463800075)
+(settle 60, bench tooling only, 50 s buffer); after
+[35464905855](https://github.com/Saul-Punybz/caudal/actions/runs/35464905855)
+(settle 10) and
+[35464904097](https://github.com/Saul-Punybz/caudal/actions/runs/35464904097)
+(settle 60).
+
+Not measured: the fixes with the old 50 s buffer (estimated from the heap
+profile: about 26 MB more, near MediaMTX's figure), the M4, fan-out RSS
+after the change, and ingest other than RTMP (SRT, RTSP, WHIP may slice
+their buffers the same way; not profiled).
 
 ### Fan-out
 

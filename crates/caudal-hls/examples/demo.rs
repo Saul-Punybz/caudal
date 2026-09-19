@@ -27,7 +27,7 @@ async fn main() {
     let registry = Registry::new();
     let app = router(
         registry.clone(),
-        HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false },
+        HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
         Vec::new(),
     );
 

@@ -52,6 +52,8 @@ pub(crate) struct Segment {
     /// Media time of the segment's first frame, on the `Cue::at_us` clock.
     pub start_us: i64,
     pub discontinuity: bool,
+    /// Which init segment decodes it (see [`Packager::init_for`]).
+    pub init_gen: u32,
     /// `Some` once the segment is complete: all its parts, concatenated.
     pub full: Option<Bytes>,
 }
@@ -125,7 +127,15 @@ pub(crate) struct Packager {
     primary: Option<Lane>,
     secondary: Option<Lane>,
     primary_is_audio: bool,
+    /// The current init segment.
     pub init: Option<Bytes>,
+    /// Generation of `init`; bumped each time the init segment changes.
+    init_gen: u32,
+    /// Older init segments that listed segments still need, oldest first.
+    old_inits: VecDeque<(u32, Bytes)>,
+    /// The publisher left and a republish may still continue this playlist:
+    /// no `#EXT-X-ENDLIST` yet.
+    pub suspended: bool,
 
     /// Primary samples committed to the open part.
     part: Vec<Sample>,
@@ -217,6 +227,9 @@ impl Packager {
             secondary: None,
             primary_is_audio: false,
             init: None,
+            init_gen: 0,
+            old_inits: VecDeque::new(),
+            suspended: false,
             part: Vec::new(),
             queue: VecDeque::new(),
             seg_start: None,
@@ -385,10 +398,21 @@ impl Packager {
             return false;
         }
 
-        // A new init segment: what was cut before cannot be decoded with it.
+        // A new init segment: what was cut before is still listed, under
+        // its own `EXT-X-MAP`, after a discontinuity.
         self.flush();
         let had_output = !self.segments.is_empty();
-        self.segments.clear();
+        if init != self.init {
+            if had_output {
+                if let Some(old) = self.init.take() {
+                    self.old_inits.push_back((self.init_gen, old));
+                }
+                self.init_gen += 1;
+            } else {
+                // Nothing was ever listed: no player can hold the old one.
+                self.old_inits.clear();
+            }
+        }
         self.dateranges.clear();
         self.breaks.clear();
         self.open_out = None;
@@ -529,6 +553,7 @@ impl Packager {
             pdt: now,
             start_us: media_us,
             discontinuity,
+            init_gen: self.init_gen,
             full: None,
         });
         self.next_msn += 1;
@@ -596,6 +621,8 @@ impl Packager {
                 self.discontinuity_seq += 1;
             }
         }
+        let first_gen = self.segments.front().map_or(self.init_gen, |s| s.init_gen);
+        self.old_inits.retain(|(g, _)| *g >= first_gen);
         self.prune_dateranges();
     }
 
@@ -631,7 +658,43 @@ impl Packager {
 
     pub fn end(&mut self) {
         self.flush();
+        self.suspended = false;
         self.ended = true;
+    }
+
+    /// The publisher left, but may come back under the same name: close
+    /// what is open and keep the playlist live (no `EXT-X-ENDLIST`), with
+    /// the preload hint still pointing at the next part.
+    pub fn suspend(&mut self) {
+        self.flush();
+        self.suspended = true;
+    }
+
+    /// A new publisher took over the stream. Media sequence numbers keep
+    /// counting; its first segment starts on a keyframe after an
+    /// `EXT-X-DISCONTINUITY` (its timestamps start over).
+    pub fn resume(&mut self) {
+        self.flush();
+        self.suspended = false;
+        self.discontinuity_next = !self.segments.is_empty();
+        self.resume_from = None;
+        self.queue.clear();
+        self.floor = None;
+        self.waiting_key = true;
+        // Cue times are on the old publisher's clock.
+        self.dateranges.clear();
+        self.breaks.clear();
+        self.open_out = None;
+        self.early_cues.clear();
+    }
+
+    /// The init segment of generation `gen`, while anything listed (or the
+    /// open segment) still needs it.
+    pub fn init_for(&self, generation: u32) -> Option<Bytes> {
+        if generation == self.init_gen {
+            return self.init.clone();
+        }
+        self.old_inits.iter().find(|(g, _)| *g == generation).map(|(_, b)| b.clone())
     }
 
     /// `(msn, part index)` of the newest complete part.
@@ -704,8 +767,10 @@ impl Packager {
         if self.discontinuity_seq > 0 {
             let _ = writeln!(o, "#EXT-X-DISCONTINUITY-SEQUENCE:{}", self.discontinuity_seq);
         }
-        o.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n");
+        o.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
         let n = self.segments.len();
+        let mut map_gen = self.segments.iter().find(|s| !s.parts.is_empty()).map_or(self.init_gen, |s| s.init_gen);
+        let _ = writeln!(o, "#EXT-X-MAP:URI=\"{}\"", init_uri(map_gen));
         // Each DATERANGE goes right after the PDT of the listed segment its
         // cue falls in (the first listed one for anything older).
         let listed: Vec<usize> = (0..n).filter(|&i| !self.segments[i].parts.is_empty()).collect();
@@ -713,6 +778,10 @@ impl Packager {
             let seg = &self.segments[i];
             if seg.discontinuity {
                 o.push_str("#EXT-X-DISCONTINUITY\n");
+            }
+            if seg.init_gen != map_gen {
+                map_gen = seg.init_gen;
+                let _ = writeln!(o, "#EXT-X-MAP:URI=\"{}\"", init_uri(map_gen));
             }
             let _ = writeln!(o, "#EXT-X-PROGRAM-DATE-TIME:{}", rfc3339(seg.pdt));
             let from = if k == 0 { i64::MIN } else { seg.start_us };
@@ -790,6 +859,12 @@ impl Packager {
         });
         (peak, average)
     }
+}
+
+/// `init.mp4` for the first init segment, `init{gen}.mp4` for later ones,
+/// so a URI never changes meaning.
+pub(crate) fn init_uri(generation: u32) -> String {
+    if generation == 0 { "init.mp4".to_owned() } else { format!("init{generation}.mp4") }
 }
 
 /// RFC 6381 codec string from a track's configuration record.

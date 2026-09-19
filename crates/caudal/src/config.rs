@@ -127,11 +127,25 @@ pub struct HlsSection {
     /// Legacy `EXT-X-CUE-OUT` / `-CONT` / `EXT-X-CUE-IN` for SSAI vendors.
     #[serde(default)]
     pub cue_out_tags: bool,
+    /// Seconds a playlist stays live after its publisher drops; a republish
+    /// of the same name within them continues it. 0 ends it at once.
+    #[serde(default = "default_reconnect_grace_secs")]
+    pub reconnect_grace_secs: u32,
+}
+
+fn default_reconnect_grace_secs() -> u32 {
+    10
 }
 
 impl Default for HlsSection {
     fn default() -> Self {
-        Self { part_ms: default_part_ms(), segment_ms: default_segment_ms(), cue_tags: true, cue_out_tags: false }
+        Self {
+            part_ms: default_part_ms(),
+            segment_ms: default_segment_ms(),
+            cue_tags: true,
+            cue_out_tags: false,
+            reconnect_grace_secs: default_reconnect_grace_secs(),
+        }
     }
 }
 
@@ -886,6 +900,9 @@ mod tests {
         assert!(!cfg.hls.cue_out_tags, "legacy cue tags default off");
         let cfg: Config = toml::from_str("[hls]\ncue_out_tags = true\n").unwrap();
         assert!(cfg.hls.cue_out_tags);
+        assert_eq!(cfg.hls.reconnect_grace_secs, 10, "reconnect grace defaults to 10 s");
+        let cfg: Config = toml::from_str("[hls]\nreconnect_grace_secs = 0\n").unwrap();
+        assert_eq!(cfg.hls.reconnect_grace_secs, 0);
     }
 
     #[test]

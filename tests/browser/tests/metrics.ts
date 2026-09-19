@@ -42,6 +42,7 @@ export async function exposeHlsInstance(page: Page): Promise<void> {
           construct(target, args): object {
             const instance = Reflect.construct(target, args) as object;
             (window as any).__hlsInstance = instance;
+            (window as any).__hlsCount = ((window as any).__hlsCount ?? 0) + 1;
             return instance;
           },
         });

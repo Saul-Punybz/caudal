@@ -6,7 +6,9 @@ options pass through to `bench/bench.py run`, e.g.
 `bench/run.sh --reps 1 --levels 1,100 --protos hls`). Raw data:
 `bench/results/20260918-202735.jsonl` (main run) and
 `bench/results/20260918-214620.jsonl` (buffer sensitivity run), with the
-generated tables next to them (`.md`).
+generated tables next to them (`.md`). The latency rows were re-measured
+the same evening with a corrected decoder command
+(`bench/results/20260918-225809.jsonl`); see Latency.
 
 ## Short answer
 
@@ -24,12 +26,12 @@ generated tables next to them (`.md`).
 | WHEP, 100 viewers: CPU / RSS | 87 % / 334 MB | 73 % / 524 MB | **MediaMTX less CPU, Caudal less memory** |
 | WHEP, 300 viewers | **245 Mbps delivered, 0 of 300 kept up** | 1,377 Mbps delivered, 0 of 300 kept up | **MediaMTX delivers 5.6x more; Caudal's WHEP falls apart between 100 and 300 viewers** |
 | WHEP, 1,000 viewers | 307 Mbps, sessions failing (1,116 timeouts) | 1,269 Mbps, no errors, 4.4 GB RSS | **MediaMTX better** (neither keeps up) |
-| LL-HLS latency, live edge (median / p95) | 379 / 445 ms | 234 / 249 ms | **MediaMTX about 145 ms lower** |
-| RTSP latency (median / p95) | 177 / 381 ms | 275 / 312 ms | tie within this method's noise |
+| LL-HLS latency, live edge (median / p95) | 212 / 224 ms | 210 / 223 ms | tie (the earlier 145 ms gap was the decoder, not the server; see Latency) |
+| RTSP latency (median / p95) | 45 / 55 ms | 45 / 56 ms | tie |
 
 "Faster" is only supported for **LL-HLS fan-out CPU and memory**, plus binary
 size and idle memory. On RTSP fan-out, WHEP, LL-HLS latency and memory with
-a live stream, MediaMTX is equal or better today.
+a live stream, MediaMTX is equal or better today (latency: equal).
 
 ## Setup
 
@@ -136,6 +138,8 @@ runs encode live with the same settings.
     into `ffmpeg -f mp4 -i pipe:0`. This is **edge latency**, lower than
     what a player shows: a player like hls.js also waits PART-HOLD-BACK.
   - `rtsp`: `ffmpeg -rtsp_transport tcp -fflags nobuffer -flags low_delay`.
+  - Every path writes the stamp strip with `-fps_mode passthrough -threads 1`
+    (added after the first run; see Latency for why).
 
 ## Results
 
@@ -230,25 +234,50 @@ What the table says:
 
 ### Latency
 
+Re-measured 18 Sep 2026, 22:58–23:05 (`bench/results/20260918-225809.jsonl`,
+`bench/run.sh --reps 3 --only latency --protos hls`), both servers in the
+same session, 1-minute load average 3.5–5.3 from other work on the machine.
+
 | Path | Server | Median ms | p95 ms | Samples | Per-run medians | PART-HOLD-BACK |
 |---|---|---|---|---|---|---|
-| FLV over TCP (no server, floor) | — | 176 | 215 | 60 | 210, 176, 109 | — |
-| LL-HLS, live edge | Caudal | 379 | 445 | 60 | 380, 441, 354 | 0.601 s |
-| LL-HLS, live edge | MediaMTX | 234 | 249 | 60 | 234, 214, 244 | 0.500 s |
-| RTSP (TCP) | Caudal | 177 | 381 | 60 | 177, 143, 377 | — |
-| RTSP (TCP) | MediaMTX | 275 | 312 | 60 | 176, 275, 310 | — |
+| FLV over TCP (no server, floor) | — | 10 | 13 | 60 | 8, 11, 11 | — |
+| LL-HLS, live edge | Caudal | 212 | 224 | 60 | 208, 214, 213 | 0.601 s |
+| LL-HLS, live edge | MediaMTX | 210 | 223 | 60 | 207, 211, 215 | 0.500 s |
+| RTSP (TCP) | Caudal | 45 | 55 | 60 | 43, 51, 45 | — |
+| RTSP (TCP) | MediaMTX | 45 | 56 | 60 | 42, 45, 51 | — |
 
-- **LL-HLS: MediaMTX is about 145 ms lower at the live edge**, in all three
-  runs (Caudal's best run, 354 ms, is above MediaMTX's worst, 244 ms). Adding
-  each server's PART-HOLD-BACK gives a rough player estimate of about
-  0.98 s for Caudal and 0.73 s for MediaMTX. Both are well under the 3 s
-  goal in `STATUS.md`; the gap is still Caudal's to close (Caudal's edge
-  latency is about 200 ms, one part duration, above the no-server floor;
-  MediaMTX's is about 60 ms above it).
-- **RTSP: a tie within noise.** Per-run medians swing by 150–230 ms on both
-  servers, and the no-server baseline itself swings 109–210 ms between
-  runs, so the method (ffmpeg decode start and pacing on a shared machine)
-  has more run-to-run noise than the difference being measured.
+- **LL-HLS: a tie at the live edge.** Both servers sit one part duration
+  (200 ms) above the floor: the client fetches whole listed parts, so the
+  first frame of a part waits for the rest of it. Neither server streams the
+  preload-hinted part as it is written (checked on MediaMTX: the hinted
+  part's response starts about 200 ms after the request and then arrives at
+  once, same as Caudal).
+- **Per part, the servers publish at the same moment.** Following each
+  media playlist with blocking reloads and decoding every part: a part is
+  listed 44 ms (Caudal) and 40 ms (MediaMTX) after the stamp of its last
+  frame, and 210 / 207 ms after the stamp of its first (medians over about
+  100 parts each, 6 frames per part on both).
+- **The PART-HOLD-BACK difference remains**, about 0.1 s in a player:
+  Caudal advertises three part targets (RFC 8216bis says it SHOULD be at
+  least three, and Apple's validator warns below that, -50102); MediaMTX
+  advertises 2.5.
+- **Why the first run showed 379 vs 234 ms (and a 176 ms floor).** It was
+  the decoder in the load client, not a server. ffmpeg 9 writes rawvideo at a
+  constant frame rate by default and encodes it frame-threaded (one thread
+  per core). When the input's start time is earlier than its first
+  decodable frame, ffmpeg emits the gap as duplicate frames all at once; the
+  frame-threaded encoder then returns at most one packet per new frame, so
+  that burst stays queued for the whole session and every frame reaches the
+  pipe several frames late. Caudal's playlist carries audio and video in one
+  file, so its start time comes from both tracks and the burst happened
+  every time; MediaMTX's video playlist has no audio track and it did not.
+  Evidence: replaying the same recorded Caudal parts into ffmpeg at their
+  recorded arrival times, frames 2–6 of each part came out about 200 ms
+  after the part was written; with `-threads 16` about 400 ms; with
+  `-threads 1` or `-fps_mode passthrough`, 3–7 ms. Publishing to Caudal
+  without audio gave 184 ms with the old command, below MediaMTX. The same
+  queue inflated the floor and RTSP numbers, which is why they drop from
+  about 176 ms to 10 and 45 ms.
 
 ## NOT MEASURED, and why
 
@@ -279,13 +308,13 @@ with less memory, zero errors on both, up to 1,000 viewers.
 Losses for Caudal: more memory per live stream (98 vs 80 MB; 87 MB with an
 equal 14 s buffer), about 15 % more CPU for RTSP fan-out, about 16 % more CPU
 for WHEP at 100 viewers, WHEP delivery that collapses between 100 and 300
-viewers without being CPU-bound, and about 145 ms more LL-HLS edge latency.
+viewers without being CPU-bound.
 
-Ties: CPU with one publisher, RTSP latency, idle CPU. Machine-limited on
+Ties: CPU with one publisher, LL-HLS edge latency, RTSP latency, idle CPU. Machine-limited on
 both: RTSP at 1,000 viewers.
 
 Do not claim "faster than MediaMTX" in general. Claims these numbers
 support: "a smaller binary and lower idle memory than MediaMTX" and "LL-HLS
 fan-out at about half MediaMTX's CPU on the same machine". Next fixes that
-the benchmark points to: the WHEP egress path at 300 or more peers, LL-HLS
-part publication latency, and RTSP send-path CPU.
+the benchmark points to: the WHEP egress path at 300 or more peers and RTSP
+send-path CPU.

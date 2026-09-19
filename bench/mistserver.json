@@ -1,0 +1,26 @@
+{
+  "config": {
+    "controller": {
+      "interface": "127.0.0.1",
+      "port": 4242
+    },
+    "debug": 3,
+    "protocols": [
+      {"connector": "HTTP", "interface": "127.0.0.1", "port": 8080},
+      {"connector": "CMAF"},
+      {"connector": "HLS"},
+      {"connector": "WebRTC", "interface": "127.0.0.1"},
+      {"connector": "RTMP", "interface": "127.0.0.1", "port": 1935},
+      {"connector": "RTSP", "interface": "127.0.0.1", "port": 8554},
+      {"connector": "TSSRT", "interface": "127.0.0.1", "port": 9000}
+    ]
+  },
+  "streams": {
+    "bench": {
+      "name": "bench",
+      "source": "push://",
+      "DVR": 50000,
+      "segmentsize": 2000
+    }
+  }
+}

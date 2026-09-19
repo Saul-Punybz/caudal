@@ -154,4 +154,4 @@ it against the direct `imdct` (kept as the oracle) at both AAC block sizes;
 the crate's own decoder tests (`hand_built_frame_matches_independent_imdct`,
 the encoder round trips) pass unchanged. Downstream,
 `crates/caudal-captions/src/audio.rs`'s `aac_decodes_far_faster_than_real_time`
-keeps the speed. Drop this copy once upstream ships a fast IMDCT.
+keeps the speed. Reported upstream as https://github.com/Remade-With-Rust/remade_ffmpeg_rs/issues/16 (19 Sep 2026). Drop this copy once upstream ships a fast IMDCT.

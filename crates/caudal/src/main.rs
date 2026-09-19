@@ -183,6 +183,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
 
     let state = api::AppState::new(registry.clone());
     state.set_access(started.access.clone());
+    state.set_multicast(started.multicast.clone());
     let webrtc_router = caudal_webrtc::router(
         registry.clone(),
         caudal_webrtc::WebRtcConfig {
@@ -289,6 +290,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         .merge(started.channel_router)
         .merge(started.failover_router)
         .merge(started.restream_router)
+        .merge(started.multicast_router)
         .merge(reload::router(reload_state))
         .merge(health_router)
         .merge(cluster_router)

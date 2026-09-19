@@ -29,6 +29,7 @@ caudal-access.workspace = true
 caudal-cluster.workspace = true
 url = "2"
 caudal-failover.workspace = true
+caudal-multicast.workspace = true
 axum.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

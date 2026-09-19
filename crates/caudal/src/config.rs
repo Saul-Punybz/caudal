@@ -192,6 +192,9 @@ pub struct Config {
     /// Multistreaming: `[[restream]]` entries, each pushing one stream to an
     /// RTMP/RTMPS ingest (YouTube, Twitch, Facebook, another server).
     pub restream: Vec<RestreamEntry>,
+    /// IP multicast output: `[[multicast]]` entries, each sending one
+    /// stream to a multicast group as MPEG-TS over UDP or RTP.
+    pub multicast: Vec<MulticastEntry>,
     /// Backup sources: `[[failover]]` entries, each a public stream fed by
     /// the best healthy source of an ordered list.
     pub failover: Vec<FailoverEntry>,
@@ -291,6 +294,72 @@ impl ClusterSection {
 pub struct RestreamEntry {
     pub stream: String,
     pub url: String,
+}
+
+/// One multicast output: send `stream` to `group` (`239.1.1.1:5000`, or
+/// `[ff15::1]:5000` for IPv6) while it is live.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MulticastEntry {
+    pub stream: String,
+    pub group: String,
+    /// `ts` (MPEG-TS over UDP, the default) or `rtp` (RFC 2250, PT 33).
+    #[serde(default = "default_multicast_format")]
+    pub format: String,
+    /// IP TTL / IPv6 hop limit.
+    #[serde(default = "default_multicast_ttl")]
+    pub ttl: u32,
+    /// IPv4: the address of the interface to send on (also the source
+    /// address). IPv6: the interface index. Absent: the OS's route.
+    #[serde(default)]
+    pub interface: Option<String>,
+    /// Also deliver to receivers on this host (`IP_MULTICAST_LOOP`).
+    #[serde(default)]
+    pub loopback: bool,
+    /// Pace datagrams to the stream's own clock (switches drop bursts).
+    #[serde(default = "default_true")]
+    pub pacing: bool,
+}
+
+fn default_multicast_format() -> String {
+    "ts".into()
+}
+
+fn default_multicast_ttl() -> u32 {
+    16
+}
+
+impl MulticastEntry {
+    pub fn to_target(&self) -> Result<caudal_multicast::MulticastTarget, String> {
+        let ctx = |e: String| format!("[[multicast]] `{}`: {e}", self.stream);
+        let group: std::net::SocketAddr =
+            self.group.parse().map_err(|_| ctx(format!("group {:?}: expected ip:port", self.group)))?;
+        let format = match self.format.as_str() {
+            "ts" => caudal_multicast::Format::Ts,
+            "rtp" => caudal_multicast::Format::Rtp,
+            other => return Err(ctx(format!("format {other:?}: expected \"ts\" or \"rtp\""))),
+        };
+        let interface = match (&self.interface, group) {
+            (None, _) => caudal_multicast::Interface::Default,
+            (Some(i), std::net::SocketAddr::V4(_)) => caudal_multicast::Interface::V4(
+                i.parse().map_err(|_| ctx(format!("interface {i:?}: expected an IPv4 address")))?,
+            ),
+            (Some(i), std::net::SocketAddr::V6(_)) => caudal_multicast::Interface::V6Index(
+                i.parse().map_err(|_| ctx(format!("interface {i:?}: expected an interface index")))?,
+            ),
+        };
+        let target = caudal_multicast::MulticastTarget {
+            stream: self.stream.clone(),
+            group,
+            format,
+            ttl: self.ttl,
+            interface,
+            loopback: self.loopback,
+            pacing: self.pacing,
+        };
+        target.validate().map_err(ctx)?;
+        Ok(target)
+    }
 }
 
 /// One failover stream: viewers play `stream`, fed by the first healthy
@@ -982,7 +1051,23 @@ impl Config {
             }
         }
         self.failovers()?;
+        self.multicast_targets()?;
         Ok(())
+    }
+
+    /// `[[multicast]]` as the runtime type `caudal-multicast` takes,
+    /// checked: parseable, multicast groups, one output per group.
+    pub fn multicast_targets(&self) -> Result<Vec<caudal_multicast::MulticastTarget>, String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(self.multicast.len());
+        for e in &self.multicast {
+            let t = e.to_target()?;
+            if !seen.insert(t.group) {
+                return Err(format!("[[multicast]] group {} is used twice", t.group));
+            }
+            out.push(t);
+        }
+        Ok(out)
     }
 
     /// `[[failover]]` as the runtime type `caudal-failover` takes, checked:
@@ -1064,6 +1149,37 @@ pub fn load(path: &Path) -> Result<Config, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multicast_entries() {
+        let cfg: Config = toml::from_str(
+            "[[multicast]]\nstream = \"tv1\"\ngroup = \"239.1.1.1:5000\"\n\
+             [[multicast]]\nstream = \"tv2\"\ngroup = \"[ff15::1]:5000\"\nformat = \"rtp\"\nttl = 1\n\
+             interface = \"3\"\nloopback = true\npacing = false\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let t = cfg.multicast_targets().unwrap();
+        assert_eq!(t[0].format, caudal_multicast::Format::Ts);
+        assert_eq!((t[0].ttl, t[0].loopback, t[0].pacing), (16, false, true), "defaults");
+        assert_eq!(t[0].interface, caudal_multicast::Interface::Default);
+        assert_eq!(t[1].format, caudal_multicast::Format::Rtp);
+        assert_eq!(t[1].interface, caudal_multicast::Interface::V6Index(3));
+        assert_eq!((t[1].ttl, t[1].loopback, t[1].pacing), (1, true, false));
+
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[multicast]]\nstream = \"a\"\ngroup = \"10.0.0.1:5000\"\n").contains("not a multicast"));
+        assert!(bad("[[multicast]]\nstream = \"a\"\ngroup = \"239.1.1.1\"\n").contains("ip:port"));
+        assert!(bad("[[multicast]]\nstream = \"a\"\ngroup = \"239.1.1.1:1\"\nformat = \"srt\"\n").contains("format"));
+        assert!(
+            bad("[[multicast]]\nstream = \"a\"\ngroup = \"239.1.1.1:1\"\ninterface = \"eth0\"\n")
+                .contains("IPv4 address")
+        );
+        assert!(
+            bad("[[multicast]]\nstream = \"a\"\ngroup = \"239.1.1.1:1\"\n[[multicast]]\nstream = \"b\"\ngroup = \"239.1.1.1:1\"\n")
+                .contains("used twice")
+        );
+    }
 
     #[test]
     fn defaults_when_empty() {

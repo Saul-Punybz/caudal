@@ -11,9 +11,17 @@
 # recvonly media, no data channel).
 # Pinned version either way. Prints the directory that holds MistController
 # and the MistIn*/MistOut* binaries.
-set -euo pipefail
+#
+# -x so every command (and meson/ninja's own output) lands in the CI log;
+# a build failure must be diagnosable from the log, not just "exit 1".
+set -euxo pipefail
 VERSION="${MISTSERVER_VERSION:-3.11.2}"
 SHA256="${MISTSERVER_SHA256:-026d216aa8824a638252243cd7ce1b9cd2cf832fad37cd66c2fa1241e192b217}"
+# `git tag 3.11.2` is an annotated tag object (a7cbd0d...), not a commit;
+# this is the commit it points to (`git ls-remote` .../3.11.2^{}). A shallow
+# clone of an annotated tag prints "is not a commit!" and detaches at this
+# commit anyway -- harmless, but verified below rather than trusted blind.
+MISTSERVER_COMMIT="${MISTSERVER_COMMIT:-51b50c59d75e9937b2ce2660bfa97437bd64b6b5}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CACHE="$HERE/.cache"
 dir="$CACHE/mistserver-$VERSION"
@@ -54,11 +62,26 @@ Linux)
     rm -rf "$src"
     git clone --branch "$VERSION" --depth 1 https://github.com/DDVTECH/mistserver "$src"
   fi
+  got="$(git -C "$src" rev-parse HEAD)"
+  if [ "$got" != "$MISTSERVER_COMMIT" ]; then
+    echo "fetch-mistserver.sh: $src is at $got, expected $VERSION ($MISTSERVER_COMMIT)" >&2
+    exit 1
+  fi
   build="$src/build"
   rm -rf "$build"
+  dump_meson_log() {
+    status=$?
+    log="$build/meson-logs/meson-log.txt"
+    if [ "$status" -ne 0 ] && [ -f "$log" ]; then
+      echo "---- tail of $log (build failed) ----" >&2
+      tail -n 300 "$log" >&2
+    fi
+  }
+  trap dump_meson_log EXIT
   meson setup "$build" "$src" --buildtype=release \
     -DNOSRT=true -DNORIST=true -DNOUSRSCTP=true -DWITH_THREADNAMES=true
   ninja -C "$build" "${BINARIES[@]}"
+  trap - EXIT
   rm -rf "$dir.tmp"
   mkdir -p "$dir.tmp"
   for b in "${BINARIES[@]}"; do

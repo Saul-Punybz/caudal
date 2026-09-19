@@ -15,8 +15,11 @@ ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)"
 
 (cd "$ROOT" && cargo build --release -p caudal)
 (cd "$HERE/client" && cargo build --release)
-"$HERE/fetch-mediamtx.sh" >/dev/null
-case " $* " in *mistserver*) "$HERE/fetch-mistserver.sh" >/dev/null ;; esac
+# Not `>/dev/null`: these print their resulting directory as their last line
+# (unused here, bench.py reconstructs the path itself), but a download or
+# build failure's own output must reach the log, not be discarded with it.
+"$HERE/fetch-mediamtx.sh"
+case " $* " in *mistserver*) "$HERE/fetch-mistserver.sh" ;; esac
 python3 "$HERE/bench.py" prepare
 
 leftovers="$(pgrep -f 'target/release/caudal |mediamtx-v|caudal-bench-client|mistserver-[0-9.]*/Mist' || true)"

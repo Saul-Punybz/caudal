@@ -500,3 +500,117 @@ fn recording_becomes_vod_and_clips_download() {
     // No path traversal through the VOD route.
     assert!(matches!(s.get("/vod/recme/..%2F..%2Fetc/passwd").unwrap().0, 400 | 404));
 }
+
+/// Audit gap 4: an encoder drops and republishes the same name within the
+/// reconnect grace (default 10 s). The LL-HLS playlist must stay live
+/// across the gap (no ENDLIST, media sequence never goes back), mark the
+/// seam with `EXT-X-DISCONTINUITY`, and a real player (ffmpeg's HLS demuxer)
+/// must decode straight through it without exiting.
+#[test]
+fn ll_hls_survives_a_publisher_reconnect() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start();
+    let first = Publisher::rtmp(&s.rtmp_url("re"), 60);
+    s.wait_until("/hls/re/index.m3u8", Duration::from_secs(20), |b| b.matches("#EXTINF").count() >= 3);
+
+    // A viewer that must decode 20 s of video. It joins 3 segments from the
+    // live edge, so it cannot get there on the first publish alone (about
+    // 10 s of which remain for it): it has to cross the reconnect.
+    const FRAMES: u32 = 600;
+    let reader = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-i"])
+        .arg(s.url("/hls/re/index.m3u8"))
+        .args(["-map", "0:v:0", "-frames:v", &FRAMES.to_string(), "-progress", "pipe:1", "-f", "null", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn ffmpeg reader");
+    let reader = KillOnDrop(Some(reader));
+
+    // Watch the playlist from before the drop until the new publish is on
+    // it: never ended, never renumbered.
+    let mut last_seq = 0u64;
+    let mut watch = |until: Duration| -> Option<String> {
+        let t0 = Instant::now();
+        let mut last = None;
+        while t0.elapsed() < until {
+            let (code, pl) = s.get("/hls/re/index.m3u8").unwrap();
+            assert_eq!(code, 200, "playlist must keep answering across the reconnect");
+            assert!(!pl.contains("#EXT-X-ENDLIST"), "ended inside the grace:\n{pl}");
+            let seq: u64 = pl
+                .lines()
+                .find_map(|l| l.strip_prefix("#EXT-X-MEDIA-SEQUENCE:"))
+                .and_then(|v| v.trim().parse().ok())
+                .expect("media sequence");
+            assert!(seq >= last_seq, "media sequence went back {last_seq} -> {seq}:\n{pl}");
+            last_seq = seq;
+            if pl.contains("#EXT-X-DISCONTINUITY\n") {
+                last = Some(pl);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        last
+    };
+    watch(Duration::from_secs(3));
+    drop(first);
+    // The encoder takes a few seconds to come back.
+    watch(Duration::from_secs(3));
+    let second = Publisher::rtmp(&s.rtmp_url("re"), 60);
+    let seam = watch(Duration::from_secs(20)).expect("the republish shows up after an EXT-X-DISCONTINUITY");
+    let after = seam.split("#EXT-X-DISCONTINUITY\n").nth(1).unwrap();
+    let before = seam.split("#EXT-X-DISCONTINUITY\n").next().unwrap();
+    let last_old = before.lines().rev().find(|l| l.ends_with(".m4s") && !l.starts_with('#')).expect("old segment");
+    let first_new = after
+        .lines()
+        .find_map(|l| l.split("URI=\"").nth(1).and_then(|u| u.split('"').next()).or(l.ends_with(".m4s").then_some(l)))
+        .expect("new segment");
+    let msn = |u: &str| -> u64 { u[1..].split('.').next().unwrap().parse().unwrap() };
+    assert_eq!(msn(first_new), msn(last_old) + 1, "numbers keep counting across the seam:\n{seam}");
+
+    // Apple's validator on the playlist with the seam in it.
+    let dir = tempfile::tempdir().unwrap();
+    match support::validate_hls(&s.url("/hls/re/master.m3u8"), dir.path(), "ll_hls_reconnect") {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("mediastreamvalidator reported errors across a reconnect:\n{report}"),
+        None => eprintln!("NOT VERIFIED: mediastreamvalidator not installed; reconnect conformance unchecked"),
+    }
+
+    // The viewer decodes all its frames and exits cleanly.
+    let out = reader.wait_timeout(Duration::from_secs(60)).expect("ffmpeg reader never finished");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let frames: u32 =
+        stdout.lines().rev().find_map(|l| l.strip_prefix("frame=")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    assert!(out.status.success(), "ffmpeg reader failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(frames, FRAMES, "the reader stopped early (the playlist ended?)\n{stdout}");
+    drop(second);
+}
+
+/// A child process killed when dropped, so a failed assertion never leaves
+/// an ffmpeg behind.
+struct KillOnDrop(Option<std::process::Child>);
+
+impl KillOnDrop {
+    /// Waits for exit up to `limit`; `None` (and the process killed) after.
+    fn wait_timeout(mut self, limit: Duration) -> Option<std::process::Output> {
+        let t0 = Instant::now();
+        while t0.elapsed() < limit {
+            if self.0.as_mut()?.try_wait().ok()?.is_some() {
+                return self.0.take()?.wait_with_output().ok();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        None
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}

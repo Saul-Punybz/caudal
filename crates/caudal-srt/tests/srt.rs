@@ -301,7 +301,13 @@ async fn h264_aac_publish_end_to_end() {
         let hls_port = hls_listener.local_addr().unwrap().port();
         let router = caudal_hls::router(
             server.registry.clone(),
-            caudal_hls::HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false },
+            caudal_hls::HlsConfig {
+                part_ms: 200,
+                segment_ms: 2000,
+                cue_tags: true,
+                cue_out_tags: false,
+                ..caudal_hls::HlsConfig::default()
+            },
         );
         tokio::spawn(async move {
             let _ = axum::serve(hls_listener, router).await;

@@ -76,7 +76,10 @@ async fn wait_http(url: &str, pred: impl Fn(&str) -> bool, timeout: Duration) ->
 async fn abr_family_serves_and_ffprobes_clean() {
     let fx = mp4demux::demux(include_bytes!("fixtures/av.mp4"));
     let reg = Registry::new();
-    let app = router(reg.clone(), HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false });
+    let app = router(
+        reg.clone(),
+        HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
+    );
 
     let port = free_port();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
@@ -147,7 +150,10 @@ async fn abr_family_apple_validator_if_present() {
     }
     let fx = std::sync::Arc::new(mp4demux::demux(include_bytes!("fixtures/av.mp4")));
     let reg = Registry::new();
-    let app = router(reg.clone(), HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false });
+    let app = router(
+        reg.clone(),
+        HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, ..HlsConfig::default() },
+    );
     let port = free_port();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
     tokio::spawn(async move {

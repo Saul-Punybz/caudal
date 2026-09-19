@@ -40,6 +40,24 @@ pub struct HlsConfig {
     /// `EXT-X-CUE-IN` tags many SSAI vendors still key on. Off by default:
     /// they are not in RFC 8216.
     pub cue_out_tags: bool,
+    /// When a publisher drops and the same name is published again within
+    /// this long, the new publish continues the same playlist (media
+    /// sequence numbers keep counting, with an `EXT-X-DISCONTINUITY`), so
+    /// players ride through an encoder reconnect. `ZERO` ends the playlist
+    /// (`EXT-X-ENDLIST`) as soon as the publisher leaves.
+    pub reconnect_grace: Duration,
+}
+
+impl Default for HlsConfig {
+    fn default() -> Self {
+        Self {
+            part_ms: 200,
+            segment_ms: 2000,
+            cue_tags: true,
+            cue_out_tags: false,
+            reconnect_grace: Duration::from_secs(10),
+        }
+    }
 }
 
 /// A player that has not asked for a playlist in this long has left. LL-HLS
@@ -47,7 +65,8 @@ pub struct HlsConfig {
 /// reloads about once per target duration (2 s).
 const VIEWER_IDLE: Duration = Duration::from_secs(10);
 
-/// How long an ended stream keeps answering (with `#EXT-X-ENDLIST`).
+/// How long an ended stream keeps answering (with `#EXT-X-ENDLIST`), after
+/// the reconnect grace (if any) has run out.
 const LINGER: Duration = Duration::from_secs(30);
 
 const PLAY_HTML: &str = include_str!("../static/play.html");
@@ -64,6 +83,7 @@ pub fn router(registry: Arc<Registry>, cfg: HlsConfig) -> axum::Router {
         segment_ms: cfg.segment_ms.max(cfg.part_ms.max(10)),
         cue_tags: cfg.cue_tags,
         cue_out_tags: cfg.cue_out_tags,
+        reconnect_grace: cfg.reconnect_grace,
     };
     let hls = Arc::new(Hls { registry: registry.clone(), cfg, streams: Mutex::default() });
     match Handle::try_current() {
@@ -87,16 +107,54 @@ struct Hls {
     streams: Mutex<HashMap<String, Arc<Entry>>>,
 }
 
-/// One stream's packager and the channel its waiters sleep on.
+/// One stream name's packager and the channel its waiters sleep on. Outlives
+/// one publish when the name is republished within the reconnect grace.
 struct Entry {
-    stream: Arc<Stream>,
+    /// The publish currently feeding the packager.
+    stream: Mutex<Arc<Stream>>,
+    /// A republish waiting to take over from the current one.
+    handoff: Mutex<Handoff>,
+    handoff_ready: tokio::sync::Notify,
     pkg: Mutex<Packager>,
     tick: watch::Sender<u64>,
     /// Players seen recently, keyed by a hash of address + user agent.
     viewers: Mutex<HashMap<u64, Instant>>,
 }
 
+#[derive(Default)]
+struct Handoff {
+    next: Option<Subscriber>,
+    /// The grace ran out: the playlist ended and takes no successor.
+    closed: bool,
+}
+
 impl Entry {
+    fn stream(&self) -> Arc<Stream> {
+        self.stream.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn handoff(&self) -> MutexGuard<'_, Handoff> {
+        self.handoff.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The next publish of this name, if one arrives before `deadline`.
+    /// Past it, closes the entry to successors.
+    async fn successor(&self, deadline: tokio::time::Instant) -> Option<Subscriber> {
+        loop {
+            {
+                let mut h = self.handoff();
+                if let Some(next) = h.next.take() {
+                    return Some(next);
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    h.closed = true;
+                    return None;
+                }
+            }
+            let _ = tokio::time::timeout_at(deadline, self.handoff_ready.notified()).await;
+        }
+    }
+
     fn pkg(&self) -> MutexGuard<'_, Packager> {
         self.pkg.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -128,7 +186,7 @@ impl Entry {
             v.retain(|_, last| last.elapsed() < VIEWER_IDLE);
             v.len()
         };
-        self.stream.set_output_viewers("hls", n);
+        self.stream().set_output_viewers("hls", n);
     }
 
     fn block_timeout(&self) -> Duration {
@@ -148,11 +206,29 @@ impl Hls {
     fn start(self: &Arc<Self>, rt: &Handle, stream: Arc<Stream>) {
         let entry = {
             let mut map = self.streams();
-            if map.get(stream.name()).is_some_and(|e| Arc::ptr_eq(&e.stream, &stream)) {
-                return;
+            if let Some(e) = map.get(stream.name()) {
+                if Arc::ptr_eq(&e.stream(), &stream) {
+                    return;
+                }
+                // The same name again while the old playlist is live or in
+                // its reconnect grace: hand the new publish to its runner,
+                // which switches over once the old one has drained.
+                let mut h = e.handoff();
+                if !self.cfg.reconnect_grace.is_zero() && !h.closed {
+                    if h.next.as_ref().is_some_and(|s| Arc::ptr_eq(s.stream(), &stream)) {
+                        return;
+                    }
+                    h.next = Some(stream.subscribe_internal(StartAt::LiveEdge));
+                    drop(h);
+                    e.handoff_ready.notify_one();
+                    tracing::info!(stream = %stream.name(), "republished within the reconnect grace; ll-hls playlist continues");
+                    return;
+                }
             }
             let entry = Arc::new(Entry {
-                stream: stream.clone(),
+                stream: Mutex::new(stream.clone()),
+                handoff: Mutex::default(),
+                handoff_ready: tokio::sync::Notify::new(),
                 pkg: Mutex::new(Packager::new(self.cfg)),
                 tick: watch::channel(0).0,
                 viewers: Mutex::default(),
@@ -205,8 +281,40 @@ fn viewer_key(req: &Request) -> u64 {
     h.finish()
 }
 
-/// The packager task for one stream.
+/// The packager task for one stream name: one publish after another while
+/// each republish lands within the reconnect grace.
 async fn run(hls: Arc<Hls>, entry: Arc<Entry>, mut sub: Subscriber) {
+    let grace = hls.cfg.reconnect_grace;
+    loop {
+        pump(&entry, &mut sub, !grace.is_zero()).await;
+        drop(sub);
+        let next = if grace.is_zero() { None } else { entry.successor(tokio::time::Instant::now() + grace).await };
+        match next {
+            Some(next) => {
+                tracing::info!(stream = %next.stream().name(), "ll-hls packager resumed after a publisher reconnect");
+                *entry.stream.lock().unwrap_or_else(|e| e.into_inner()) = next.stream().clone();
+                entry.pkg().resume();
+                entry.tick.send_modify(|v| *v = v.wrapping_add(1));
+                sub = next;
+            }
+            None => {
+                entry.pkg().end();
+                entry.tick.send_modify(|v| *v = v.wrapping_add(1));
+                break;
+            }
+        }
+    }
+    tokio::time::sleep(LINGER).await;
+    let name = entry.stream().name().to_owned();
+    let mut map = hls.streams();
+    if map.get(&name).is_some_and(|e| Arc::ptr_eq(e, &entry)) {
+        map.remove(&name);
+    }
+}
+
+/// Feeds one publish into the packager until it ends. With `keep_open`, the
+/// end only suspends the playlist; the caller decides whether it ends.
+async fn pump(entry: &Entry, sub: &mut Subscriber, keep_open: bool) {
     loop {
         let ev = sub.recv().await;
         let changed = {
@@ -218,26 +326,21 @@ async fn run(hls: Arc<Hls>, entry: Arc<Entry>, mut sub: Subscriber) {
                 }
                 Event::Frame(f) => pkg.push(f, SystemTime::now()),
                 Event::Lagged { skipped } => {
-                    tracing::warn!(stream = %entry.stream.name(), skipped, "ll-hls packager lagged");
+                    tracing::warn!(stream = %sub.stream().name(), skipped, "ll-hls packager lagged");
                     pkg.lagged();
                 }
                 Event::Cue(cue) => pkg.push_cue(cue),
+                Event::End if keep_open => pkg.suspend(),
                 Event::End => pkg.end(),
             }
-            pkg.ended || before != (pkg.last_part(), pkg.segments.len(), pkg.init.is_some())
+            pkg.ended || pkg.suspended || before != (pkg.last_part(), pkg.segments.len(), pkg.init.is_some())
         };
         if changed {
             entry.tick.send_modify(|v| *v = v.wrapping_add(1));
         }
         if ev == Event::End {
-            break;
+            return;
         }
-    }
-    drop(sub);
-    tokio::time::sleep(LINGER).await;
-    let mut map = hls.streams();
-    if map.get(entry.stream.name()).is_some_and(|e| Arc::ptr_eq(e, &entry)) {
-        map.remove(entry.stream.name());
     }
 }
 
@@ -289,8 +392,16 @@ async fn hls_file(
         "index.m3u8" => playlist(&hls, &name, &entry, query, token).await,
         "master.m3u8" => master(&hls, &entry, &name, token).await,
         "init.mp4" => {
+            // The first init segment while it is still listed; otherwise
+            // the current one.
             let wait = entry.block_timeout();
-            match entry.wait(wait, |p| p.init.clone()).await {
+            match entry.wait(wait, |p| p.init_for(0).or_else(|| p.init.clone())).await {
+                Some(init) => respond(StatusCode::OK, "video/mp4", "no-cache", init),
+                None => error(StatusCode::NOT_FOUND),
+            }
+        }
+        other if parse_init_name(other).is_some() => {
+            match parse_init_name(other).and_then(|g| entry.pkg().init_for(g)) {
                 Some(init) => respond(StatusCode::OK, "video/mp4", "no-cache", init),
                 None => error(StatusCode::NOT_FOUND),
             }
@@ -300,6 +411,15 @@ async fn hls_file(
             None => error(StatusCode::NOT_FOUND),
         },
     }
+}
+
+/// `init{gen}.m4s` (a later init segment, `gen` ≥ 1) → `gen`.
+fn parse_init_name(file: &str) -> Option<u32> {
+    let g = file.strip_prefix("init")?.strip_suffix(".mp4")?;
+    if g.is_empty() || !g.bytes().all(|b| b.is_ascii_digit()) || g.starts_with('0') {
+        return None;
+    }
+    g.parse().ok()
 }
 
 /// `s{msn}.m4s` → `(msn, None)`, `s{msn}.p{part}.m4s` → `(msn, Some(part))`.

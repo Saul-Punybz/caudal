@@ -31,6 +31,9 @@ struct Pending {
 struct Shared {
     publisher: Publisher,
     pending: Mutex<Pending>,
+    /// One clock for the whole stream: audio, video and data messages share
+    /// RTMP's timestamp domain.
+    clock: Mutex<demux::RtmpClock>,
 }
 
 impl Shared {
@@ -192,7 +195,8 @@ impl SessionHandler for Handler {
 
         match self.registry.publish(stream_name, self.buffer) {
             Ok(publisher) => {
-                let shared = Arc::new(Shared { publisher, pending: Mutex::new(Pending::default()) });
+                let shared =
+                    Arc::new(Shared { publisher, pending: Mutex::new(Pending::default()), clock: Mutex::default() });
                 spawn_announce_deadline(&shared);
                 self.streams.insert(stream_id, shared);
                 Ok(())
@@ -221,23 +225,25 @@ impl SessionHandler for Handler {
         };
 
         match data {
-            SessionData::Video { timestamp, data } => match demux::demux_video(timestamp, data) {
-                Some(VideoEvent::Init(info)) => shared.update_video(info),
-                Some(VideoEvent::Frame(frame)) => {
-                    // Frames that arrive before tracks are announced are
-                    // rejected by the buffer as UnknownTrack; that is the
-                    // intended drop behavior, not an error worth logging loudly.
-                    if let Err(err) = shared.publisher.push(frame) {
-                        tracing::trace!(%err, "dropped video frame");
+            SessionData::Video { timestamp, data } => {
+                match demux::demux_video(shared.clock.lock().extend(timestamp), data) {
+                    Some(VideoEvent::Init(info)) => shared.update_video(info),
+                    Some(VideoEvent::Frame(frame)) => {
+                        // Frames that arrive before tracks are announced are
+                        // rejected by the buffer as UnknownTrack; that is the
+                        // intended drop behavior, not an error worth logging loudly.
+                        if let Err(err) = shared.publisher.push(frame) {
+                            tracing::trace!(%err, "dropped video frame");
+                        }
                     }
+                    None => {}
                 }
-                None => {}
-            },
+            }
             SessionData::Audio { timestamp, data } => match demux::demux_audio(data) {
                 Some(AudioEvent::Init(info)) => shared.update_audio(info),
                 Some(AudioEvent::Frame(raw)) => {
                     if let Some(sample_rate) = shared.audio_sample_rate() {
-                        let ts = i64::from(timestamp) * i64::from(sample_rate) / 1000;
+                        let ts = shared.clock.lock().extend(timestamp) * i64::from(sample_rate) / 1000;
                         let frame = Frame { track: TrackId(1), dts: ts, pts: ts, keyframe: true, data: raw };
                         if let Err(err) = shared.publisher.push(frame) {
                             tracing::trace!(%err, "dropped audio frame");
@@ -249,7 +255,9 @@ impl SessionHandler for Handler {
             SessionData::Amf0 { timestamp, data } => {
                 // The event id only has to be unique per stream; the
                 // message timestamp is.
-                if let Some(cue) = demux::parse_cue_point(timestamp, data.clone(), timestamp) {
+                if let Some(cue) =
+                    demux::parse_cue_point(shared.clock.lock().extend(timestamp), data.clone(), timestamp)
+                {
                     tracing::debug!(at_us = cue.at_us, kind = cue.kind.as_str(), "rtmp scte-35 cue in");
                     if let Err(err) = shared.publisher.push_cue(cue) {
                         tracing::trace!(%err, "dropped cue");

@@ -253,7 +253,13 @@ impl Publisher {
 impl Drop for Publisher {
     fn drop(&mut self) {
         // Kill the whole process group (the SRT pipeline has two processes).
-        let _ = Command::new("kill").args(["-TERM", &format!("-{}", self.child.id())]).status();
+        // SIGKILL, not SIGTERM: srt-live-transmit outlived SIGTERM and kept
+        // the test's stderr open (nextest reported the test as leaky).
+        // A direct killpg: Linux procps `/bin/kill -KILL -<pgid>` signals
+        // every process of the user (it killed the GitHub runner).
+        if let Some(pid) = rustix::process::Pid::from_raw(self.child.id() as i32) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

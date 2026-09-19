@@ -124,7 +124,12 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
 
     let hls_router = caudal_hls::router(
         registry.clone(),
-        caudal_hls::HlsConfig { part_ms: cfg.hls.part_ms, segment_ms: cfg.hls.segment_ms, cue_tags: cfg.hls.cue_tags },
+        caudal_hls::HlsConfig {
+            part_ms: cfg.hls.part_ms,
+            segment_ms: cfg.hls.segment_ms,
+            cue_tags: cfg.hls.cue_tags,
+            cue_out_tags: cfg.hls.cue_out_tags,
+        },
     );
 
     let state = api::AppState::new(registry.clone());

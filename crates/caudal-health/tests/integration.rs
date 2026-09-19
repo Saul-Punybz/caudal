@@ -51,22 +51,30 @@ async fn spawn_receiver() -> (String, Captured) {
     (format!("http://{addr}/hook"), state)
 }
 
-// A generous bound, not a tight one: this machine runs several agents'
-// builds concurrently (see the batch brief), and a starved single-threaded
-// runtime can lose many real seconds before the scheduler gets back to it.
-// The rule thresholds below (1s) are what is actually under test; this
-// timeout only guards against the delivery genuinely never happening.
+// The rule thresholds below (1s) are what is under test; this timeout only
+// guards against a delivery that never happens. It was 90 s, blamed on load;
+// the real cause was a lost wake-up in this helper (fixed below).
 async fn wait_for(state: &Captured, n: usize) {
-    tokio::time::timeout(Duration::from_secs(90), async {
+    tokio::time::timeout(Duration::from_secs(20), async {
         loop {
+            // Register before checking: `notify_waiters` only wakes waiters
+            // that already exist, so checking first and then waiting lost
+            // any delivery that landed in between (CI hung to the timeout).
+            let notified = state.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if state.count.load(Ordering::SeqCst) >= n {
                 return;
             }
-            state.notify.notified().await;
+            notified.await;
         }
     })
     .await
-    .expect("webhook(s) not delivered in time");
+    .unwrap_or_else(|_| {
+        let got = state.count.load(Ordering::SeqCst);
+        let events = state.events.lock().unwrap().clone();
+        panic!("webhook(s) not delivered in time: wanted {n}, got {got}: {events:?}")
+    });
 }
 
 fn video_track() -> TrackInfo {
@@ -112,16 +120,25 @@ async fn no_keyframe_alert_then_resolved_with_valid_signatures() {
     // (1s) elapses and the watcher's 1s tick must fire exactly one alert.
     wait_for(&captured, 1).await;
 
-    // Recovery: send keyframes fast enough (well under 1s apart) to clear
-    // it, held for min_hold (1s) -> exactly one resolved.
-    for i in 1..=6i64 {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let ts = i * 18_000; // 200ms at 90kHz
-        publisher
-            .push(Frame { track: TrackId(0), dts: ts, pts: ts, keyframe: true, data: Default::default() })
-            .unwrap();
+    // Recovery: keyframes well under 1s apart, kept up (as a recovered
+    // encoder does) until the resolved event arrives -> exactly one
+    // resolved. Stopping after 1.2 s used to make the stream unhealthy again
+    // one second later, so resolving depended on where the 1 s ticks fell
+    // (failed 2 runs in 5).
+    let recovering = async {
+        let mut ts = 0i64;
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            ts += 18_000; // 200ms at 90kHz
+            publisher
+                .push(Frame { track: TrackId(0), dts: ts, pts: ts, keyframe: true, data: Default::default() })
+                .unwrap();
+        }
+    };
+    tokio::select! {
+        _ = recovering => unreachable!(),
+        _ = wait_for(&captured, 2) => {}
     }
-    wait_for(&captured, 2).await;
 
     // Give any spurious extra delivery a moment to arrive, then check the
     // count stayed at exactly 2 (hysteresis: no flapping).

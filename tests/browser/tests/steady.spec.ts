@@ -112,7 +112,13 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
     // Force play if needed.
     const isMuted = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).muted);
     if (!isMuted) {
-      throw new Error("play.html's <video> is not muted; expected muted autoplay per the brief");
+      // Seen only on Linux WebKit in CI (passes on macOS WebKit): record what
+      // the element says so the next failure explains itself.
+      const why = await page.evaluate(() => {
+        const v = document.getElementById("v") as HTMLVideoElement;
+        return `defaultMuted=${v.defaultMuted} attr=${v.hasAttribute("muted")} volume=${v.volume} paused=${v.paused} src=${v.currentSrc.slice(0, 40)} ua=${navigator.userAgent}`;
+      });
+      throw new Error(`play.html's <video> is not muted; expected muted autoplay per the brief (${why})`);
     }
     const isPaused = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).paused);
     if (isPaused) {

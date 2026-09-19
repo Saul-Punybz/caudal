@@ -36,6 +36,7 @@ clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [dev-dependencies]
+rustix.workspace = true
 ureq = { version = "3", default-features = false }
 tempfile = "3"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }

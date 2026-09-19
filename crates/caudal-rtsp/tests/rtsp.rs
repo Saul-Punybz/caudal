@@ -156,7 +156,7 @@ struct GuardedChild(Child);
 impl Drop for GuardedChild {
     fn drop(&mut self) {
         let pgid = self.0.id();
-        let _ = Command::new("kill").args(["-KILL", &format!("-{pgid}")]).status();
+        kill_group(pgid);
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -529,4 +529,13 @@ async fn idle_session_times_out_and_frees_the_udp_port() {
     assert!(freed.is_some(), "udp port {allocated} was not freed after the idle timeout");
 
     source.kill();
+}
+
+/// SIGKILL to a whole process group. Never via `/bin/kill -KILL -<pgid>`:
+/// Linux procps reads that as "every process of this user" (it killed the
+/// GitHub runner mid-test).
+fn kill_group(pgid: u32) {
+    if let Some(pid) = rustix::process::Pid::from_raw(pgid as i32) {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
 }

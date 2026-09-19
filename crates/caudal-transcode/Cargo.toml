@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rustix.workspace = true
 arc-swap.workspace = true
 caudal-core.workspace = true
 caudal-ts.workspace = true

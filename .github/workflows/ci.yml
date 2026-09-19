@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push to the same branch cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -15,11 +20,51 @@ jobs:
         with:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get install -y ffmpeg
+      # ffmpeg 8 (Ubuntu's apt has 6, without the WHIP muxer) and libsrt's
+      # srt-live-transmit, so the interop tests run instead of printing SKIP.
+      - name: Install ffmpeg 8 and srt-tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y srt-tools
+          curl -fsSL -o /tmp/ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+          sudo tar -xJf /tmp/ffmpeg.tar.xz -C /opt
+          echo "/opt/ffmpeg-n8.1-latest-linux64-gpl-8.1/bin" >> "$GITHUB_PATH"
+      - run: ffmpeg -hide_banner -muxers | grep -i whip && srt-live-transmit -version 2>&1 | head -1
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: CAUDAL_E2E=1 cargo test -p caudal --test e2e -- --test-threads=1
+      # --no-fail-fast: one failing crate used to hide every crate after it
+      # (and the e2e step) for a whole day. Every caudal integration test
+      # file runs with CAUDAL_E2E=1 (e2e, reload, admin_cli), not just e2e.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # nextest: every test gets a timeout (a hang is killed and named, see
+      # .config/nextest.toml), no stopping at the first failing crate, and
+      # each test in its own process. Every caudal integration test file runs
+      # with CAUDAL_E2E=1 (e2e, reload, admin_cli), not just e2e.
+      - name: Tests (all crates, never stop at the first failure)
+        timeout-minutes: 40
+        env:
+          CAUDAL_E2E: "1"
+        run: |
+          set -o pipefail
+          status=0
+          cargo nextest run --profile ci --workspace --exclude caudal 2>&1 | tee test.log || status=1
+          # The caudal binary's tests drive real servers: one at a time.
+          cargo nextest run --profile ci -p caudal --test-threads 1 2>&1 | tee -a test.log || status=1
+          cargo test --workspace --doc 2>&1 | tee -a test.log || status=1
+          exit $status
+      # A test that prints SKIP passed without testing anything. Only the
+      # Apple validator is allowed to be missing on Linux (macOS-only tool;
+      # the validate-hls job requires it).
+      - name: No unexpected SKIPs
+        if: always()
+        run: |
+          grep -oE "SKIP[^\"]*" test.log | sort | uniq -c > skips.txt || true
+          { echo "### Skipped tests"; echo '```'; cat skips.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -v "mediastreamvalidator" skips.txt | grep -q .; then
+            echo "::error title=Tests skipped::$(grep -v mediastreamvalidator skips.txt | tr '\n' ' ')"
+            exit 1
+          fi
 
   deny:
     runs-on: ubuntu-latest

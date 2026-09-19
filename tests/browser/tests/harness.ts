@@ -135,7 +135,11 @@ export async function startCaudal(opts?: { tls?: boolean }): Promise<CaudalServe
     `bind = "127.0.0.1:${srtPort}"`,
     "",
     "[webrtc]",
-    `udp_bind = "127.0.0.1:${webrtcPort}"`,
+    // All interfaces, not loopback: Firefox never gathers a 127.0.0.1 ICE
+    // candidate (not even with media.peerconnection.ice.loopback), so with
+    // a loopback-only server it has no candidate pair and ICE fails. Caudal
+    // then advertises the machine's interface addresses, as in production.
+    `udp_bind = "0.0.0.0:${webrtcPort}"`,
     "",
     "[moq]",
     `bind = "127.0.0.1:${moqPort}"`,

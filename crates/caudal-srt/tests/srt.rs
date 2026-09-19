@@ -161,7 +161,7 @@ impl Pipeline {
 impl Drop for Pipeline {
     fn drop(&mut self) {
         let pgid = self.child.id();
-        let _ = Command::new("kill").args(["-KILL", &format!("-{pgid}")]).status();
+        kill_group(pgid);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -193,7 +193,7 @@ impl Guarded {
 impl Drop for Guarded {
     fn drop(&mut self) {
         let pgid = self.child.id();
-        let _ = Command::new("kill").args(["-KILL", &format!("-{pgid}")]).status();
+        kill_group(pgid);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -301,7 +301,7 @@ async fn h264_aac_publish_end_to_end() {
         let hls_port = hls_listener.local_addr().unwrap().port();
         let router = caudal_hls::router(
             server.registry.clone(),
-            caudal_hls::HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true },
+            caudal_hls::HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false },
         );
         tokio::spawn(async move {
             let _ = axum::serve(hls_listener, router).await;
@@ -532,4 +532,13 @@ async fn push_sends_a_live_stream_to_a_remote_listener() {
     assert!(stdout.contains("aac"), "no aac in the pushed output: {stdout}");
 
     let _ = std::fs::remove_file(&out_path);
+}
+
+/// SIGKILL to a whole process group. Never via `/bin/kill -KILL -<pgid>`:
+/// Linux procps reads that as "every process of this user" (it killed the
+/// GitHub runner mid-test).
+fn kill_group(pgid: u32) {
+    if let Some(pid) = rustix::process::Pid::from_raw(pgid as i32) {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
 }

@@ -31,6 +31,8 @@ pub struct AppState {
     /// `caudal_access_denied_total`. Always present: `subsystems::Supervisor`
     /// creates a `caudal_access::Checker` even with no `[[access.rules]]`.
     access: std::sync::OnceLock<Arc<caudal_access::Checker>>,
+    /// Set once on a cluster edge; `/metrics` appends its pull metrics.
+    edge: std::sync::OnceLock<caudal_cluster::Edge>,
 }
 
 impl AppState {
@@ -41,6 +43,7 @@ impl AppState {
             cue_seq: AtomicU32::new(1),
             health: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
+            edge: std::sync::OnceLock::new(),
         })
     }
 
@@ -58,6 +61,10 @@ impl AppState {
 
     pub fn set_access(&self, checker: Arc<caudal_access::Checker>) {
         let _ = self.access.set(checker);
+    }
+
+    pub fn set_edge(&self, edge: caudal_cluster::Edge) {
+        let _ = self.edge.set(edge);
     }
 }
 
@@ -230,11 +237,14 @@ async fn post_cue(State(state): State<Arc<AppState>>, Path(name): Path<String>, 
 }
 
 async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let body = metrics::render(
+    let mut body = metrics::render(
         &state.registry,
         state.health.get().map(|h| h.as_ref()),
         state.access.get().map(|a| a.as_ref()),
     );
+    if let Some(edge) = state.edge.get() {
+        edge.render_metrics(&mut body);
+    }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 

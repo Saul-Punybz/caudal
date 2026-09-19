@@ -39,6 +39,12 @@ export default defineConfig({
       // Firefox plays through hls.js like Chromium, but on its own media
       // stack (MSE + its own decoders), so it catches different bugs.
       name: "firefox",
+      // One retry in CI only. Firefox (last project, software-decoding 720p
+      // through hls.js) stalled on LL-HLS in 3 of ~10 CI runs while the
+      // 4-core runner's load was 3-4; no leftover processes (harness load
+      // log, 19 Sep 2026), Chromium and WebKit never. A retried pass is
+      // still reported as "flaky", so it stays visible.
+      retries: process.env.CI ? 1 : 0,
       use: {
         ...devices["Desktop Firefox"],
         launchOptions: {

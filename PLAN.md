@@ -99,7 +99,7 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [x] **M7: Auth + TLS.** JWT/JWKS, webhooks, ACME (ACME untested against a real CA; Safari over h2 pending a trusted local cert).
 - [x] **M8: Recording and VOD.** (batch 6; S3/GCS upload untested against real buckets) MP4 to disk, DVR window, MP4/TS/MKV file inputs.
 - [ ] **M9: RTSP** pull (retina) and server.
-- [ ] **M10: Clustering.** Origin-edge.
+- [x] **M10: Clustering.** Origin-edge: an edge pulls a stream from its origins over MoQ on the first viewer (any protocol), shares one pull, stops when idle, and fails over between origins without restarting its viewers (`caudal-cluster`, `docs/research/CLUSTER.md`). Our own MoQ client, not `moq-relay`: a pulled stream has to land in the edge's registry so LL-HLS/WHEP/RTSP/SRT serve it.
 - [x] **M11: Transcoding.** Ladders as `<name>+<label>` via external ffmpeg (default) or in-process rusty_h264 (works; 2–3x the CPU of x264, ~4.7 dB lower PSNR at the same bitrate, batch 7).
 - [ ] **M13: 24/7 channels from files** (decided by Saul, 18 Sep 2026: Caudal includes playout, all in Rust, no concern about overlapping ANTENA787). Playlists and schedules of MP4/TS/MKV files published as a continuous live stream, with transitions on keyframes and timestamp stitching; normalization through the transcoder when files differ.
 - [ ] **M12: Open Media Transport (OMT), the open NDI alternative.** Pure-Rust port of the MIT reference (libomtnet C#, ~10.6K lines) and the VMX codec (libvmx C, ~23.5K lines incl. SIMD), mDNS discovery with `mdns-sd`. First native Rust OMT. Send and receive, so Caudal can take in and put out LAN video for live production.

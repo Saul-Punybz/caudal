@@ -582,6 +582,7 @@ dependencies = [
  "caudal-admin",
  "caudal-auth",
  "caudal-channel",
+ "caudal-cluster",
  "caudal-core",
  "caudal-failover",
  "caudal-health",
@@ -699,6 +700,29 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "caudal-cluster"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-core",
+ "caudal-moq",
+ "hang",
+ "jsonwebtoken",
+ "moq-native",
+ "moq-net",
+ "mp4-atom",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

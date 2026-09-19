@@ -43,6 +43,7 @@ caudal-scte35 = { path = "crates/caudal-scte35", version = "0.1.0" }
 caudal-admin = { path = "crates/caudal-admin", version = "0.1.0" }
 caudal-health = { path = "crates/caudal-health", version = "0.1.0" }
 caudal-access = { path = "crates/caudal-access", version = "0.1.0" }
+caudal-cluster = { path = "crates/caudal-cluster", version = "0.1.0" }
 caudal-failover = { path = "crates/caudal-failover", version = "0.1.0" }
 
 # argon2 unoptimized takes seconds per hash, which makes debug tests crawl.

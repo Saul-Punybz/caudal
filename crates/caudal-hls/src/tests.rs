@@ -16,7 +16,7 @@ use tower::ServiceExt;
 use super::*;
 use mp4demux::{Demuxed, demux};
 
-const CFG: HlsConfig = HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true };
+const CFG: HlsConfig = HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false };
 
 fn fixture() -> Demuxed {
     demux(include_bytes!("../tests/fixtures/av.mp4"))
@@ -639,6 +639,27 @@ fn cues_become_dateranges_dated_from_their_segment() {
         &[(4_500_000, out.clone()), (7_250_000, inn.clone())],
     );
     assert!(!off.playlist().contains("DATERANGE"));
+}
+
+#[test]
+fn legacy_cue_out_tags_mark_the_break() {
+    use caudal_core::CueKind;
+    let out = cue(4_500_000, CueKind::Out { duration_us: Some(30_000_000) });
+    let inn = cue(7_250_000, CueKind::In);
+    let cfg = HlsConfig { cue_tags: false, cue_out_tags: true, ..CFG };
+    let pl = packager_with(cfg, 0..3, &[(4_500_000, out), (7_250_000, inn)]).playlist();
+
+    // s2 starts at 4 s (the break starts inside it), s3 at 6 s (inside the
+    // break, which ends at 7.25 s): CONT first, then the splice-in.
+    assert!(pl.contains("#EXT-X-PROGRAM-DATE-TIME:1970-01-01T00:16:44.000Z\n#EXT-X-CUE-OUT:DURATION=30.000\n"), "{pl}");
+    assert!(
+        pl.contains(
+            "#EXT-X-PROGRAM-DATE-TIME:1970-01-01T00:16:46.000Z\n#EXT-X-CUE-OUT-CONT:ElapsedTime=1.500,Duration=30.000\n#EXT-X-CUE-IN\n"
+        ),
+        "{pl}"
+    );
+    assert_eq!(pl.matches("#EXT-X-CUE-OUT-CONT").count(), 1, "only s3 is inside the break:\n{pl}");
+    assert!(!pl.contains("DATERANGE"), "cue_tags off:\n{pl}");
 }
 
 #[test]

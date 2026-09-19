@@ -108,11 +108,14 @@ pub struct HlsSection {
     /// SCTE-35 cues as `EXT-X-DATERANGE` in the media playlists.
     #[serde(default = "default_true")]
     pub cue_tags: bool,
+    /// Legacy `EXT-X-CUE-OUT` / `-CONT` / `EXT-X-CUE-IN` for SSAI vendors.
+    #[serde(default)]
+    pub cue_out_tags: bool,
 }
 
 impl Default for HlsSection {
     fn default() -> Self {
-        Self { part_ms: default_part_ms(), segment_ms: default_segment_ms(), cue_tags: true }
+        Self { part_ms: default_part_ms(), segment_ms: default_segment_ms(), cue_tags: true, cue_out_tags: false }
     }
 }
 
@@ -800,6 +803,9 @@ mod tests {
         assert!(cfg.hls.cue_tags, "cue tags default on");
         let cfg: Config = toml::from_str("[hls]\ncue_tags = false\n").unwrap();
         assert!(!cfg.hls.cue_tags);
+        assert!(!cfg.hls.cue_out_tags, "legacy cue tags default off");
+        let cfg: Config = toml::from_str("[hls]\ncue_out_tags = true\n").unwrap();
+        assert!(cfg.hls.cue_out_tags);
     }
 
     #[test]

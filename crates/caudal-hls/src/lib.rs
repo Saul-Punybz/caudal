@@ -36,6 +36,10 @@ pub struct HlsConfig {
     pub segment_ms: u32,
     /// Write SCTE-35 cues as `EXT-X-DATERANGE` (`SCTE35-OUT`/`IN`/`CMD`).
     pub cue_tags: bool,
+    /// Also write the legacy `EXT-X-CUE-OUT` / `EXT-X-CUE-OUT-CONT` /
+    /// `EXT-X-CUE-IN` tags many SSAI vendors still key on. Off by default:
+    /// they are not in RFC 8216.
+    pub cue_out_tags: bool,
 }
 
 /// A player that has not asked for a playlist in this long has left. LL-HLS
@@ -59,6 +63,7 @@ pub fn router(registry: Arc<Registry>, cfg: HlsConfig) -> axum::Router {
         part_ms: cfg.part_ms.max(10),
         segment_ms: cfg.segment_ms.max(cfg.part_ms.max(10)),
         cue_tags: cfg.cue_tags,
+        cue_out_tags: cfg.cue_out_tags,
     };
     let hls = Arc::new(Hls { registry: registry.clone(), cfg, streams: Mutex::default() });
     match Handle::try_current() {

@@ -159,6 +159,24 @@ pub(crate) struct Packager {
     /// The splice-out still waiting for its splice-in, which reuses its ID.
     open_out: Option<OpenOut>,
     cue_seq: u64,
+    /// Ad breaks for the legacy `EXT-X-CUE-OUT-CONT` lines (only with
+    /// `cue_out_tags`), oldest first.
+    breaks: VecDeque<Break>,
+}
+
+/// One ad break, for writing `EXT-X-CUE-OUT-CONT` on the segments inside it.
+struct Break {
+    out_us: i64,
+    planned_us: Option<i64>,
+    in_us: Option<i64>,
+}
+
+impl Break {
+    /// Ends at its splice-in; without one, when its planned duration runs
+    /// out; with neither, it stays open until the next init or splice-in.
+    fn end_us(&self) -> i64 {
+        self.in_us.unwrap_or_else(|| self.planned_us.map_or(i64::MAX, |d| self.out_us + d))
+    }
 }
 
 /// One `EXT-X-DATERANGE` line. The text is fixed when the cue arrives:
@@ -216,6 +234,7 @@ impl Packager {
             resolution: None,
             frame_rate: None,
             dateranges: VecDeque::new(),
+            breaks: VecDeque::new(),
             early_cues: Vec::new(),
             open_out: None,
             cue_seq: 0,
@@ -228,7 +247,7 @@ impl Packager {
     /// anything else gets `SCTE35-CMD`. `START-DATE` is the wall clock of
     /// the segment the cue falls in, plus the cue's media offset into it.
     pub fn push_cue(&mut self, cue: &Cue) {
-        if !self.cfg.cue_tags || self.ended {
+        if (!self.cfg.cue_tags && !self.cfg.cue_out_tags) || self.ended {
             return;
         }
         let anchor = self.segments.iter().rev().find(|s| s.start_us <= cue.at_us).or(self.segments.front());
@@ -276,8 +295,43 @@ impl Packager {
                 (format!("#EXT-X-DATERANGE:ID=\"{id}\",START-DATE=\"{date}\",SCTE35-CMD={hex}"), cue.at_us)
             }
         };
-        self.dateranges.push_back(DateRange { at_us: cue.at_us, end_us, line });
+        if self.cfg.cue_tags {
+            self.dateranges.push_back(DateRange { at_us: cue.at_us, end_us, line });
+        }
+        if self.cfg.cue_out_tags {
+            self.push_legacy_cue(cue);
+        }
         self.prune_dateranges();
+    }
+
+    /// Legacy tags, placed like the DATERANGE lines (after the PDT of the
+    /// segment the cue falls in): `EXT-X-CUE-OUT[:DURATION=s]` at a
+    /// splice-out, `EXT-X-CUE-IN` at the splice-in. The segments in between
+    /// get `EXT-X-CUE-OUT-CONT` when the playlist is written.
+    fn push_legacy_cue(&mut self, cue: &Cue) {
+        match cue.kind {
+            CueKind::Out { duration_us } => {
+                let planned_us = duration_us.filter(|d| *d > 0);
+                let line = match planned_us {
+                    Some(d) => format!("#EXT-X-CUE-OUT:DURATION={:.3}", d as f64 / 1e6),
+                    None => "#EXT-X-CUE-OUT".to_owned(),
+                };
+                let end_us = cue.at_us + planned_us.unwrap_or(0);
+                self.dateranges.push_back(DateRange { at_us: cue.at_us, end_us, line });
+                self.breaks.push_back(Break { out_us: cue.at_us, planned_us, in_us: None });
+            }
+            CueKind::In => {
+                self.dateranges.push_back(DateRange {
+                    at_us: cue.at_us,
+                    end_us: cue.at_us,
+                    line: "#EXT-X-CUE-IN".to_owned(),
+                });
+                if let Some(b) = self.breaks.back_mut().filter(|b| b.in_us.is_none()) {
+                    b.in_us = Some(cue.at_us);
+                }
+            }
+            CueKind::Other => {}
+        }
     }
 
     fn next_cue_id(&mut self) -> String {
@@ -289,6 +343,7 @@ impl Packager {
     fn prune_dateranges(&mut self) {
         let Some(first) = self.segments.front().map(|s| s.start_us) else { return };
         self.dateranges.retain(|d| d.at_us.max(d.end_us) >= first);
+        self.breaks.retain(|b| b.end_us() >= first);
     }
 
     pub fn part_target(&self) -> f64 {
@@ -335,6 +390,7 @@ impl Packager {
         let had_output = !self.segments.is_empty();
         self.segments.clear();
         self.dateranges.clear();
+        self.breaks.clear();
         self.open_out = None;
         self.discontinuity_next = had_output;
         self.resume_from = None;
@@ -661,6 +717,20 @@ impl Packager {
             let _ = writeln!(o, "#EXT-X-PROGRAM-DATE-TIME:{}", rfc3339(seg.pdt));
             let from = if k == 0 { i64::MIN } else { seg.start_us };
             let until = listed.get(k + 1).map_or(i64::MAX, |&j| self.segments[j].start_us);
+            // A segment that starts inside an ad break (after its CUE-OUT,
+            // before its CUE-IN) carries the legacy continuation tag.
+            if let Some(b) = self.breaks.iter().find(|b| b.out_us < seg.start_us && seg.start_us < b.end_us()) {
+                let elapsed = (seg.start_us - b.out_us) as f64 / 1e6;
+                match b.planned_us {
+                    Some(d) => {
+                        let _ =
+                            writeln!(o, "#EXT-X-CUE-OUT-CONT:ElapsedTime={elapsed:.3},Duration={:.3}", d as f64 / 1e6);
+                    }
+                    None => {
+                        let _ = writeln!(o, "#EXT-X-CUE-OUT-CONT:ElapsedTime={elapsed:.3}");
+                    }
+                }
+            }
             for d in self.dateranges.iter().filter(|d| (from..until).contains(&d.at_us)) {
                 o.push_str(&d.line);
                 o.push('\n');

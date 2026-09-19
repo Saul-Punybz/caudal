@@ -22,6 +22,9 @@ on:
       servers:
         description: "Servers"
         default: "caudal,mediamtx"
+      profile:
+        description: "perf-record these fan-out cells, first rep only (e.g. rtsp:300); empty = off"
+        default: ""
 
 jobs:
   bench:
@@ -39,6 +42,18 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
           nproc; free -g; uname -a
+      - name: Profiler
+        if: inputs.profile != ''
+        run: |
+          sudo apt-get install -y "linux-tools-$(uname -r)" linux-tools-common \
+            || sudo apt-get install -y linux-tools-azure linux-tools-generic
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+          perf --version
+          cargo install inferno --locked --quiet
+          # Symbols for the profile; codegen is unchanged (same opt-level, LTO).
+          echo "CARGO_PROFILE_RELEASE_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
+          echo "BENCH_PROFILE=${{ inputs.profile }}" >> "$GITHUB_ENV"
       - name: Run
         run: |
           ulimit -n 65536 || true
@@ -46,6 +61,20 @@ jobs:
             --protos "${{ inputs.protos }}" --levels "${{ inputs.levels }}" \
             --servers "${{ inputs.servers }}" | tee bench-out.md
           cat bench-out.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Profile reports
+        if: always() && inputs.profile != ''
+        run: |
+          shopt -s nullglob
+          for d in bench/results/perf-*.data; do
+            b="${d%.data}"
+            perf report -i "$d" --stdio --no-children --percent-limit 0.5 > "$b.txt" 2>/dev/null || true
+            perf report -i "$d" --stdio --children --no-call-graph --percent-limit 1 > "$b.children.txt" 2>/dev/null || true
+            perf script -i "$d" 2>/dev/null | inferno-collapse-perf > "$b.folded" || true
+            inferno-flamegraph < "$b.folded" > "$b.svg" || true
+            { echo "### $(basename "$b") (self, top 25)"; echo '```';
+              grep -E '^ +[0-9]' "$b.txt" | head -25; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            rm -f "$d"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

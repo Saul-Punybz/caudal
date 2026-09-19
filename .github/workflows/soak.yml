@@ -12,6 +12,15 @@ on:
         default: "120"
   schedule:
     - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  # TEMPORARY, for PR #20 verification only: workflow_dispatch can't run
+  # until this file is on the default branch, so this branch also runs on
+  # push while the PR is open. PUSH_MINUTES below controls the length.
+  # Remove this trigger (and PUSH_MINUTES) before merging.
+  push:
+    branches: [test/soak]
+
+env:
+  PUSH_MINUTES: "30"
 
 jobs:
   soak:
@@ -27,8 +36,12 @@ jobs:
             bench/client
       - name: Resolve run length
         run: |
-          MINUTES="${{ inputs.minutes }}"
-          MINUTES="${MINUTES:-120}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            MINUTES="$PUSH_MINUTES"   # TEMPORARY, see the `push:` trigger above
+          else
+            MINUTES="${{ inputs.minutes }}"
+            MINUTES="${MINUTES:-120}"
+          fi
           if ! [[ "$MINUTES" =~ ^[0-9]+$ ]] || [ "$MINUTES" -lt 1 ] || [ "$MINUTES" -gt 330 ]; then
             echo "minutes must be an integer in 1..330, got '$MINUTES'" >&2
             exit 1

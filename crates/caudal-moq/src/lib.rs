@@ -10,8 +10,16 @@
 //!   clients, checks `?jwt=` against the registry's gate, and counts viewers.
 //! - [`cert`] generates and rotates the self-signed certificate browsers pin
 //!   through `serverCertificateHashes`.
+//!
+//! MoQ ingest (an encoder publishing in) is the mirror image: a session at
+//! `publish/<name>` (handled inside [`session`]) accepts an announce into a
+//! *second*, private origin, and [`ingest`] converts the resulting `hang`
+//! broadcast into a normal `caudal_core::Publisher`. From there it is a
+//! stream like any other, including being republished over MoQ output by
+//! [`publish`] like an RTMP or WHIP source would be.
 
 mod cert;
+mod ingest;
 mod publish;
 mod session;
 
@@ -23,7 +31,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use caudal_core::Registry;
+use caudal_core::{BufferConfig, Registry};
 
 #[derive(Debug, Clone)]
 pub enum MoqCert {
@@ -40,6 +48,9 @@ pub struct MoqConfig {
     /// UDP address for QUIC.
     pub bind: SocketAddr,
     pub cert: MoqCert,
+    /// Buffer config for streams ingested at `publish/<name>`, same as
+    /// every other ingest protocol's `[buffer]`.
+    pub buffer: BufferConfig,
 }
 
 /// The running MoQ output. The server, publishers and certificate rotation
@@ -136,9 +147,18 @@ pub fn start(registry: Arc<Registry>, cfg: MoqConfig) -> std::io::Result<MoqServ
     let origin = moq_net::Origin::random().produce();
     let stats = moq_net::stats::Registry::new(moq_net::stats::Config::new());
 
+    // A second, private origin for ingest (`publish/<name>`): an encoder's
+    // announce lands here, never in the tree `session`'s viewer flow reads
+    // from, so a broadcast being converted is never itself reachable by a
+    // MoQ viewer — only the `caudal_core::Stream` `ingest::run` converts it
+    // into is, through the normal `publish::spawn_all` path above.
+    let ingest_origin = moq_net::Origin::random().produce();
+    let ingest =
+        session::Ingest { origin: ingest_origin.clone(), consumer: ingest_origin.consume(), buffer: cfg.buffer };
+
     publish::spawn_all(registry.clone(), origin.clone());
     session::spawn_viewer_counts(registry.clone(), stats.clone());
-    session::spawn_accept(server, registry, origin, stats);
+    session::spawn_accept(server, registry, origin, stats, ingest);
 
     let pinned = rotation.map(|r| {
         r.spawn_rotation();
@@ -181,6 +201,7 @@ mod tests {
             MoqConfig {
                 bind: "127.0.0.1:0".parse().unwrap(),
                 cert: MoqCert::SelfSigned { hosts: vec!["caudal.test".into(), "127.0.0.1".into()] },
+                buffer: BufferConfig::default(),
             },
         )
         .unwrap();
@@ -209,7 +230,11 @@ mod tests {
         std::fs::write(&key, &generated.key_pem).unwrap();
         let svc = start(
             Registry::new(),
-            MoqConfig { bind: "127.0.0.1:0".parse().unwrap(), cert: MoqCert::Files { cert, key } },
+            MoqConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                cert: MoqCert::Files { cert, key },
+                buffer: BufferConfig::default(),
+            },
         )
         .unwrap();
         let (_, v) = get_json(&svc, Some("media.example.org")).await;
@@ -224,6 +249,7 @@ mod tests {
             MoqConfig {
                 bind: "127.0.0.1:0".parse().unwrap(),
                 cert: MoqCert::Files { cert: "/nonexistent/c.pem".into(), key: "/nonexistent/k.pem".into() },
+                buffer: BufferConfig::default(),
             },
         );
         assert!(r.is_err());

@@ -25,6 +25,12 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "tls1
 url = "2"
 parking_lot.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
+# Recording schedules ([[record.schedule]]): jiff for instants/time zones
+# (bundles the IANA tzdb, so `tz = "..."` resolves the same on every host
+# regardless of the system's own zoneinfo — see schedule.rs), croner for
+# cron parsing (pure Rust, native jiff backend, no glue code between them).
+jiff = "0.2"
+croner = { version = "4", default-features = false, features = ["jiff"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

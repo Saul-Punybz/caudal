@@ -13,6 +13,16 @@
 //!   start later. A narrower token sees the streams it may play that are
 //!   live when it connects; for a stream that starts later, connect with
 //!   the `/<stream>` path.
+//! - `https://host:port/publish/<stream>?jwt=…`: ingest, not playback.
+//!   `authorize(Publish, stream, token)`; the session then accepts only an
+//!   announce for `<stream>` (via a producer scoped/rebased with
+//!   [`moq_net::origin::Producer::with_root`]), which [`crate::ingest::run`]
+//!   picks up and converts into a normal `caudal_core` publish. This is a
+//!   separate, private `moq_net::Origin` from the one that serves viewers
+//!   (`ingest.consumer`/`ingest.origin` below): a broadcast an encoder
+//!   announces here is never itself visible over MoQ playback, only the
+//!   `caudal_core::Stream` it gets converted into is (through the same
+//!   `publish::spawn_all` path any other ingest protocol's publish takes).
 //!
 //! Refusals close the session with Unauthorized, which players surface as
 //! an error instead of waiting.
@@ -20,7 +30,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use caudal_core::{Access, Denied, Registry};
+use caudal_core::{Access, BufferConfig, Denied, Registry};
+
+/// `publish/<name>` marks an ingest session; anything else is playback.
+const PUBLISH_PREFIX: &str = "publish/";
+
+/// What an ingest session needs: a producer to hand the encoder's session
+/// (scoped per connection with [`moq_net::origin::Producer::with_root`])
+/// and a consumer to watch for the resulting announce, both over one
+/// private origin distinct from the viewer-facing one, plus the buffer
+/// config new streams publish with.
+#[derive(Clone)]
+pub(crate) struct Ingest {
+    pub(crate) origin: moq_net::origin::Producer,
+    pub(crate) consumer: moq_net::origin::Consumer,
+    pub(crate) buffer: BufferConfig,
+}
 
 /// Accepts sessions until the server stops (Ctrl-C or a fatal listener
 /// error). Each session runs in its own task; a misbehaving client only
@@ -30,12 +55,13 @@ pub(crate) fn spawn_accept(
     registry: Arc<Registry>,
     origin: moq_net::origin::Producer,
     stats: moq_net::stats::Registry,
+    ingest: Ingest,
 ) {
     let tier = stats.tier(moq_net::stats::Tier::default());
     tokio::spawn(async move {
         while let Some(request) = server.accept().await {
-            let (registry, origin, tier) = (registry.clone(), origin.clone(), tier.clone());
-            tokio::spawn(async move { serve(request, registry, origin, tier).await });
+            let (registry, origin, tier, ingest) = (registry.clone(), origin.clone(), tier.clone(), ingest.clone());
+            tokio::spawn(async move { serve(request, registry, origin, tier, ingest).await });
         }
         tracing::info!("moq: server stopped accepting sessions");
     });
@@ -46,9 +72,14 @@ async fn serve(
     registry: Arc<Registry>,
     origin: moq_net::origin::Producer,
     tier: moq_net::stats::Handle,
+    ingest: Ingest,
 ) {
-    let token = request.query().and_then(|q| query_param(q, "jwt")).map(str::to_owned);
     let path = request.path().trim_matches('/').to_owned();
+    if let Some(name) = path.strip_prefix(PUBLISH_PREFIX) {
+        return serve_ingest(request, registry, ingest, name.to_owned(), tier).await;
+    }
+
+    let token = request.query().and_then(|q| query_param(q, "jwt")).map(str::to_owned);
     let transport = request.transport();
 
     let consumer = match allowed(&registry, &origin, &path, token.as_deref()).await {
@@ -70,6 +101,51 @@ async fn serve(
     // Dropping the session closes it: hold it until the peer goes away.
     let err = session.closed().await;
     tracing::debug!(path = %path, reason = %err, "moq: viewer session closed");
+}
+
+/// A `publish/<name>` session: authorize, accept the encoder's announce
+/// into a producer scoped to `name`, then convert whatever it publishes
+/// (`crate::ingest::run`) for as long as the session stays open.
+async fn serve_ingest(
+    request: moq_native::Request,
+    registry: Arc<Registry>,
+    ingest: Ingest,
+    name: String,
+    tier: moq_net::stats::Handle,
+) {
+    let transport = request.transport();
+    if !caudal_core::media::valid_stream_name(&name) {
+        let _ = request.close(404).await;
+        return;
+    }
+    let token = request.query().and_then(|q| query_param(q, "jwt")).map(str::to_owned);
+    // moq-native 0.19.19 doesn't expose the peer address here either (see
+    // `allowed` below); an IP/CIDR `[[access.rules]]` entry denies with
+    // `no_ip`, same as playback.
+    if let Err(d) = registry.authorize(Access::Publish, &name, token.as_deref(), None).await {
+        let code = status(d);
+        tracing::debug!(stream = %name, code, %transport, "moq: publish refused");
+        let _ = request.close(code).await;
+        return;
+    }
+    let Some(scoped) = ingest.origin.with_root(name.as_str()) else {
+        tracing::warn!(stream = %name, "moq: could not scope the ingest origin");
+        let _ = request.close(500).await;
+        return;
+    };
+    let path = format!("{PUBLISH_PREFIX}{name}");
+    let session = match request.with_subscriber(scoped).with_stats(tier.session(path.as_str())).ok().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(stream = %name, error = %e, %transport, "moq: publish handshake failed");
+            return;
+        }
+    };
+    tracing::debug!(stream = %name, %transport, "moq: publish session open");
+    let convert = tokio::spawn(crate::ingest::run(registry, ingest.consumer.clone(), name.clone(), ingest.buffer));
+    let err = session.closed().await;
+    tracing::debug!(stream = %name, reason = %err, "moq: publish session closed");
+    convert.abort();
 }
 
 /// What a session may see, or the HTTP-style status to close it with.

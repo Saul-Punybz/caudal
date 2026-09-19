@@ -59,3 +59,13 @@ sha2 = "=0.10.9"
 hex = "=0.4.3"
 # Builds a tiny in-memory .mmdb for the [access] geoip_db config test.
 maxminddb-writer = "0.1"
+# In-process MoQ "encoder" for the ingest e2e test (no publisher CLI ships
+# for the pinned moq-net draft, so the test acts as one with the same
+# crates caudal-moq itself uses); pinned to the same versions.
+moq-net = "=0.2.22"
+hang = "=0.20.13"
+moq-mux = "=0.9.16"
+moq-native = { version = "=0.19.19", default-features = false, features = ["quinn", "ring"] }
+bytes.workspace = true
+url = "2"
+mp4-atom = "0.15.0"

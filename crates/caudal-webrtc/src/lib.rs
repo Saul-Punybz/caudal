@@ -226,9 +226,10 @@ pub mod fuzz {
     pub fn negotiate_offer(body: &[u8]) {
         let st = crate::AppState {
             registry: caudal_core::Registry::new(),
-            cmds: None,
+            engines: None,
             candidates: Arc::new(vec!["127.0.0.1:9".parse().unwrap()]),
             buffer: caudal_core::BufferConfig::default(),
+            trusted_proxies: Arc::new(Vec::new()),
         };
         let _ = crate::negotiate(&st, body);
     }

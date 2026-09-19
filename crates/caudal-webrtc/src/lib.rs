@@ -231,6 +231,15 @@ fn answer_codecs(sdp: &str) -> (bool, bool) {
     (h264, opus)
 }
 
+/// Whether a WHEP answer with these codecs can carry any of the stream's
+/// tracks. Unknown tracks (the publisher has not announced them yet) pass.
+fn playable(tracks: &[caudal_core::TrackInfo], h264: bool, opus: bool) -> bool {
+    tracks.is_empty()
+        || tracks
+            .iter()
+            .any(|t| (h264 && t.codec == caudal_core::Codec::H264) || (opus && t.codec == caudal_core::Codec::Opus))
+}
+
 fn session_id() -> String {
     let mut b = [0u8; 16];
     if getrandom::fill(&mut b).is_err() {
@@ -309,6 +318,16 @@ async fn whep_post(
         Ok(v) => v,
         Err((code, msg)) => return plain(code, &msg),
     };
+    // A session that can carry none of the stream's tracks would connect
+    // and stay black (e.g. a browser without H.264 for WebRTC, like
+    // Playwright's Firefox on Linux, playing an H.264 + AAC stream).
+    let (h264, opus) = answer_codecs(&sdp);
+    if !playable(&sub.tracks(), h264, opus) {
+        return plain(
+            StatusCode::NOT_ACCEPTABLE,
+            "nothing in this stream can be sent to this browser: its video is H.264 and the offer has no H.264 (packetization-mode=1); its audio is not Opus",
+        );
+    }
     let session = session_id();
     let name: Arc<str> = name.as_str().into();
     let peer = Peer {
@@ -357,6 +376,25 @@ mod tests {
         assert_eq!(token(&h, &uri).as_deref(), Some("abc"));
         assert_eq!(token(&HeaderMap::new(), &"/whip/a".parse().unwrap()), None);
         assert_eq!(percent_decode("%zz%4"), "%zz%4");
+    }
+
+    #[test]
+    fn playable_needs_a_shared_codec() {
+        use caudal_core::{Codec, TrackId, TrackInfo};
+        let t = |codec| TrackInfo {
+            id: TrackId(0),
+            codec,
+            timescale: 90_000,
+            init: Default::default(),
+            lang: None,
+            video: None,
+            audio: None,
+        };
+        let h264_aac = [t(Codec::H264), t(Codec::Aac)];
+        assert!(playable(&h264_aac, true, true));
+        assert!(!playable(&h264_aac, false, true), "Opus-only offer, H.264 + AAC stream: nothing to send");
+        assert!(playable(&[t(Codec::H264), t(Codec::Opus)], false, true), "audio alone still plays");
+        assert!(playable(&[], false, true), "tracks not announced yet");
     }
 
     #[test]

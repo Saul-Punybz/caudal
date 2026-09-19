@@ -797,14 +797,17 @@ fn failover_to_a_file_slate_and_back() {
     drop(primary);
     wait_active(&slate_label);
     let seam = s.wait_until("/hls/fs/index.m3u8", Duration::from_secs(15), |b| b.contains("#EXT-X-DISCONTINUITY\n"));
-    // One extra EXT-X-MAP showed up once on the macOS runner (a 66 ms
-    // segment, then a second switch); the failover history says why.
+    // The seam after the last DISCONTINUITY carries the slate's own init.
+    // Not an exact MAP count: on a slow runner the primary is not live yet
+    // when the server starts, so the failover correctly starts on the slate
+    // (history start → recovered → silent, three MAPs; macOS CI 19 Sep 2026).
     let history = s.get("/api/v1/failover").map(|r| r.1).unwrap_or_default();
-    assert_eq!(
-        seam.matches("#EXT-X-MAP:").count(),
-        2,
-        "the slate's init segment gets its own EXT-X-MAP:\n{seam}\nfailover: {history}"
+    let after_seam = seam.rsplit("#EXT-X-DISCONTINUITY\n").next().unwrap_or_default();
+    assert!(
+        after_seam.starts_with("#EXT-X-MAP:"),
+        "the slate's init segment gets its own EXT-X-MAP after the seam:\n{seam}\nfailover: {history}"
     );
+    assert!(seam.matches("#EXT-X-MAP:").count() >= 2, "{seam}\nfailover: {history}");
     assert!(!seam.contains("#EXT-X-ENDLIST"), "{seam}");
     assert_eq!(s.get("/api/v1/streams/failover.fs.1").unwrap().0, 200, "the slate plays under its internal name");
 

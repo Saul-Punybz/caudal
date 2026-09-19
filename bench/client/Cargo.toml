@@ -1,0 +1,18 @@
+# Load and latency client for bench/ (Caudal vs MediaMTX). Standalone on
+# purpose: its own workspace and lockfile, so it never touches the server's
+# dependency graph, clippy or cargo-deny runs.
+[package]
+name = "caudal-bench-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dependencies]
+tokio = { version = "=1.53.1", features = ["full"] }
+reqwest = { version = "=0.12.28", default-features = false }
+url = "=2.5.8"
+futures = "0.3"
+str0m = { version = "=0.23.1", default-features = false, features = ["rust-crypto"] }

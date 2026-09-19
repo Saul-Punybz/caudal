@@ -23,15 +23,16 @@ the same evening with a corrected decoder command
 | LL-HLS, 100 / 300 viewers: server CPU | 8.7 % / 26.5 % | 26.7 % / 72.4 % | **Caudal about 3x less** |
 | RTSP (TCP), 100 / 300 viewers: server CPU | 122 % / 319 % | 104 % / 278 % | **MediaMTX about 15 % less** |
 | RTSP, 1,000 viewers | 14 of 1,000 kept up | 0 of 1,000 kept up | neither works here; the machine's network memory is the limit (see below) |
-| WHEP, 100 viewers: CPU / RSS | 87 % / 334 MB | 73 % / 524 MB | **MediaMTX less CPU, Caudal less memory** |
-| WHEP, 300 viewers | **245 Mbps delivered, 0 of 300 kept up** | 1,377 Mbps delivered, 0 of 300 kept up | **MediaMTX delivers 5.6x more; Caudal's WHEP falls apart between 100 and 300 viewers** |
-| WHEP, 1,000 viewers | 307 Mbps, sessions failing (1,116 timeouts) | 1,269 Mbps, no errors, 4.4 GB RSS | **MediaMTX better** (neither keeps up) |
+| WHEP, 100 viewers: CPU / RSS (after the WebRTC fixes, 19 Sep) | 70 % / 364 MB | 69 % / 513 MB | tie on CPU, **Caudal less memory** |
+| WHEP, 300 viewers (after the fixes) | **1,799 Mbps, 300 of 300 kept up**, 315 % CPU, 829 MB | 1,666 Mbps, 262 of 300 kept up (0 in one run), 178 % CPU, 1,394 MB | **Caudal delivers every viewer, with less memory and more CPU** |
+| WHEP, 1,000 viewers | not re-measured (the laptop, not the server, is the limit) | 1,269 Mbps, 4.4 GB RSS | see "WHEP after the fixes" |
 | LL-HLS latency, live edge (median / p95) | 212 / 224 ms | 210 / 223 ms | tie (the earlier 145 ms gap was the decoder, not the server; see Latency) |
 | RTSP latency (median / p95) | 45 / 55 ms | 45 / 56 ms | tie |
 
-"Faster" is only supported for **LL-HLS fan-out CPU and memory**, plus binary
-size and idle memory. On RTSP fan-out, WHEP, LL-HLS latency and memory with
-a live stream, MediaMTX is equal or better today (latency: equal).
+"Faster" is supported for **LL-HLS fan-out CPU and memory**, **WHEP delivery
+at 300 viewers** (every viewer kept up, less memory, but more CPU), binary
+size and idle memory. On RTSP fan-out CPU and memory with one live stream,
+MediaMTX is better today; latency is a tie.
 
 ## Setup
 
@@ -232,6 +233,45 @@ What the table says:
   MediaMTX's limit; it is not what limits Caudal, which receives less than
   a fifth of the bytes.
 
+### WHEP after the fixes (19 Sep 2026)
+
+The collapse above had three causes, found by profiling (`sample` on a
+release build with symbols) rather than guessed:
+
+1. **Software AES on ARM.** The WebRTC thread spent its time in
+   `aes::soft::fixslice` and `polyval::soft`: on aarch64, `aes` 0.8 and
+   `polyval` 0.6 only use the ARMv8 AES/PMULL instructions when built with
+   `--cfg aes_armv8 --cfg polyval_armv8` (now in `.cargo/config.toml`; still
+   detected at run time). x86_64 detects AES-NI on its own, so this was
+   ARM-only. The load client inherits the flags too.
+2. **A blocking send path.** The engine awaited every `send_to`, macOS's
+   default UDP send buffer is 9 KB, and a `biased` select served media before
+   reading the socket. Now: non-blocking sends with an outbox, 8 MB socket
+   buffers, burst reads. Kernel UDP drops went from 12,700 to 0.
+3. **One core.** All peers ran on one engine. Engines now run one per core
+   (at most 8), each with its own socket on the same port (`SO_REUSEPORT`);
+   the kernel may hand a datagram to any of them and it is forwarded to the
+   owner by STUN ufrag or source address. A first version shared one socket
+   across engines and got worse (8 engines, 320 % CPU at 100 viewers: the
+   threads fought over the socket's send lock, `__sendto` dominated the
+   profile). Sessions fill an engine to 50 before the next is used.
+
+Results, 3 reps, same session (`bench/results/20260919-002645.jsonl`); I was
+compiling other work during part of this run, but the ranges are narrow:
+
+| Viewers | Server | CPU % (range) | RSS MB | Egress Mbps | Kept up |
+|---|---|---|---|---|---|
+| 100 | Caudal | 70.4 (70.3–72.0) | 364 | 600 | 100 |
+| 100 | MediaMTX | 68.8 (68.5–77.0) | 513 | 600 | 100 |
+| 300 | Caudal | 315 (313–342) | 829 | 1,799 | 300 |
+| 300 | MediaMTX | 178 (172–179) | 1,394 | 1,666 (1,452–1,689) | 262 (0–288) |
+
+At 1,000 viewers (one exploratory run) Caudal delivered 2,920 Mbps against
+MediaMTX's 1,528, but the load client used 260 % CPU and the kernel dropped
+338,805 datagrams: that cell measures the laptop. It needs a second machine.
+Caudal still uses more CPU than MediaMTX at 300 viewers; the next profile
+should look at per-packet allocation (`Vec` per datagram) and batched sends.
+
 ### Latency
 
 Re-measured 18 Sep 2026, 22:58–23:05 (`bench/results/20260918-225809.jsonl`,
@@ -306,9 +346,10 @@ lower (14 vs 35 MB), and LL-HLS fan-out at about half the CPU per gigabit
 with less memory, zero errors on both, up to 1,000 viewers.
 
 Losses for Caudal: more memory per live stream (98 vs 80 MB; 87 MB with an
-equal 14 s buffer), about 15 % more CPU for RTSP fan-out, about 16 % more CPU
-for WHEP at 100 viewers, WHEP delivery that collapses between 100 and 300
-viewers without being CPU-bound.
+equal 14 s buffer), about 15 % more CPU for RTSP fan-out, and more CPU for
+WHEP at 300 viewers (315 vs 178 %) although it now keeps every viewer up
+where MediaMTX does not (see "WHEP after the fixes"; the original WHEP
+collapse is fixed).
 
 Ties: CPU with one publisher, LL-HLS edge latency, RTSP latency, idle CPU. Machine-limited on
 both: RTSP at 1,000 viewers.
@@ -316,5 +357,6 @@ both: RTSP at 1,000 viewers.
 Do not claim "faster than MediaMTX" in general. Claims these numbers
 support: "a smaller binary and lower idle memory than MediaMTX" and "LL-HLS
 fan-out at about half MediaMTX's CPU on the same machine". Next fixes that
-the benchmark points to: the WHEP egress path at 300 or more peers and RTSP
-send-path CPU.
+the benchmark points to: WHEP CPU per packet (allocation, batched sends),
+RTSP send-path CPU, and memory per live stream. Also supported now: "WHEP
+keeps every viewer up at 300 where MediaMTX does not, with less memory".

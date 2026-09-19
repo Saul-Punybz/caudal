@@ -43,6 +43,7 @@ caudal-scte35 = { path = "crates/caudal-scte35", version = "0.1.0" }
 caudal-admin = { path = "crates/caudal-admin", version = "0.1.0" }
 caudal-health = { path = "crates/caudal-health", version = "0.1.0" }
 caudal-access = { path = "crates/caudal-access", version = "0.1.0" }
+caudal-captions = { path = "crates/caudal-captions", version = "0.1.0" }
 caudal-cluster = { path = "crates/caudal-cluster", version = "0.1.0" }
 caudal-failover = { path = "crates/caudal-failover", version = "0.1.0" }
 caudal-multicast = { path = "crates/caudal-multicast", version = "0.1.0" }
@@ -61,6 +62,29 @@ opt-level = 3
 [profile.dev.package.rusty_h264-encoder]
 opt-level = 3
 [profile.dev.package.rusty_h264-decoder]
+opt-level = 3
+# Live captions (caudal-captions): Whisper inference on candle is ~50x
+# slower unoptimized; the engine and e2e tests transcribe real speech in
+# debug builds.
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.candle-transformers]
+opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.rusty_aac]
+opt-level = 3
+[profile.dev.package.opus-decoder]
+opt-level = 3
+[profile.dev.package.caudal-captions]
 opt-level = 3
 
 [profile.release]
@@ -96,7 +120,13 @@ panic = "unwind"
 # its result as `1 << leading_zeros`; at 64+ leading zero bits that is
 # already 0 in a u64, and the following `result - 1` underflowed and
 # panicked. Patched copy with a regression test; see vendor/README.md.
+#
+# rusty_aac 0.5.0 (latest): its decoder ran a direct O(N^2) IMDCT (2.1 M
+# f64 cosines per frame), 24 ms per 21 ms AAC frame on a 4-vCPU x86 CI
+# runner: live captions could not keep up with one stream. Patched copy
+# with an FFT IMDCT checked against the direct one; see vendor/README.md.
 [patch.crates-io]
+rusty_aac = { path = "vendor/rusty_aac" }
 scuffle-rtmp = { path = "vendor/scuffle-rtmp" }
 scuffle-amf0 = { path = "vendor/scuffle-amf0" }
 scuffle-h264 = { path = "vendor/scuffle-h264" }

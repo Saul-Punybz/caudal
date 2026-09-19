@@ -30,7 +30,7 @@ pub(crate) const WINDOW: usize = 6;
 /// Segments at the live edge (counting the open one) that list their parts.
 const PART_SEGMENTS: usize = 3;
 /// Added to every decode time so small negative timestamps stay valid.
-const SHIFT_SECS: i64 = 10;
+pub(crate) const SHIFT_SECS: i64 = 10;
 /// A gap bigger than this between consecutive frames of one track is a
 /// timestamp jump, not a frame duration.
 const JUMP_SECS: i64 = 5;
@@ -765,6 +765,22 @@ impl Packager {
     }
 
     pub fn playlist(&self) -> String {
+        self.render(false, true)
+    }
+
+    /// The WebVTT rendition's media playlist: the same segments as the
+    /// main one (sequence numbers, durations, discontinuities, program
+    /// date-times, server control), each `c{msn}.vtt`, with no init segment
+    /// and no ad markers. With `parts`, also the same parts
+    /// (`c{msn}.p{i}.vtt`) and preload hint, as Apple's LL-HLS rules want
+    /// for every rendition; without, complete segments only, for players
+    /// that cannot load subtitle parts (hls.js 1.7 stalls on them). See
+    /// `docs/research/CAPTIONS.md`.
+    pub fn subtitle_playlist(&self, parts: bool) -> String {
+        self.render(true, parts)
+    }
+
+    fn render(&self, subs: bool, parts: bool) -> String {
         let pt = self.part_target();
         let mut o = String::with_capacity(4096);
         o.push_str("#EXTM3U\n#EXT-X-VERSION:9\n");
@@ -772,7 +788,18 @@ impl Packager {
         // At least 3x the part target (RFC 8216bis 4.4.3.8); the extra
         // millisecond keeps float rounding from landing a hair under it,
         // which Apple's validator flags (-50102).
-        let _ = writeln!(o, "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK={:.3}", pt * 3.0 + 0.001);
+        if subs && !parts {
+            // With no parts listed, the plain HOLD-BACK applies (at least 3
+            // target durations, RFC 8216bis 4.4.3.8).
+            let _ = writeln!(
+                o,
+                "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,HOLD-BACK={:.3},PART-HOLD-BACK={:.3}",
+                self.target as f64 * 3.0,
+                pt * 3.0 + 0.001
+            );
+        } else {
+            let _ = writeln!(o, "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK={:.3}", pt * 3.0 + 0.001);
+        }
         let _ = writeln!(o, "#EXT-X-PART-INF:PART-TARGET={pt:.3}");
         let first = self.segments.front().map_or(self.next_msn, |s| s.msn);
         let _ = writeln!(o, "#EXT-X-MEDIA-SEQUENCE:{first}");
@@ -782,7 +809,9 @@ impl Packager {
         o.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
         let n = self.segments.len();
         let mut map_gen = self.segments.iter().find(|s| !s.parts.is_empty()).map_or(self.init_gen, |s| s.init_gen);
-        let _ = writeln!(o, "#EXT-X-MAP:URI=\"{}\"", init_uri(map_gen));
+        if !subs {
+            let _ = writeln!(o, "#EXT-X-MAP:URI=\"{}\"", init_uri(map_gen));
+        }
         // Each DATERANGE goes right after the PDT of the listed segment its
         // cue falls in (the first listed one for anything older).
         let listed: Vec<usize> = (0..n).filter(|&i| !self.segments[i].parts.is_empty()).collect();
@@ -791,7 +820,7 @@ impl Packager {
             if seg.discontinuity {
                 o.push_str("#EXT-X-DISCONTINUITY\n");
             }
-            if seg.init_gen != map_gen {
+            if seg.init_gen != map_gen && !subs {
                 map_gen = seg.init_gen;
                 let _ = writeln!(o, "#EXT-X-MAP:URI=\"{}\"", init_uri(map_gen));
             }
@@ -800,7 +829,9 @@ impl Packager {
             let until = listed.get(k + 1).map_or(i64::MAX, |&j| self.segments[j].start_us);
             // A segment that starts inside an ad break (after its CUE-OUT,
             // before its CUE-IN) carries the legacy continuation tag.
-            if let Some(b) = self.breaks.iter().find(|b| b.out_us < seg.start_us && seg.start_us < b.end_us()) {
+            if let Some(b) =
+                self.breaks.iter().filter(|_| !subs).find(|b| b.out_us < seg.start_us && seg.start_us < b.end_us())
+            {
                 let elapsed = (seg.start_us - b.out_us) as f64 / 1e6;
                 match b.planned_us {
                     Some(d) => {
@@ -812,27 +843,57 @@ impl Packager {
                     }
                 }
             }
-            for d in self.dateranges.iter().filter(|d| (from..until).contains(&d.at_us)) {
+            for d in self.dateranges.iter().filter(|d| !subs && (from..until).contains(&d.at_us)) {
                 o.push_str(&d.line);
                 o.push('\n');
             }
-            if i + PART_SEGMENTS >= n {
+            if i + PART_SEGMENTS >= n && parts {
                 for (j, p) in seg.parts.iter().enumerate() {
-                    let _ = write!(o, "#EXT-X-PART:DURATION={:.5},URI=\"s{}.p{}.m4s\"", p.duration, seg.msn, j);
-                    o.push_str(if p.independent { ",INDEPENDENT=YES\n" } else { "\n" });
+                    if subs {
+                        // Every WebVTT part stands alone.
+                        let _ = writeln!(
+                            o,
+                            "#EXT-X-PART:DURATION={:.5},URI=\"c{}.p{}.vtt\",INDEPENDENT=YES",
+                            p.duration, seg.msn, j
+                        );
+                    } else {
+                        let _ = write!(o, "#EXT-X-PART:DURATION={:.5},URI=\"s{}.p{}.m4s\"", p.duration, seg.msn, j);
+                        o.push_str(if p.independent { ",INDEPENDENT=YES\n" } else { "\n" });
+                    }
                 }
             }
             if seg.full.is_some() {
-                let _ = writeln!(o, "#EXTINF:{:.5},\ns{}.m4s", seg.duration(), seg.msn);
+                let (prefix, ext) = if subs { ('c', "vtt") } else { ('s', "m4s") };
+                let _ = writeln!(o, "#EXTINF:{:.5},\n{prefix}{}.{ext}", seg.duration(), seg.msn);
             }
         }
         if self.ended {
             o.push_str("#EXT-X-ENDLIST\n");
-        } else {
+        } else if parts {
             let (m, p) = self.next_part();
-            let _ = writeln!(o, "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"s{m}.p{p}.m4s\"");
+            let (prefix, ext) = if subs { ('c', "vtt") } else { ('s', "m4s") };
+            let _ = writeln!(o, "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"{prefix}{m}.p{p}.{ext}\"");
         }
         o
+    }
+
+    /// Media-time spans of everything in the window, for the subtitle
+    /// rendition: `(msn, Some(part), start_us, end_us)` for every part and,
+    /// once a segment is complete, `(msn, None, start_us, end_us)` for it.
+    pub fn spans(&self) -> Vec<(u64, Option<usize>, i64, i64)> {
+        let mut out = Vec::new();
+        for seg in &self.segments {
+            let mut t = seg.start_us;
+            for (j, p) in seg.parts.iter().enumerate() {
+                let end = t + (p.duration * 1e6).round() as i64;
+                out.push((seg.msn, Some(j), t, end));
+                t = end;
+            }
+            if seg.full.is_some() {
+                out.push((seg.msn, None, seg.start_us, t));
+            }
+        }
+        out
     }
 }
 

@@ -76,7 +76,7 @@ pub fn render(
 }
 
 /// Escapes a label value per the Prometheus text format.
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
 }
 

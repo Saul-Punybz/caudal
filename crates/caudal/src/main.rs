@@ -5,6 +5,7 @@
 
 mod admin;
 mod api;
+mod captions;
 mod config;
 mod doctor;
 mod import_mist;
@@ -71,6 +72,25 @@ enum Command {
         #[arg(short = 'o', long, default_value = "caudal.toml")]
         output: PathBuf,
     },
+    /// Live captions tools.
+    Captions {
+        #[command(subcommand)]
+        command: CaptionsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum CaptionsCommand {
+    /// Downloads a Whisper model (tiny ~150 MB, base ~290 MB, small
+    /// ~970 MB) from Hugging Face at a pinned revision, verifies every
+    /// file's SHA-256, and stores it as `<dir>/whisper-<name>/`.
+    FetchModel {
+        /// tiny, base or small.
+        name: String,
+        /// `[captions] model_dir`.
+        #[arg(long, default_value = "models")]
+        dir: PathBuf,
+    },
 }
 
 fn make_filter() -> EnvFilter {
@@ -114,6 +134,9 @@ fn main() -> ExitCode {
         let report = doctor::run(config.as_deref(), &opts);
         report.print();
         return report.exit_code();
+    }
+    if let Some(Command::Captions { command: CaptionsCommand::FetchModel { name, dir } }) = &cli.command {
+        return captions::fetch_model_cmd(name, dir);
     }
     if let Some(Command::ImportMist { path, output }) = &cli.command {
         return import_mist::run(path, output);
@@ -169,7 +192,22 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     // and does not bring down the HTTP side.
     let started = subsystems::Supervisor::start(&cfg, registry.clone());
 
-    let hls_router = caudal_hls::router(
+    // Live captions: off unless `[[captions.stream]]` names a stream. The
+    // model loads in the background; a missing model is logged and the
+    // streams play on without captions.
+    // Without the `captions` feature, config validation has already
+    // rejected a `[captions]` section.
+    #[cfg(feature = "captions")]
+    let captions = cfg.captions.to_runtime(cfg.hls.segment_ms).expect("validated").map(|cc| {
+        tracing::info!(model = %cc.model, threads = cc.threads, "live captions enabled");
+        caudal_captions::Captions::start(registry.clone(), cc)
+    });
+    #[cfg(feature = "captions")]
+    let caption_source =
+        captions.clone().map(|c| std::sync::Arc::new(c) as std::sync::Arc<dyn caudal_core::captions::CaptionSource>);
+    #[cfg(not(feature = "captions"))]
+    let caption_source = None;
+    let hls_router = caudal_hls::router_with_captions(
         registry.clone(),
         caudal_hls::HlsConfig {
             part_ms: cfg.hls.part_ms,
@@ -179,10 +217,15 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             reconnect_grace: std::time::Duration::from_secs(cfg.hls.reconnect_grace_secs.into()),
         },
         trusted_proxies.clone(),
+        caption_source,
     );
 
     let state = api::AppState::new(registry.clone());
     state.set_access(started.access.clone());
+    #[cfg(feature = "captions")]
+    if let Some(c) = captions {
+        state.set_captions(c);
+    }
     state.set_multicast(started.multicast.clone());
     let webrtc_router = caudal_webrtc::router(
         registry.clone(),

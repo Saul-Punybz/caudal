@@ -202,6 +202,8 @@ pub struct Config {
     /// the server refuses to listen on a non-loopback address.
     pub admin: Option<caudal_admin::AdminSection>,
     pub health: HealthSection,
+    /// Automatic live captions: `[captions]` + `[[captions.stream]]`.
+    pub captions: crate::captions::CaptionsSection,
     /// Origin-edge clustering. Absent: a standalone server.
     pub cluster: Option<ClusterSection>,
 }
@@ -1044,6 +1046,7 @@ impl Config {
             admin.validate()?;
         }
         self.health.to_health_config()?;
+        self.captions.validate(self.hls.segment_ms)?;
         if let Some(c) = &self.cluster {
             c.edge_config(self.buffer.to_buffer_config())?;
             if c.role == ClusterRole::Origin && !self.moq.enabled {

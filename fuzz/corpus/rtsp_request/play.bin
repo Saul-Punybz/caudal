@@ -1,0 +1,5 @@
+PLAY rtsp://127.0.0.1:8554/stream RTSP/1.0
+CSeq: 4
+Session: 0123456789ABCDEF
+Range: npt=0.000-
+

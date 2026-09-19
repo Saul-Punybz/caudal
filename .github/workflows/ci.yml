@@ -131,3 +131,51 @@ jobs:
         with:
           name: caudal-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/caudal
+
+  # Runs on every push/PR (not a nightly cron): the "Test audit" gap this
+  # closes ("no fuzzing of network parsers") is exactly the kind of bug a
+  # single commit introduces and a human review won't catch (see
+  # fuzz/README.md's "Findings so far" for the seven crashes the first
+  # couple hours of local fuzzing found, one call chain deeper each time a
+  # fix let the target run further). 60s per target is a smoke test, not
+  # real fuzzing depth: it exists to catch a broken build, a regression a
+  # PR reintroduces, or a target that stops making progress (0 new
+  # coverage), not to find new bugs on its own. Real fuzzing time (the
+  # `-max_total_time=300`+ runs `fuzz/README.md` documents) is a local,
+  # manual thing for now; a longer nightly/scheduled job is future work,
+  # left out here to keep this PR's CI change small and easy to verify.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Build every fuzz target
+        run: |
+          cd fuzz
+          for target in $(cargo fuzz list); do
+            cargo +nightly fuzz build "$target"
+          done
+      - name: Run each target for 60s on its saved corpus
+        run: |
+          cd fuzz
+          status=0
+          for target in $(cargo fuzz list); do
+            echo "::group::$target"
+            # cargo-fuzz appends `corpus/$target` (the one committed to this
+            # repo) as the last libFuzzer argument automatically.
+            cargo +nightly fuzz run "$target" -- \
+              -max_total_time=60 -jobs=1 -workers=1 -rss_limit_mb=2048 || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: fuzz/artifacts/

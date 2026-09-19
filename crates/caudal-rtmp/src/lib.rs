@@ -28,6 +28,31 @@ pub struct RtmpConfig {
     pub buffer: BufferConfig,
 }
 
+/// Fuzz-only entry points into the FLV/AMF parsing internals of
+/// [`crate::demux`], which are otherwise `pub(crate)`. Not part of the
+/// public API; used by `fuzz/fuzz_targets/rtmp_flv_amf.rs`. Every function
+/// here must never panic, only return `None`/drop malformed input.
+#[doc(hidden)]
+pub mod fuzz {
+    use bytes::Bytes;
+
+    pub fn demux_video(timestamp_ms: i64, data: Bytes) {
+        let _ = crate::demux::demux_video(timestamp_ms, data);
+    }
+
+    pub fn demux_audio(data: Bytes) {
+        let _ = crate::demux::demux_audio(data);
+    }
+
+    pub fn parse_cue_point(timestamp_ms: i64, data: Bytes, event_id: u32) {
+        let _ = crate::demux::parse_cue_point(timestamp_ms, data, event_id);
+    }
+
+    pub fn parse_metadata_fps(data: Bytes) {
+        let _ = crate::demux::parse_metadata_fps(data);
+    }
+}
+
 /// Listens until the future is dropped or the socket fails.
 pub async fn serve(cfg: RtmpConfig, registry: Arc<Registry>) -> std::io::Result<()> {
     let listener = TcpListener::bind(cfg.bind).await?;

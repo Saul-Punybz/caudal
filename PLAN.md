@@ -162,6 +162,8 @@ claiming in public.
 - **OBS guide**: OBS 30+ publishes WHIP natively; add "copy WHIP URL + token" to the UI.
 
 ### C. Later
+- **Hardware transcoding** (Saul, 19 Sep 2026: good to have, after Caudal is complete): `[transcode] hw = "auto"` probes VideoToolbox / NVENC / VAAPI / QSV / V4L2 M2M with a test encode and falls back to libx264 (today hardcoded, `crates/caudal-transcode/src/ffmpeg.rs:224`). Stays in the ffmpeg child process so a driver crash can't take the server down. Verify with ffprobe and a max-simultaneous-ladders count, GPU vs CPU.
+- **WebRTC across cores** (same decision): the engine is one task on one UDP socket for every peer (`crates/caudal-webrtc/src/lib.rs:89`), so all DTLS/SRTP work runs on one core. Shard per core (N sockets or SO_REUSEPORT); verify with the WHEP load from the MediaMTX benchmark (CPU spread across cores).
 - HDR metadata passthrough (HEVC SEI via `hevc_parser`), Dolby Vision RPU.
 - Scheduled/playlist channels from VOD files (keep small; ANTENA787 is the real playout).
 - NDI itself: proprietary SDK, license restricts reverse engineering, trademarked. Covered instead by OMT (M12), an MIT protocol for the same job.

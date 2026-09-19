@@ -48,9 +48,34 @@ impl Server {
     /// Starts with `extra` TOML appended (new sections only). `{dir}` in it
     /// is replaced with the server's temp directory.
     pub fn start_with(extra: &str) -> Self {
+        // Ports are probed and released, so another process (or this
+        // server's own next probe) can take one before caudal binds it; the
+        // server then exits and /healthz never answers (CI, 19 Sep 2026:
+        // reload_via_sighup_also_applies). Five distinct ports, and a fresh
+        // set if the server dies or stays silent.
+        let mut last_err = String::new();
+        for attempt in 1..=3 {
+            match Self::try_start(extra) {
+                Ok(s) => return s,
+                Err(e) => {
+                    eprintln!("caudal start attempt {attempt} failed: {e}; retrying with new ports");
+                    last_err = e;
+                }
+            }
+        }
+        panic!("caudal did not start in 3 attempts: {last_err}");
+    }
+
+    fn try_start(extra: &str) -> Result<Self, String> {
         let dir = tempfile::tempdir().unwrap();
-        let (http, rtmp, srt, webrtc, moq) =
-            (free_port(), free_port(), free_udp_port(), free_udp_port(), free_udp_port());
+        let mut ports: Vec<u16> = Vec::new();
+        while ports.len() < 5 {
+            let p = if ports.len() < 2 { free_port() } else { free_udp_port() };
+            if !ports.contains(&p) {
+                ports.push(p);
+            }
+        }
+        let (http, rtmp, srt, webrtc, moq) = (ports[0], ports[1], ports[2], ports[3], ports[4]);
         let cfg = dir.path().join("caudal.toml");
         std::fs::write(
             &cfg,
@@ -67,9 +92,19 @@ impl Server {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn caudal");
-        let s = Self { child, http, rtmp, srt, webrtc, cfg_path: cfg, _dir: dir };
-        s.wait_for("/healthz", Duration::from_secs(10));
-        s
+        let mut s = Self { child, http, rtmp, srt, webrtc, cfg_path: cfg, _dir: dir };
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(10) {
+            if matches!(s.get("/healthz"), Ok((200, _))) {
+                return Ok(s);
+            }
+            if let Ok(Some(status)) = s.child.try_wait() {
+                return Err(format!("caudal exited during startup ({status}), ports {ports:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(format!("/healthz never answered 200 within 10s, ports {ports:?}"))
+        // `s` drops here: Drop kills the child.
     }
 
     /// Overwrites the config file at [`Server::cfg_path`] with `text`; does

@@ -123,6 +123,28 @@ pub struct RtspConfig {
     pub session_timeout: Duration,
 }
 
+/// Fuzz-only entry points into the request-parsing internals of
+/// [`crate::server`], which are otherwise private. Not part of the public
+/// API; used by `fuzz/fuzz_targets/rtsp_request.rs`. Must never panic on
+/// any input.
+#[doc(hidden)]
+pub mod fuzz {
+    /// Parses `data` as an RTSP message, and, if it is a request, runs the
+    /// same URI, `Transport` and `Session` header parsing `server::handle_setup`
+    /// and `server::handle_play` do before ever touching a registry or socket.
+    pub fn route_request(data: &[u8]) {
+        let Ok((rtsp_types::Message::Request(req), _)) = rtsp_types::Message::<Vec<u8>>::parse(data) else {
+            return;
+        };
+        let _ = crate::server::parse_uri(&req);
+        if let Ok(Some(transports)) = req.typed_header::<rtsp_types::headers::Transports>() {
+            let _ = crate::server::choose_transport(&transports, false);
+            let _ = crate::server::choose_transport(&transports, true);
+        }
+        let _ = req.typed_header::<rtsp_types::headers::Session>();
+    }
+}
+
 /// Runs the RTSP server until dropped; `[[rtsp.pull]]` cameras run
 /// separately, see [`start_pulls`]. If `bind` is `None` this never returns
 /// (nothing to serve), so callers only spawn it when `bind.is_some()`.

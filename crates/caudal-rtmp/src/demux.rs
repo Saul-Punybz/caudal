@@ -71,8 +71,16 @@ impl RtmpClock {
 }
 
 fn video_frame(timestamp_ms: i64, cts: i32, keyframe: bool, data: Bytes) -> Frame {
-    let dts = timestamp_ms * 90;
-    let pts = (timestamp_ms + i64::from(cts)) * 90;
+    // Saturating, not wrapping or plain arithmetic: `timestamp_ms` is
+    // `RtmpClock`'s ever-growing extended series (see its doc comment), and
+    // over a long enough connection -- or one fed adversarial per-message
+    // timestamp deltas near the i32 range `RtmpClock::extend` trusts --
+    // `* 90` can overflow i64. A stream already producing a timestamp this
+    // extreme is nonsense either way; saturating avoids the panic (found by
+    // `fuzz/fuzz_targets/rtmp_flv_amf.rs`) without pretending the value is
+    // meaningful.
+    let dts = timestamp_ms.saturating_mul(90);
+    let pts = timestamp_ms.saturating_add(i64::from(cts)).saturating_mul(90);
     Frame { track: TrackId(0), dts, pts, keyframe, data }
 }
 
@@ -261,7 +269,9 @@ pub(crate) fn parse_cue_point(timestamp_ms: i64, data: Bytes, event_id: u32) -> 
             _ => None,
         })
     };
-    let at_us = number("time").map_or(timestamp_ms * 1000, |s| (s * 1e6).round() as i64);
+    // Same overflow risk, same fix as `video_frame`: `timestamp_ms` can be
+    // extreme enough that `* 1000` overflows i64.
+    let at_us = number("time").map_or(timestamp_ms.saturating_mul(1000), |s| (s * 1e6).round() as i64);
 
     for (_, v) in &fields {
         if let Amf0Value::String(s) = v
@@ -397,5 +407,31 @@ mod tests {
         assert_eq!(clock.extend(1_000), 1_000);
         assert_eq!(clock.extend(990), 990); // audio slightly behind video
         assert_eq!(clock.extend(1_010), 1_010);
+    }
+
+    /// Regression: found by `fuzz/fuzz_targets/rtmp_flv_amf.rs`. `dts`/`pts`
+    /// used a plain `*`/`+`, which overflowed i64 for an extreme
+    /// `timestamp_ms` (reachable in practice: `RtmpClock`'s extended series
+    /// only ever grows, and its `wrapping_sub` accepts an attacker-chosen
+    /// per-message delta up to the full i32 range).
+    #[test]
+    fn an_extreme_timestamp_saturates_instead_of_overflowing() {
+        // Legacy AVC NALU tag: keyframe, AVCPacketType::Nalu, cts=0, 1 byte
+        // of payload (its content doesn't matter: `video_frame` never looks
+        // at it).
+        let data = Bytes::from_static(&[0x17, 0x01, 0x00, 0x00, 0x00, 0xAA]);
+        let event = demux_video(i64::MAX, data).expect("must not panic");
+        let VideoEvent::Frame(frame) = event else { panic!("expected a frame, got an init") };
+        assert_eq!(frame.dts, i64::MAX, "saturates rather than wrapping to a bogus negative value");
+        assert_eq!(frame.pts, i64::MAX);
+    }
+
+    /// Same overflow, same fix, in `parse_cue_point`'s fallback when the
+    /// AMF0 message carries no explicit `time` field.
+    #[test]
+    fn a_cue_with_no_time_field_saturates_the_message_timestamp() {
+        let data = message(false, "onCuePoint", obj(vec![("type", Amf0Value::String("cue-in".into()))]));
+        let cue = parse_cue_point(i64::MAX, data, 1).expect("must not panic");
+        assert_eq!(cue.at_us, i64::MAX);
     }
 }

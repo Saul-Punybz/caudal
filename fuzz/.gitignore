@@ -1,0 +1,6 @@
+/target
+*.log
+# Crash/timeout/OOM inputs libFuzzer writes here: minimize and turn each one
+# into a regression test in the owning crate (see README.md), don't commit
+# the raw artifact.
+/artifacts/

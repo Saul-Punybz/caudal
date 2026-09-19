@@ -7,6 +7,7 @@ mod admin;
 mod api;
 mod config;
 mod doctor;
+mod import_mist;
 mod metrics;
 mod reload;
 mod shutdown;
@@ -58,6 +59,18 @@ enum Command {
         #[arg(long)]
         url: Option<String>,
     },
+    /// Imports a MistServer `config.json`/`mistserver.conf` (JSON either
+    /// way), writing a Caudal config plus a report of every setting
+    /// translated, approximated, or with no Caudal equivalent. Fails
+    /// (writing nothing) if the generated file doesn't itself pass
+    /// `caudal check`.
+    ImportMist {
+        /// Path to the MistServer config.
+        path: PathBuf,
+        /// Where to write the Caudal config.
+        #[arg(short = 'o', long, default_value = "caudal.toml")]
+        output: PathBuf,
+    },
 }
 
 fn make_filter() -> EnvFilter {
@@ -101,6 +114,9 @@ fn main() -> ExitCode {
         let report = doctor::run(config.as_deref(), &opts);
         report.print();
         return report.exit_code();
+    }
+    if let Some(Command::ImportMist { path, output }) = &cli.command {
+        return import_mist::run(path, output);
     }
     if let Some(Command::Check { path }) = &cli.command {
         return match config::load(path) {
@@ -229,6 +245,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
                     tracing::info!(webhooks, "stream health alerts enabled");
                     let svc = std::sync::Arc::new(svc);
                     state.set_health(svc.clone());
+                    spawn_failover_webhooks(&started.failover, svc.clone());
                     svc.router()
                 }
                 Err(e) => {
@@ -270,6 +287,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         .merge(moq_router)
         .merge(record_router)
         .merge(started.channel_router)
+        .merge(started.failover_router)
         .merge(started.restream_router)
         .merge(reload::router(reload_state))
         .merge(health_router)
@@ -327,4 +345,23 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Sends a `failover_switched` health webhook for every failover switch.
+fn spawn_failover_webhooks(
+    failover: &caudal_failover::FailoverHandle,
+    health: std::sync::Arc<caudal_health::HealthService>,
+) {
+    let mut switches = failover.subscribe_switches();
+    tokio::spawn(async move {
+        loop {
+            match switches.recv().await {
+                Ok(ev) => health.failover_switched(&ev.stream, ev.from.as_deref(), &ev.to, ev.reason),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(missed = n, "failover webhooks lagged");
+                }
+                Err(_) => return,
+            }
+        }
+    });
 }

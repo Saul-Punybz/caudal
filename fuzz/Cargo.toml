@@ -1,0 +1,80 @@
+[package]
+name = "caudal-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+rtsp-types = "0.1.3"
+scuffle-rtmp = "0.2.3"
+
+caudal-core = { path = "../crates/caudal-core" }
+caudal-rtmp = { path = "../crates/caudal-rtmp" }
+caudal-ts = { path = "../crates/caudal-ts" }
+caudal-scte35 = { path = "../crates/caudal-scte35" }
+caudal-rtsp = { path = "../crates/caudal-rtsp" }
+caudal-webrtc = { path = "../crates/caudal-webrtc" }
+
+# This is its own Cargo workspace (excluded from the root one, see
+# ../Cargo.toml), so the root's [patch.crates-io] entries for the vendored,
+# bug-fixed scuffle-rtmp and scuffle-amf0 do not carry over here
+# automatically: they must be repeated, or these fuzz targets would run
+# against upstream's unpatched crates instead of the code Caudal actually
+# ships (see ../vendor/README.md for what each patch fixes).
+[patch.crates-io]
+scuffle-rtmp = { path = "../vendor/scuffle-rtmp" }
+scuffle-amf0 = { path = "../vendor/scuffle-amf0" }
+scuffle-h264 = { path = "../vendor/scuffle-h264" }
+scuffle-expgolomb = { path = "../vendor/scuffle-expgolomb" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "rtmp_chunk"
+path = "fuzz_targets/rtmp_chunk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_flv_amf"
+path = "fuzz_targets/rtmp_flv_amf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ts_demux"
+path = "fuzz_targets/ts_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scte35_parse"
+path = "fuzz_targets/scte35_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtsp_request"
+path = "fuzz_targets/rtsp_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webrtc_sdp"
+path = "fuzz_targets/webrtc_sdp.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

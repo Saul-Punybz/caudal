@@ -25,7 +25,7 @@
 pub static PROBE_T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 macro_rules! probe {
     ($($a:tt)*) => {{
-        let t0 = *crate::PROBE_T0.get_or_init(Instant::now);
+        let t0 = *crate::PROBE_T0.get_or_init(std::time::Instant::now);
         eprintln!("PROBE {:>7.1}ms [{}] {}", t0.elapsed().as_secs_f64() * 1e3, std::thread::current().name().unwrap_or("?"), format!($($a)*));
     }};
 }

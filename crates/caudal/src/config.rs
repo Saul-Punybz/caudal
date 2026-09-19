@@ -502,6 +502,25 @@ fn default_segment_secs() -> u32 {
     4
 }
 
+/// One `[[record.schedule]]` entry: a start/stop window in time for streams
+/// not already covered by `[record] streams`. Either `start` (a one-off
+/// RFC 3339 instant) or `cron` (a recurring 5-field crontab, `min hour dom
+/// month dow`, e.g. `"0 18 * * MON-FRI"`, evaluated in `tz`) — not both.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleSection {
+    /// Stream names or `prefix*` patterns this window applies to.
+    pub streams: Vec<String>,
+    pub start: Option<String>,
+    pub cron: Option<String>,
+    /// IANA zone name for `cron` (default UTC). Ignored for `start`, which
+    /// already carries its own offset.
+    pub tz: Option<String>,
+    /// Seconds, not minutes: lets a short window (or a fast end-to-end
+    /// test) use less than a minute; an hour-long show just passes 3600.
+    pub duration_secs: u32,
+}
+
 /// Recording to disk (and optionally object storage), VOD and clips.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
@@ -515,6 +534,9 @@ pub struct RecordSection {
     pub segment_secs: u32,
     pub retention_hours: Option<u32>,
     pub upload_url: Option<String>,
+    /// `[[record.schedule]]`: start/stop windows for streams not in
+    /// `streams` above (which always means "always record").
+    pub schedule: Vec<ScheduleSection>,
 }
 
 impl Default for RecordSection {
@@ -526,19 +548,36 @@ impl Default for RecordSection {
             segment_secs: default_segment_secs(),
             retention_hours: None,
             upload_url: None,
+            schedule: Vec::new(),
         }
     }
 }
 
 impl RecordSection {
-    pub fn to_record_config(&self) -> Option<caudal_record::RecordConfig> {
-        self.enabled.then(|| caudal_record::RecordConfig {
+    pub fn to_record_config(&self) -> Result<Option<caudal_record::RecordConfig>, String> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let schedules: Vec<caudal_record::ScheduleConfig> = self
+            .schedule
+            .iter()
+            .map(|s| caudal_record::ScheduleConfig {
+                streams: s.streams.clone(),
+                start: s.start.clone(),
+                cron: s.cron.clone(),
+                tz: s.tz.clone(),
+                duration_secs: s.duration_secs,
+            })
+            .collect();
+        caudal_record::validate_schedules(&schedules)?;
+        Ok(Some(caudal_record::RecordConfig {
             dir: self.dir.clone(),
             streams: self.streams.clone(),
             segment_secs: self.segment_secs.max(1),
             retention_hours: self.retention_hours,
             upload_url: self.upload_url.clone(),
-        })
+            schedules,
+        }))
     }
 }
 
@@ -567,7 +606,9 @@ impl Default for MoqSection {
 }
 
 impl MoqSection {
-    pub fn to_moq_config(&self) -> Result<Option<caudal_moq::MoqConfig>, String> {
+    /// `buffer`: for streams ingested over MoQ (`publish/<name>`), the same
+    /// `[buffer]` every other ingest protocol uses.
+    pub fn to_moq_config(&self, buffer: caudal_core::BufferConfig) -> Result<Option<caudal_moq::MoqConfig>, String> {
         if !self.enabled {
             return Ok(None);
         }
@@ -582,7 +623,7 @@ impl MoqSection {
             },
             _ => return Err("[moq] needs both `cert` and `key`, or neither".into()),
         };
-        Ok(Some(caudal_moq::MoqConfig { bind: self.bind, cert }))
+        Ok(Some(caudal_moq::MoqConfig { bind: self.bind, cert, buffer }))
     }
 }
 
@@ -928,7 +969,8 @@ impl Config {
         self.access.to_access_config()?;
         self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
-        self.moq.to_moq_config()?;
+        self.moq.to_moq_config(self.buffer.to_buffer_config())?;
+        self.record.to_record_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         self.rtsp.to_tls_config()?;
         if let Some(admin) = &self.admin {

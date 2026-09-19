@@ -95,7 +95,7 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
 - [x] **M3: LL-HLS / CMAF output.** (browser playback still to confirm) First playable path: OBS → Caudal → browser.
 - [x] **M4: SRT** in (batch 2) and out: pull + push (batch 6).
 - [x] **M5: WebRTC.** WHIP in, WHEP out (no TURN yet; AAC sources video-only until M11).
-- [x] **M6: MoQ / WebTransport.** Output done (ingest over MoQ still to do).
+- [x] **M6: MoQ / WebTransport.** Output and ingest both done (batch 11: an encoder publishes a `hang` broadcast to `publish/<name>`, converted into a normal `caudal_core::Publisher`).
 - [x] **M7: Auth + TLS.** JWT/JWKS, webhooks, ACME (ACME untested against a real CA; Safari over h2 pending a trusted local cert).
 - [x] **M8: Recording and VOD.** (batch 6; S3/GCS upload untested against real buckets) MP4 to disk, DVR window, MP4/TS/MKV file inputs.
 - [ ] **M9: RTSP** pull (retina) and server.
@@ -182,6 +182,6 @@ claiming in public.
 | 9 | **Close the gap with MediaMTX (Saul, 18 Sep 2026):** (1) RTSP over UDP + RTSPS in `caudal-rtsp` (today TCP only, UDP answers 461); (2) hot config reload without dropping viewers (SIGHUP + `POST /api/v1/config/reload`; diff sections, restart only what changed); (3) side-by-side benchmark vs MediaMTX v1.21 on the same machine: CPU, RSS, binary size, glass-to-glass latency at 1/100/1,000 viewers over LL-HLS, WHEP, RTSP; script in `bench/`, results in `docs/research/BENCH-MEDIAMTX.md`. No "faster" claim until (3) exists. | Sonnet (1, 2), Opus (3) | next |
 | 10 | M10 origin-edge clustering on `moq-relay` cluster (xiu as RTMP reference), failover/backup source | Opus | planned |
 | 10 | Live captions (Whisper-class, es/en) → WebVTT in LL-HLS: `caudal-captions` (candle, pure Rust), `[captions]`; design + measured RTF in docs/research/CAPTIONS.md. CEA-608 in TS not built | Opus | done (feat/live-captions) |
-| 11 | Recording schedules, geo-blocking/IP lists, DASH, MoQ ingest, MoQ on Safari 26.4+ | Sonnet | planned |
+| 11 | Recording schedules ([[record.schedule]]) and MoQ ingest (`publish/<name>`) done; geo-blocking/IP lists shipped earlier (PR #8); DASH and MoQ on Safari 26.4+ still open | Sonnet | partly done |
 | 12 | Helm chart, Raspberry Pi image, `caudal doctor`, hot config reload, MistServer config import | Haiku/Sonnet | planned |
 | 12 | OMT protocol + discovery (`open-media-transport`), player SDKs, watermarking (visible first, then A/B segment forensic) | Opus/Sonnet | planned |

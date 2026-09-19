@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use caudal_core::{Event, Stream, Subscriber};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::watch;
 
 use crate::Shared;
 use crate::meta::{Meta, SegEntry, TrackMeta, id_for, playlist, rfc3339, segment_name, write_atomic};
@@ -41,18 +42,76 @@ impl Recording {
     }
 }
 
-pub(crate) async fn run(shared: Arc<Shared>, stream: Arc<Stream>, mut sub: Subscriber) {
+/// `gate`: `None` records unconditionally (a `[record] streams` match, the
+/// original behaviour, untouched below); `Some(rx)` is a schedule gate —
+/// frames and track changes are only applied to the segmenter while `*rx.
+/// borrow()` is true. The task itself lives for as long as the stream does
+/// either way, so it is already running (and sees the live tracks) the
+/// instant a window opens, including one that opens while the stream was
+/// already live.
+pub(crate) async fn run(
+    shared: Arc<Shared>,
+    stream: Arc<Stream>,
+    mut sub: Subscriber,
+    mut gate: Option<watch::Receiver<bool>>,
+) {
     let name = stream.name().to_owned();
     let mut seg = Segmenter::new(shared.cfg.segment_secs.max(1).saturating_mul(1000));
     let mut rec: Option<Recording> = None;
     // The next frame is the oldest in the buffer (start, or after a lag):
     // its wall clock is "now" minus what is buffered after it.
     let mut fresh = true;
+    let mut active = gate.as_ref().is_none_or(|g| *g.borrow());
     loop {
-        let ev = sub.recv().await;
+        let ev = match gate.as_mut() {
+            Some(g) => {
+                tokio::select! {
+                    biased;
+                    changed = g.changed() => {
+                        if changed.is_err() {
+                            // The scheduler is gone (shouldn't happen: its
+                            // tasks run for the process lifetime). Freeze
+                            // the gate as it last stood rather than guess.
+                            gate = None;
+                            continue;
+                        }
+                        let now_active = *g.borrow_and_update();
+                        if now_active == active {
+                            continue;
+                        }
+                        active = now_active;
+                        if !active {
+                            // Close cleanly, exactly like falling behind:
+                            // flush what's open, mark the next start as a
+                            // discontinuity (fresh anchor, wait for a
+                            // keyframe) for whenever the next window opens.
+                            seg.lagged();
+                            let outs = seg.take();
+                            if let Err(e) = apply(&shared, &name, &seg, &mut rec, outs).await {
+                                tracing::error!(stream = %name, error = %e, "recording stopped: write failed");
+                                if let Some(r) = rec.take() {
+                                    finish(&shared, r, Some(format!("write failed: {e}"))).await;
+                                }
+                                break;
+                            }
+                            if let Some(done) = rec.take() {
+                                tracing::info!(stream = %name, id = %done.meta.id, "schedule window closed");
+                                finish(&shared, done, None).await;
+                            }
+                        } else {
+                            fresh = true;
+                            tracing::info!(stream = %name, "schedule window opened; recording starts at the next keyframe");
+                        }
+                        continue;
+                    }
+                    ev = sub.recv() => ev,
+                }
+            }
+            None => sub.recv().await,
+        };
         let end = ev == Event::End;
         let res = match ev {
-            Event::TracksChanged => {
+            Event::TracksChanged if active => {
                 if seg.set_tracks(&sub.tracks()) {
                     let outs = seg.take();
                     let r = apply(&shared, &name, &seg, &mut rec, outs).await;
@@ -70,7 +129,15 @@ pub(crate) async fn run(shared: Arc<Shared>, stream: Arc<Stream>, mut sub: Subsc
                     Ok(())
                 }
             }
-            Event::Frame(f) => {
+            // Inactive: still track what the live tracks are (cheap, no
+            // segments come out of it) so the segmenter isn't stale about
+            // codecs/init once the next window opens.
+            Event::TracksChanged => {
+                seg.set_tracks(&sub.tracks());
+                seg.take();
+                Ok(())
+            }
+            Event::Frame(f) if active => {
                 let mut now = SystemTime::now();
                 if std::mem::take(&mut fresh) {
                     now -= Duration::from_micros(stream.stats().buffered_micros.max(0) as u64);
@@ -79,13 +146,15 @@ pub(crate) async fn run(shared: Arc<Shared>, stream: Arc<Stream>, mut sub: Subsc
                 let outs = seg.take();
                 apply(&shared, &name, &seg, &mut rec, outs).await
             }
-            Event::Lagged { skipped } => {
+            Event::Frame(_) => Ok(()),
+            Event::Lagged { skipped } if active => {
                 tracing::warn!(stream = %name, skipped, "recorder fell behind; frames skipped (discontinuity)");
                 seg.lagged();
                 fresh = true;
                 let outs = seg.take();
                 apply(&shared, &name, &seg, &mut rec, outs).await
             }
+            Event::Lagged { .. } => Ok(()),
             Event::Cue(_) => Ok(()),
             Event::End => {
                 seg.end();

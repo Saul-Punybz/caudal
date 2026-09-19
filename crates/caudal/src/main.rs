@@ -229,7 +229,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     );
 
     // MoQ failing to start (e.g. its UDP port is taken) disables MoQ only.
-    let moq_router = match cfg.moq.to_moq_config().expect("validated") {
+    let moq_router = match cfg.moq.to_moq_config(cfg.buffer.to_buffer_config()).expect("validated") {
         Some(moq) => {
             let bind = moq.bind;
             match caudal_moq::start(registry.clone(), moq) {
@@ -248,7 +248,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
 
     // Recording failing to start (e.g. its directory is not writable)
     // disables recording only.
-    let record_router = match cfg.record.to_record_config() {
+    let record_router = match cfg.record.to_record_config().expect("validated") {
         Some(rc) => {
             let dir = rc.dir.display().to_string();
             match caudal_record::start(registry.clone(), rc, trusted_proxies.clone()) {

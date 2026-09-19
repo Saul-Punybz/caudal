@@ -28,7 +28,25 @@ pub(crate) fn router(shared: Arc<Shared>) -> Router {
         .route("/api/v1/recordings/{stream}/{id}", get(get_one).delete(delete_one))
         .route("/vod/{stream}/{id}/{file}", get(vod_file))
         .route("/api/v1/clips", post(clip_route))
+        .route("/api/v1/record/schedules", get(schedules_route))
         .with_state(shared)
+}
+
+/// `[[record.schedule]]` entries with the window each is in or next has,
+/// newest window first. Server-operational metadata (which windows are
+/// configured, not stream content), so unlike every other route here it
+/// takes no token.
+async fn schedules_route(State(shared): State<Arc<Shared>>) -> Response {
+    let mut out = shared.scheduler.describe(jiff::Timestamp::now());
+    // RFC 3339 in a fixed UTC offset sorts chronologically as text; an
+    // exhausted one-off `start` (no next window) sorts last.
+    out.sort_by(|a, b| match (a.next_start(), b.next_start()) {
+        (Some(x), Some(y)) => x.cmp(y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    json(&out)
 }
 
 fn respond(status: StatusCode, content_type: &'static str, body: impl Into<Body>) -> Response {

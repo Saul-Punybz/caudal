@@ -65,10 +65,31 @@ max_mb = 256  # Maximum buffer size in megabytes
 # [record]
 # enabled = true
 # dir = "recordings"
-# streams = ["*"]            # names or "prefix*"
+# streams = ["*"]            # names or "prefix*"; these record always
 # segment_secs = 4
 # retention_hours = 168      # delete ended recordings after 7 days
 # upload_url = "s3://bucket/caudal"   # credentials from AWS_* env vars
+
+# Recording schedules: start/stop a recording by time instead of recording
+# every stream in full. A stream matched by `streams` above always records;
+# a schedule only applies to a stream that isn't. Each rule is either a
+# one-off `start` (RFC 3339) or a recurring `cron` (5-field crontab: min
+# hour dom month dow) evaluated in `tz` (IANA name, default UTC) - not both.
+# A window that starts before the stream goes live starts recording as soon
+# as it does; a window that ends closes the recording cleanly (VOD ENDLIST).
+# Next/current windows: GET /api/v1/record/schedules (no token: operational
+# metadata, not stream content).
+# [[record.schedule]]
+# streams = ["studio"]
+# cron = "0 18 * * MON-FRI"   # weekdays at 18:00
+# tz = "America/Puerto_Rico"
+# duration_secs = 3600        # 1 hour; seconds, not minutes, so short clips
+#                              # (and fast tests) don't need a minimum of 60 s
+#
+# [[record.schedule]]
+# streams = ["townhall"]
+# start = "2026-09-20T18:00:00-04:00"
+# duration_secs = 5400        # 90 minutes
 
 # Send streams out over SRT (pull: srt://host:9000?streamid=play/<name>).
 # [[srt.push]]
@@ -165,6 +186,23 @@ max_mb = 256  # Maximum buffer size in megabytes
 # udp_bind = "0.0.0.0:8189"
 # public_ips = []        # addresses to advertise behind a 1:1 NAT
 # threads = 0            # peer engines doing SRTP; 0 = one per core, at most 8
+
+# Media over QUIC: output over WebTransport (on by default, self-signed cert
+# unless cert/key are set) and ingest. An encoder publishes a `hang`
+# broadcast (H.264/H.265 + AAC/Opus, avcC/hvcC or AudioSpecificConfig/
+# OpusHead in the catalog) to wss://host:4443/publish/<name>?jwt=<token>
+# (a publish-scoped [auth] token, same rules as every other ingest
+# protocol); Caudal converts it into a normal stream, so every output (LL-
+# HLS, WHEP, RTMP restream, recording, MoQ playback...) carries it exactly
+# like an RTMP or WHIP publish. Verify with any `hang`/`moq-mux`-based
+# publisher for the pinned moq-net draft (see REUSE.md); moq-clock/moq-cli
+# style tools are for the moq-lite predecessor and don't apply here.
+# [moq]
+# enabled = true
+# bind = "0.0.0.0:4443"
+# cert = "/etc/caudal/fullchain.pem"  # omit both for a rotating self-signed cert
+# key = "/etc/caudal/privkey.pem"
+# hosts = []             # self-signed cert hostnames; default ["localhost", "127.0.0.1"]
 
 # Geo-blocking / IP allow-lists per stream, enforced on every protocol
 # (RTMP, SRT, RTSP, WHIP/WHEP, HLS/VOD; MoQ only for country/token rules —

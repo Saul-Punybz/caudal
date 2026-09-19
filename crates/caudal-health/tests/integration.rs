@@ -51,18 +51,22 @@ async fn spawn_receiver() -> (String, Captured) {
     (format!("http://{addr}/hook"), state)
 }
 
-// A generous bound, not a tight one: this machine runs several agents'
-// builds concurrently (see the batch brief), and a starved single-threaded
-// runtime can lose many real seconds before the scheduler gets back to it.
-// The rule thresholds below (1s) are what is actually under test; this
-// timeout only guards against the delivery genuinely never happening.
+// The rule thresholds below (1s) are what is under test; this timeout only
+// guards against a delivery that never happens. It was 90 s, blamed on load;
+// the real cause was a lost wake-up in this helper (fixed below).
 async fn wait_for(state: &Captured, n: usize) {
-    tokio::time::timeout(Duration::from_secs(90), async {
+    tokio::time::timeout(Duration::from_secs(20), async {
         loop {
+            // Register before checking: `notify_waiters` only wakes waiters
+            // that already exist, so checking first and then waiting lost
+            // any delivery that landed in between (CI hung to the timeout).
+            let notified = state.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if state.count.load(Ordering::SeqCst) >= n {
                 return;
             }
-            state.notify.notified().await;
+            notified.await;
         }
     })
     .await

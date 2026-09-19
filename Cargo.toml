@@ -50,7 +50,12 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
+# Never "abort": with unwind, tokio contains a panic to the task that hit it
+# (one connection or one stream), instead of killing every stream on the
+# server. Debug builds, where all tests run, always unwind, so abort was a
+# production-only failure mode no test could see. Guarded by
+# crates/caudal/tests/release_profile.rs.
+panic = "unwind"
 
 # scuffle-rtmp 0.2.3 (latest) froze timestamps on Type 3 chunks that start a
 # new message. Patched copy with a regression test; see vendor/README.md.

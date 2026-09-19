@@ -34,7 +34,17 @@ pub async fn serve(cfg: RtmpConfig, registry: Arc<Registry>) -> std::io::Result<
     tracing::info!(bind = %cfg.bind, app = %cfg.app, "rtmp listening");
 
     loop {
-        let (stream, addr) = listener.accept().await?;
+        // One accept error (EMFILE when out of file descriptors, a
+        // connection reset before accept) must not stop the listener for
+        // good while /healthz keeps saying OK. Same policy as axum::serve.
+        let (stream, addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::warn!(error = %e, "rtmp accept failed; retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let registry = registry.clone();
         let app = cfg.app.clone();
         let buffer = cfg.buffer;

@@ -215,7 +215,16 @@ async fn accept_plain(
     let listener = TcpListener::bind(bind).await?;
     tracing::info!(%bind, "rtsp server listening");
     loop {
-        let (socket, peer) = listener.accept().await?;
+        // One accept error (EMFILE, a reset before accept) must not stop the
+        // listener for good. Same policy as axum::serve.
+        let (socket, peer) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::warn!(error = %e, "rtsp accept failed; retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let _ = socket.set_nodelay(true);
         let local = socket.local_addr().unwrap_or(bind);
         let registry = registry.clone();
@@ -245,7 +254,16 @@ async fn accept_tls(
     let listener = TcpListener::bind(bind).await?;
     tracing::info!(%bind, "rtsps server listening");
     loop {
-        let (socket, peer) = listener.accept().await?;
+        // One accept error (EMFILE, a reset before accept) must not stop the
+        // listener for good. Same policy as axum::serve.
+        let (socket, peer) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::warn!(error = %e, "rtsps accept failed; retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let _ = socket.set_nodelay(true);
         let local = socket.local_addr().unwrap_or(bind);
         let acceptor = acceptor.clone();

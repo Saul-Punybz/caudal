@@ -120,8 +120,16 @@ pub async fn serve(cfg: SrtConfig, registry: Arc<Registry>) -> std::io::Result<(
     tracing::info!(bind = %cfg.bind, "srt listening");
 
     loop {
-        let (socket, peer) =
-            listener.accept().await.map_err(|err| std::io::Error::other(format!("srt accept failed: {err}")))?;
+        // One accept error must not stop the listener for good while
+        // /healthz keeps saying OK. Same policy as axum::serve.
+        let (socket, peer) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::warn!(error = %err, "srt accept failed; retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let registry = registry.clone();
         let buffer = cfg.buffer;
         // Each connection runs on its own task: a panic, a slow client or a

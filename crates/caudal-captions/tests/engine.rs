@@ -214,6 +214,7 @@ async fn a_live_aac_stream_gets_cues() {
         p.push(Frame { track: TrackId(0), dts: ts, pts: ts, keyframe: true, data: d.clone().into() }).unwrap();
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    let last_push = Instant::now();
     let t0 = Instant::now();
     let cues = loop {
         let cues = captions.cues("news-es", i64::MIN, i64::MAX);
@@ -228,11 +229,15 @@ async fn a_live_aac_stream_gets_cues() {
     eprintln!("pipeline ({voice:?}): recall {:.0}%, {} cues: {text}", r * 100.0, cues.len());
     assert!(r >= if voice == Voice::Say { 0.8 } else { 0.5 }, "recall {r:.2}: {text}");
     // On the stream's clock, after the speech began, never before it; at
-    // most the live edge (speech, then 4 s of silence) plus the reading
-    // time of the cues before them.
+    // most the live edge when we read them: the media pushed (speech, then
+    // 4 s of silence), plus the wall time since the last push (cues land at
+    // the live edge once their text is ready, and the edge keeps moving),
+    // plus the reading time of the cues before them. A fixed bound failed
+    // on a 4-core CI runner where inference ran slower than real time.
     let start = 100_000_000;
+    let live_edge = start + total_us + 4_000_000 + last_push.elapsed().as_micros() as i64;
     for c in &cues {
-        assert!(c.start_us >= start && c.start_us <= start + total_us + 15_000_000, "{c:?}");
+        assert!(c.start_us >= start && c.start_us <= live_edge + 5_000_000, "live edge {live_edge}: {c:?}");
         assert!(c.end_us > c.start_us && c.text.lines().count() <= 2, "{c:?}");
         assert!(c.text.lines().all(|l| l.chars().count() <= caudal_captions::cues::LINE), "{c:?}");
     }

@@ -5,8 +5,25 @@ people actually use in 2026. It is a rewrite of
 [MistServer](https://github.com/DDVTECH/mistserver) that keeps its breadth and
 drops its crash classes.
 
-**Status:** early. The core live buffer is done and tested; no protocol is wired
-up yet. See [PLAN.md](PLAN.md).
+**Status:** pre-release, v0.1 in progress. Every core protocol is wired up and
+tested: RTMP/E-RTMP, SRT, WHIP, RTSP and MoQ ingest; LL-HLS, WHEP, MoQ, SRT and
+RTSP output, plus IP multicast; recording/VOD/clips, transcoding ladders, 24/7
+channels from files, origin-edge clustering, admin login, and live captions.
+See [PLAN.md](PLAN.md) for the full milestone list and [STATUS.md](STATUS.md)
+for exactly where things stand. A side-by-side benchmark against MediaMTX
+v1.21 is in [docs/research/BENCH-MEDIAMTX.md](docs/research/BENCH-MEDIAMTX.md)
+— read its Conclusion before repeating any "faster" claim, since it's only
+true for specific metrics measured there (LL-HLS and RTSP fan-out CPU, binary
+size, idle memory), not across the board.
+
+## Get started
+
+[docs/QUICKSTART.md](docs/QUICKSTART.md) — install (release tarball, Docker,
+or build from source), write a minimal `caudal.toml`, run it, and check the
+setup with `caudal doctor`.
+
+[docs/OBS.md](docs/OBS.md) — exact OBS settings to publish into Caudal, watch
+it in a browser, and measure glass-to-glass latency.
 
 ## Build
 

@@ -582,6 +582,7 @@ dependencies = [
  "caudal-auth",
  "caudal-channel",
  "caudal-core",
+ "caudal-failover",
  "caudal-health",
  "caudal-hls",
  "caudal-moq",
@@ -710,6 +711,22 @@ dependencies = [
  "parking_lot",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "caudal-failover"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-channel",
+ "caudal-core",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
  "tracing",
 ]
 

@@ -2,8 +2,8 @@
 //! and, in [`Supervisor`], keeps what a config reload needs to apply the
 //! smallest correct change per section:
 //!
-//! - **Hot, no restart:** `[[restream]]`, `[[channel]]`, `[[srt.push]]`,
-//!   `[[rtsp.pull]]` are each their own subsystem with a `reload` that
+//! - **Hot, no restart:** `[[restream]]`, `[[channel]]`, `[[failover]]`,
+//!   `[[srt.push]]`, `[[rtsp.pull]]` are each their own subsystem with a `reload` that
 //!   diffs by identity — unchanged entries keep their task untouched, so
 //!   a reload never drops an unrelated viewer or publisher. `[auth]` and
 //!   `[hooks]` swap in place (`Registry::set_gate` is a live snapshot
@@ -274,6 +274,7 @@ pub struct Supervisor {
 
     restream: caudal_restream::RestreamHandle,
     channel: caudal_channel::ChannelHandle,
+    failover: caudal_failover::FailoverHandle,
     srt_push: caudal_srt::PushHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
     transcode: caudal_transcode::TranscodeHandle,
@@ -296,6 +297,9 @@ pub struct Started {
     pub supervisor: Arc<Supervisor>,
     pub restream_router: axum::Router,
     pub channel_router: axum::Router,
+    pub failover_router: axum::Router,
+    /// For forwarding switch events to health webhooks.
+    pub failover: caudal_failover::FailoverHandle,
     /// For `main::run` to hand to `api::AppState::set_access`, so
     /// `/metrics` can render `caudal_access_denied_total`.
     pub access: Arc<caudal_access::Checker>,
@@ -303,7 +307,7 @@ pub struct Started {
 
 impl Supervisor {
     /// Starts every reloadable subsystem (RTMP, SRT, RTSP, restream,
-    /// channels, transcode, auth, hooks) from `cfg`. WebRTC, MoQ, HLS,
+    /// channels, failover, transcode, auth, hooks) from `cfg`. WebRTC, MoQ, HLS,
     /// recording, TLS and the HTTP listener are started by `main::run`
     /// itself: they're wired once into the app `Router` and are not part
     /// of the hot-reload surface (see module docs).
@@ -341,6 +345,16 @@ impl Supervisor {
         );
         let channel_router = caudal_channel::router(channel.clone());
 
+        let failover = caudal_failover::start(
+            registry.clone(),
+            caudal_failover::FailoverConfig {
+                entries: cfg.failovers().expect("validated"),
+                buffer,
+                trusted_proxies: trusted_proxies.clone(),
+            },
+        );
+        let failover_router = caudal_failover::router(failover.clone());
+
         let supervisor = Arc::new(Supervisor {
             registry,
             buffer,
@@ -350,6 +364,7 @@ impl Supervisor {
             rtsp_listen,
             restream,
             channel,
+            failover: failover.clone(),
             srt_push,
             rtsp_pull,
             transcode,
@@ -357,7 +372,7 @@ impl Supervisor {
             access: access.clone(),
             current: Mutex::new(cfg.clone()),
         });
-        Started { supervisor, restream_router, channel_router, access }
+        Started { supervisor, restream_router, channel_router, failover_router, failover, access }
     }
 
     /// Validates `new_cfg`, then applies the smallest correct action per
@@ -384,6 +399,14 @@ impl Supervisor {
                 trusted_proxies: self.trusted_proxies.clone(),
             });
             report.applied.push("channel".into());
+        }
+        if old.failover != new_cfg.failover {
+            self.failover.reload(caudal_failover::FailoverConfig {
+                entries: new_cfg.failovers().expect("validated"),
+                buffer: self.buffer,
+                trusted_proxies: self.trusted_proxies.clone(),
+            });
+            report.applied.push("failover".into());
         }
         if old.srt.push != new_cfg.srt.push {
             self.srt_push.reload(&self.registry, new_cfg.srt.push_targets());

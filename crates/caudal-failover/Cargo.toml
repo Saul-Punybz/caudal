@@ -1,0 +1,23 @@
+[package]
+name = "caudal-failover"
+description = "Backup sources for Caudal streams: switch to a backup when the primary goes silent, back when it recovers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+caudal-channel.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+bytes.workspace = true

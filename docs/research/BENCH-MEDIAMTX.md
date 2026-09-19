@@ -21,7 +21,8 @@ the same evening with a corrected decoder command
 | LL-HLS, 1,000 viewers: server CPU | 83 % | 168 % | **Caudal about 2x less CPU** |
 | LL-HLS, 1,000 viewers: server RSS | 215 MB | 339 MB | **Caudal less** |
 | LL-HLS, 100 / 300 viewers: server CPU | 8.7 % / 26.5 % | 26.7 % / 72.4 % | **Caudal about 3x less** |
-| RTSP (TCP), 100 / 300 viewers: server CPU | 122 % / 319 % | 104 % / 278 % | **MediaMTX about 15 % less** |
+| RTSP (TCP), 100 / 300 viewers: server CPU (M4, before the send-path fix) | 122 % / 319 % | 104 % / 278 % | MediaMTX about 15 % less |
+| RTSP (TCP), 100 / 300 viewers: server CPU (Linux runner, after the fix, 19 Sep) | 11.5 % / 29.9 % | 63.0 % / 184 % | **Caudal about 5–6x less** (see "RTSP after the send-path fix") |
 | RTSP, 1,000 viewers | 14 of 1,000 kept up | 0 of 1,000 kept up | neither works here; the machine's network memory is the limit (see below) |
 | WHEP, 100 viewers: CPU / RSS (after the WebRTC fixes, 19 Sep) | 70 % / 364 MB | 69 % / 513 MB | tie on CPU, **Caudal less memory** |
 | WHEP, 300 viewers (after the fixes) | **1,799 Mbps, 300 of 300 kept up**, 315 % CPU, 829 MB | 1,666 Mbps, 262 of 300 kept up (0 in one run), 178 % CPU, 1,394 MB | **Caudal delivers every viewer, with less memory and more CPU** |
@@ -32,7 +33,9 @@ the same evening with a corrected decoder command
 "Faster" is supported for **LL-HLS fan-out CPU and memory**, **WHEP delivery
 at 300 viewers** (every viewer kept up, less memory, but more CPU), binary
 size and idle memory. On RTSP fan-out CPU and memory with one live stream,
-MediaMTX is better today; latency is a tie.
+MediaMTX was better on 18 Sep; after the 19 Sep send-path fix, measured on
+GitHub's Linux runners, Caudal's RTSP fan-out uses about a fifth of
+MediaMTX's CPU (see "RTSP after the send-path fix"). Latency is a tie.
 
 ## Setup
 
@@ -207,7 +210,7 @@ What the table says:
   kept up; MediaMTX's runs showed none.
 - **RTSP costs Caudal about 15–17 % more CPU** than MediaMTX at 100 and 300
   viewers, with the same egress and no loss on either. Memory is about the
-  same.
+  same. (Fixed 19 Sep: see "RTSP after the send-path fix".)
 - **RTSP at 1,000 viewers doesn't work on this machine, for either server.**
   Each run exhausted the kernel's network memory (mbuf denials in every
   run, 7,600 for Caudal and 46,000 for MediaMTX); `kern.ipc.nmbclusters` is
@@ -271,6 +274,59 @@ MediaMTX's 1,528, but the load client used 260 % CPU and the kernel dropped
 338,805 datagrams: that cell measures the laptop. It needs a second machine.
 Caudal still uses more CPU than MediaMTX at 300 viewers; the next profile
 should look at per-packet allocation (`Vec` per datagram) and batched sends.
+
+### RTSP after the send-path fix (19 Sep 2026, Linux)
+
+Measured on GitHub's `ubuntu-latest` runners with `.github/workflows/bench.yml`
+(`protos=rtsp levels=100,300 reps=3 only=fanout`), not on the laptop.
+Shared runners are noisy between runs, so compare Caudal against MediaMTX
+inside each run, not across runs.
+
+**Where the CPU went.** `perf record -g` on the server during the RTSP x300
+cell (workflow input `profile=rtsp:300`; release build with line tables):
+86.7 % of Caudal's samples sat under `TcpStream::poll_write`, i.e. the send
+syscall and the kernel TCP/loopback path below it. The play task wrote
+every RTP packet with its own `write_all` (TCP_NODELAY is on, so one
+`send` and one TCP segment per packet, about 600 per second per viewer at
+6 Mbps) and allocated three `Vec`s per packet (FU-A payload, RTP packet,
+interleaved frame; `malloc` 1.75 % self). Packetizing itself was 2.6 %.
+Profile runs: before
+[35438640329](https://github.com/Saul-Punybz/caudal/actions/runs/35438640329),
+after [35438642844](https://github.com/Saul-Punybz/caudal/actions/runs/35438642844)
+(artifacts hold `perf report` text and flamegraphs for both servers).
+Caudal's total sampled cycles in the 28 s window fell from 23.9 G to 5.9 G;
+MediaMTX's in the same runs were 25.4 G and 32.8 G (runner noise).
+
+**Fix** (`crates/caudal-rtsp/src/rtp.rs`, `server.rs::play_task`): each
+access unit is packetized straight into one per-session buffer, reused
+across frames, with the `$` + channel + length prefix already in place.
+TCP (and RTSPS) sends the whole access unit with one write; UDP sends the
+same bytes minus the prefix, one datagram per packet. No per-packet
+allocation. The buffer is dropped after a frame above 64 KB (a keyframe) so
+idle viewers don't each hold a keyframe's worth of memory.
+
+**Result**, median (min–max) of 3 repetitions, server CPU in % of one core,
+same egress and zero RTP loss on both in every cell:
+
+| Viewers | Build | Caudal CPU % | MediaMTX CPU % (same run) | Caudal / MediaMTX | Caudal RSS MB | MediaMTX RSS MB | Egress Mbps (both) |
+|---|---|---|---|---|---|---|---|
+| 100 | before (`main`) | 41.1 (40.5–43.6) | 42.0 (40.5–43.9) | 0.98 | 116 | 103 | 613–615 |
+| 100 | after | 11.5 (11.5–11.5) | 63.0 (62.8–63.0) | 0.18 | 111 | 105 | 613–614 |
+| 300 | before (`main`) | 120 (118–128) | 122 (121–125) | 0.98 | 150 | 124 | 1,838–1,843 |
+| 300 | after | 29.9 (29.3–30.5) | 184 (182–186) | 0.16 | 131 | 124 | 1,842–1,843 |
+
+Runs: before
+[35438650106](https://github.com/Saul-Punybz/caudal/actions/runs/35438650106),
+after [35438653990](https://github.com/Saul-Punybz/caudal/actions/runs/35438653990).
+Two readings: on Linux the 18 Sep gap measured on the M4 was already a tie
+(0.98), and after the fix Caudal uses about a sixth of MediaMTX's CPU for
+the same delivery. The after run's MediaMTX numbers are higher than the
+before run's (a different, busier runner), which is why the ratio, not the
+absolute CPU, is the result; Caudal's own CPU also fell about 4x across
+runs. RSS fell by about 20 MB at 300 viewers. Not re-measured: the M4, RTSP
+over UDP under load (e2e decode only), and RTSP latency (one write per
+frame sends the same packets at the same moment, so no change is
+expected, but that is not measured).
 
 ### Latency
 
@@ -342,11 +398,13 @@ same session, 1-minute load average 3.5–5.3 from other work on the machine.
 ## Conclusion
 
 Wins for Caudal: binary 2.5x smaller (21.8 vs 54.1 MB), idle memory 2.5x
-lower (14 vs 35 MB), and LL-HLS fan-out at about half the CPU per gigabit
-with less memory, zero errors on both, up to 1,000 viewers.
+lower (14 vs 35 MB), LL-HLS fan-out at about half the CPU per gigabit
+with less memory, zero errors on both, up to 1,000 viewers, and (after the
+19 Sep send-path fix, on Linux) RTSP fan-out at about a sixth of MediaMTX's
+CPU for the same egress.
 
 Losses for Caudal: more memory per live stream (98 vs 80 MB; 87 MB with an
-equal 14 s buffer), about 15 % more CPU for RTSP fan-out, and more CPU for
+equal 14 s buffer), and more CPU for
 WHEP at 300 viewers (315 vs 178 %) although it now keeps every viewer up
 where MediaMTX does not (see "WHEP after the fixes"; the original WHEP
 collapse is fixed).
@@ -357,6 +415,7 @@ both: RTSP at 1,000 viewers.
 Do not claim "faster than MediaMTX" in general. Claims these numbers
 support: "a smaller binary and lower idle memory than MediaMTX" and "LL-HLS
 fan-out at about half MediaMTX's CPU on the same machine". Next fixes that
-the benchmark points to: WHEP CPU per packet (allocation, batched sends),
-RTSP send-path CPU, and memory per live stream. Also supported now: "WHEP
+the benchmark points to: WHEP CPU per packet (allocation, batched sends)
+and memory per live stream. Also supported now, on Linux: "RTSP fan-out
+at a fraction of MediaMTX's CPU" (see "RTSP after the send-path fix"). Also supported now: "WHEP
 keeps every viewer up at 300 where MediaMTX does not, with less memory".

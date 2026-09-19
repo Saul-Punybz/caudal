@@ -353,6 +353,25 @@ def scenario_idle_publish(server, logf):
     return {"idle": idle, "publish": publish}
 
 
+PROFILED = set()  # (server, proto, n) cells already profiled: first rep only
+
+
+def start_profile(server, proto, n, pid, secs, logf):
+    """`perf record -g` the server during one fan-out window, when the cell
+    is listed in BENCH_PROFILE (e.g. "rtsp:300,whep:300"; Linux only, used
+    by the workflow's `profile` input). Only the first repetition of a
+    cell is profiled; perf's sampling overhead lands on that rep's CPU."""
+    cells = {c.strip() for c in os.environ.get("BENCH_PROFILE", "").split(",") if c.strip()}
+    key = (server, proto, n)
+    if f"{proto}:{n}" not in cells or key in PROFILED:
+        return None
+    PROFILED.add(key)
+    out = os.path.join(RESULTS, f"perf-{server}-{proto}-{n}.data")
+    log(f"    perf record -> {out}")
+    return spawn(["perf", "record", "-F", "499", "-g", "-p", str(pid), "-o", out, "--", "sleep", str(secs)],
+                 stdout=logf, stderr=subprocess.STDOUT)
+
+
 def scenario_fanout(server, proto, n, rates, logf):
     srv = start_server(server, logf)
     pub = start_publisher(server, False, logf)
@@ -371,8 +390,14 @@ def scenario_fanout(server, proto, n, rates, logf):
         # Sample strictly inside the client's own window (1 s margin each
         # side): a process that has exited reads as 0 CPU time in ps.
         time.sleep(warmup + 1)
+        prof = start_profile(server, proto, n, srv.pid, duration - 2, logf)
         with Window({"server": srv.pid, "client": cl.pid, "publisher": pub.pid}) as w:
             time.sleep(duration - 2)
+        if prof is not None:
+            try:
+                prof.wait(30)
+            except subprocess.TimeoutExpired:
+                stop(prof)
         try:
             cl.wait(30)
         except subprocess.TimeoutExpired:

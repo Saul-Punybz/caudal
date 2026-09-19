@@ -5,6 +5,13 @@ name: Benchmark (Linux)
 # builds). Shared runners are noisy: compare Caudal and MediaMTX within the
 # same run, not absolute numbers across runs.
 on:
+  # TEMPORARY, remove before merging: workflow_dispatch only fires from a
+  # branch once the workflow file is on the default branch, and PR #16
+  # (which adds this file) isn't merged yet. This push trigger lets the
+  # MistServer work be iterated on and dispatched from this branch; it is
+  # removed again once #16 is merged.
+  push:
+    branches: [bench/mistserver]
   workflow_dispatch:
     inputs:
       protos:
@@ -23,6 +30,9 @@ on:
         description: "Servers"
         default: "caudal,mediamtx"
 
+env:
+  MISTSERVER_VERSION: "3.11.2"
+
 jobs:
   bench:
     runs-on: ubuntu-latest
@@ -39,12 +49,33 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
           nproc; free -g; uname -a
+      - name: Tools for MistServer
+        # TEMPORARY fallback (see push trigger above): inputs.servers is
+        # unset on a push-triggered run.
+        if: contains(github.event_name == 'workflow_dispatch' && inputs.servers || 'caudal,mediamtx,mistserver', 'mistserver')
+        run: |
+          # Meson/Ninja build MistServer from source (bench/fetch-mistserver.sh);
+          # mbedtls and libsrtp2 are its only mandatory library deps here
+          # (SRT, RIST and WebRTC data channels are compiled out -- not in
+          # the bench matrix, see BENCH-MISTSERVER.md). Meson falls back to
+          # building mbedtls/libsrtp2 from source itself if these system
+          # packages are missing or too old.
+          sudo apt-get install -y meson ninja-build pkg-config libmbedtls-dev libsrtp2-dev
+      - name: Cache MistServer build
+        # TEMPORARY fallback, see above.
+        if: contains(github.event_name == 'workflow_dispatch' && inputs.servers || 'caudal,mediamtx,mistserver', 'mistserver')
+        uses: actions/cache@v4
+        with:
+          path: bench/.cache/mistserver-${{ env.MISTSERVER_VERSION }}
+          key: mistserver-${{ runner.os }}-${{ env.MISTSERVER_VERSION }}-${{ hashFiles('bench/fetch-mistserver.sh', 'bench/mistserver.json') }}
       - name: Run
+        # TEMPORARY fallback values after each `||` (see push trigger above)
+        # for a push-triggered iteration run; removed with the push trigger.
         run: |
           ulimit -n 65536 || true
-          bench/run.sh --reps "${{ inputs.reps }}" --only "${{ inputs.only }}" \
-            --protos "${{ inputs.protos }}" --levels "${{ inputs.levels }}" \
-            --servers "${{ inputs.servers }}" | tee bench-out.md
+          bench/run.sh --reps "${{ inputs.reps || '1' }}" --only "${{ inputs.only || 'idle,fanout,latency' }}" \
+            --protos "${{ inputs.protos || 'hls' }}" --levels "${{ inputs.levels || '100' }}" \
+            --servers "${{ inputs.servers || 'caudal,mediamtx,mistserver' }}" | tee bench-out.md
           cat bench-out.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()

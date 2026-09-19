@@ -11,8 +11,7 @@
       {"connector": "HLS"},
       {"connector": "WebRTC", "interface": "127.0.0.1"},
       {"connector": "RTMP", "interface": "127.0.0.1", "port": 1935},
-      {"connector": "RTSP", "interface": "127.0.0.1", "port": 8554},
-      {"connector": "TSSRT", "interface": "127.0.0.1", "port": 9000}
+      {"connector": "RTSP", "interface": "127.0.0.1", "port": 8554}
     ]
   },
   "streams": {

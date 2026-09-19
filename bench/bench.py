@@ -462,6 +462,8 @@ def machine():
             "ffmpeg": ver(["ffmpeg", "-version"]),
             "rustc": ver(["rustc", "--version"]),
             "mediamtx": ver([MTX_BIN, "--version"]),
+            "mistserver": ver([os.path.join(MIST_DIR, "MistController"), "--version"])
+            if os.path.exists(MIST_DIR) else None,
             "caudal_git": git,
             "ulimit_n": resource.getrlimit(resource.RLIMIT_NOFILE)[0],
             "portrange": open("/proc/sys/net/ipv4/ip_local_port_range").read().split() if os.path.exists("/proc/sys/net/ipv4/ip_local_port_range") else None,
@@ -594,13 +596,20 @@ def prepare():
 
 
 def mist_sizes():
-    """MistServer ships ~80 binaries, universal (x86_64 + arm64). Reports the
-    whole install, its arm64 slices only (what this machine runs; comparable
-    to the single-arch Caudal and MediaMTX binaries), and the arm64 slices
-    of the binaries this benchmark actually runs."""
-    import re
+    """macOS: the official install ships ~80 binaries, universal (x86_64 +
+    arm64). Reports the whole install, its arm64 slices only (what this
+    machine runs; comparable to the single-arch Caudal and MediaMTX
+    binaries), and the arm64 slices of the binaries this benchmark actually
+    runs. Linux: built from source in CI with only the binaries this
+    benchmark uses (see BINARIES in fetch-mistserver.sh), single-arch, no
+    universal-binary slices to report -- just their combined size."""
     used = {"MistController", "MistInBuffer", "MistOutHTTP", "MistOutCMAF", "MistOutHLS", "MistOutRTMP",
-            "MistOutRTSP", "MistOutWebRTC", "MistOutTSSRT", "MistSession"}
+            "MistOutRTSP", "MistOutWebRTC", "MistSession"}
+    if LINUX:
+        total = sum(os.path.getsize(os.path.join(MIST_DIR, n)) for n in used
+                    if os.path.isfile(os.path.join(MIST_DIR, n)))
+        return {"mistserver_used": round(total / 1e6, 2)}
+    import re
     total = arm = arm_used = 0
     for name in sorted(os.listdir(MIST_DIR)):
         path = os.path.join(MIST_DIR, name)

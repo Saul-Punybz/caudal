@@ -1,0 +1,197 @@
+# Default values for the caudal chart.
+
+replicaCount: 1
+# Caudal keeps live streams in an in-process ring buffer and, if [record] is
+# on, writes to a local PVC: there is no shared state between replicas. This
+# chart is written for replicaCount: 1. Running more than one replica gives
+# you N independent servers behind one Service, not a cluster — origin/edge
+# clustering (PLAN.md) is not implemented yet.
+
+image:
+  repository: ghcr.io/saul-punybz/caudal
+  # Defaults to .Chart.AppVersion when unset.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# The image is `FROM scratch`: a single static binary, no shell, no
+# passwd database. It's built to run as an arbitrary non-root UID; this
+# chart pins one so `runAsNonRoot` can be enforced without relying on
+# whatever UID the image was pushed with.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# --- Networking -------------------------------------------------------
+#
+# Caudal speaks two shapes of protocol:
+#
+#  - TCP, behind a normal ClusterIP/LoadBalancer Service: HTTP(S) (API, UI,
+#    LL-HLS, WHIP/WHEP signaling, MoQ-over-WebTransport signaling) and RTMP.
+#    A Kubernetes Service in front of these works exactly like it would for
+#    any other TCP server.
+#
+#  - UDP media that carries its own address inside the protocol: WebRTC
+#    (ICE candidates), SRT and MoQ/QUIC. For WebRTC in particular, the
+#    address Caudal *advertises* to a peer (`[webrtc] public_ips`) must be
+#    an address that peer can actually reach — a ClusterIP or a
+#    LoadBalancer's VIP is NOT that address from behind SNAT/NAT unless the
+#    LoadBalancer preserves the client-visible source IP AND Caudal is told
+#    to advertise it. There are two supported ways to run the UDP side:
+#
+#    1. udp.service.enabled: true (default) — a Service (LoadBalancer by
+#       default) fronts the UDP ports. Set `webrtc.publicIps` to that
+#       Service's external IP once it's assigned (a chicken-and-egg step:
+#       create the Service, read its IP, `helm upgrade --set
+#       webrtc.publicIps={<ip>}`). Only safe with replicaCount: 1 — a
+#       Service load-balances per 5-tuple, not per packet, but only one
+#       pod can be "the one with that public IP" at a time.
+#
+#    2. udp.hostNetwork: true — the pod uses the node's network namespace
+#       directly (no Service, no SNAT) and binds the real node IP. Set
+#       `webrtc.publicIps` to that node's public IP. This is the
+#       traditional way self-hosted WebRTC/SRT servers are run in
+#       Kubernetes (same approach as ingress-nginx's optional host
+#       networking, or coturn). Also replicaCount: 1 per node.
+udp:
+  service:
+    enabled: true
+    type: LoadBalancer
+    annotations: {}
+    loadBalancerIP: ""
+  hostNetwork: false
+
+service:
+  type: ClusterIP
+  annotations: {}
+  httpPort: 8080
+  rtmpPort: 1935
+  # [tls] isn't modeled as values: this chart assumes TLS is terminated in
+  # front of it (an Ingress, or a LoadBalancer with TLS). To run caudal's
+  # own HTTPS/ACME instead, add a full [tls] block via `extraConfig` and
+  # extend this Service/the Deployment's containerPorts with the port
+  # yourself (a values override or a chart fork) — deliberately not wired
+  # up by default so the common path (TLS at the edge) stays simple.
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: caudal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# --- Persistence (`[record] dir`) --------------------------------------
+persistence:
+  enabled: false
+  size: 20Gi
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+  mountPath: /data/recordings
+  existingClaim: ""
+
+# --- Admin login (`[admin]`) --------------------------------------------
+#
+# The image refuses to bind a non-loopback address without [admin] (or an
+# explicit, on-purpose `allowUnauthenticated`) — see crates/caudal/src/admin.rs.
+# Since this chart always exposes the HTTP port on 0.0.0.0 inside the pod,
+# it enforces the same rule at `helm template` time: it fails the render,
+# with a clear message, unless exactly one credential source is given.
+admin:
+  enabled: true
+  name: admin
+  # Output of `printf '%s\n' '<password>' | caudal hash-password`. The
+  # chart puts this in a Secret it creates (never in the ConfigMap or in
+  # `helm get values`' cleartext history if you pass it via `--set-file`
+  # or a values file you don't commit).
+  passwordHash: ""
+  # Alternative to passwordHash: the name of an existing Secret you manage
+  # yourself (sealed-secrets, external-secrets, vault-agent, ...) holding
+  # the same hash under `existingSecretKey`.
+  existingSecret: ""
+  existingSecretKey: password-hash
+  # Escape hatch matching caudal-admin's own field: skips the check above
+  # and runs open. Only for a cluster-internal, already-authenticated
+  # network path (e.g. a service mesh in front of this) — see
+  # crates/caudal-admin's docs on what `allow_unauthenticated` means.
+  allowUnauthenticated: false
+  sessionTtlSecs: 43200
+  publicMetrics: false
+  secureCookies: false
+
+# --- caudal.toml, from values -------------------------------------------
+rtmp:
+  app: live
+
+hls:
+  partMs: 200
+  segmentMs: 2000
+
+buffer:
+  windowSecs: 50
+  maxMb: 256
+
+webrtc:
+  enabled: true
+  udpPort: 8189
+  # See the "Networking" comment above: this must be an address the
+  # clients you serve can actually route to.
+  publicIps: []
+  threads: 0
+
+srt:
+  enabled: true
+  udpPort: 9000
+  latencyMs: 120
+
+moq:
+  enabled: true
+  udpPort: 4443
+
+record:
+  enabled: false
+  streams: ["*"]
+  segmentSecs: 4
+  retentionHours: ""
+
+# Raw TOML appended verbatim to the generated caudal.toml, for sections
+# this chart doesn't model as values yet ([tls], [auth], [hooks], [health],
+# [transcode], [[channel]], [[restream]], [rtsp]) — see caudal.example.toml
+# for the syntax of each. Rendered as-is, after everything above.
+extraConfig: ""

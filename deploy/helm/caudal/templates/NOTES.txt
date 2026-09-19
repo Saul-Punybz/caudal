@@ -1,0 +1,28 @@
+Caudal ({{ include "caudal.image" . }}) is deploying as {{ include "caudal.fullname" . }}.
+
+1. HTTP/API/UI and RTMP:
+   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "caudal.fullname" . }} 8080:{{ .Values.service.httpPort }}
+   open http://localhost:8080/
+
+2. Check it's healthy:
+   kubectl --namespace {{ .Release.Namespace }} get pods -l "app.kubernetes.io/instance={{ .Release.Name }}"
+
+{{- if and .Values.udp.service.enabled (not .Values.udp.hostNetwork) }}
+3. WebRTC/SRT/MoQ need the UDP Service's external address. Once it has one:
+   kubectl --namespace {{ .Release.Namespace }} get svc {{ include "caudal.fullname" . }}-udp
+   Then set webrtc.publicIps to it and `helm upgrade` — see values.yaml's
+   "Networking" comment for why this two-step dance is necessary for WebRTC.
+{{- else if .Values.udp.hostNetwork }}
+3. udp.hostNetwork is on: WebRTC/SRT/MoQ bind the node's own address
+   directly. Set webrtc.publicIps to that node's public/reachable IP.
+{{- else }}
+3. udp.service.enabled is off and udp.hostNetwork is off: WebRTC, SRT and
+   MoQ are only reachable from inside the cluster network.
+{{- end }}
+
+{{- if not .Values.admin.enabled }}
+
+admin.enabled is false: this server is running with NO LOGIN
+(allow_unauthenticated). Anyone who can reach it can publish, play and
+manage it.
+{{- end }}

@@ -1,0 +1,325 @@
+# Rendered example of deploy/helm/caudal, for reading or for `kubectl
+# apply -f` without installing Helm. Generated with:
+#
+#   helm template caudal deploy/helm/caudal \
+#     --namespace caudal \
+#     --set image.tag=0.1.0 \
+#     --set admin.passwordHash='<output of `caudal hash-password`>' \
+#     --set webrtc.publicIps='{203.0.113.9}' \
+#     --set persistence.enabled=true --set persistence.size=50Gi \
+#     --set record.enabled=true
+#
+# Two placeholders below MUST be replaced before this is usable:
+#   - admin.passwordHash (the Secret's stringData): generate your own with
+#     `printf '%s\n' '<password>' | caudal hash-password`.
+#   - webrtc.publicIps (baked into the ConfigMap's caudal.toml): this
+#     server's real, internet-reachable IP — see the chart's README
+#     ("Networking") for why WebRTC needs this to be correct.
+#
+# This file is a snapshot for reference; the chart in deploy/helm/caudal/
+# is what to actually install and upgrade (`helm install`/`helm upgrade`),
+# since re-rendering by hand after every values change is easy to forget.
+
+---
+# Source: caudal/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: caudal
+  labels:
+    helm.sh/chart: caudal-0.1.0
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+
+---
+# Source: caudal/templates/secret-admin.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: caudal-admin
+  labels:
+    helm.sh/chart: caudal-0.1.0
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+stringData:
+  password-hash: "$argon2id$v=19$m=19456,t=2,p=1$REPLACE_ME_WITH_YOUR_OWN_HASH$REPLACE_ME_REPLACE_ME_REPLACE_ME"
+
+---
+# Source: caudal/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caudal
+  labels:
+    helm.sh/chart: caudal-0.1.0
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  # Everything except the admin password hash, which is never put in a
+  # ConfigMap — see templates/secret-admin.yaml and the initContainer in
+  # templates/deployment.yaml that merges the two into one file at
+  # startup, since `caudal --config` only takes a single path.
+  caudal.toml: |
+    [server]
+    http_bind = "0.0.0.0:8080"
+
+    [rtmp]
+    bind = "0.0.0.0:1935"
+    app = "live"
+
+    [hls]
+    part_ms = 200
+    segment_ms = 2000
+
+    [buffer]
+    window_secs = 50
+    max_mb = 256
+
+    [webrtc]
+    udp_bind = "0.0.0.0:8189"
+    threads = 0
+    public_ips = ["203.0.113.9"]
+
+    [srt]
+    bind = "0.0.0.0:9000"
+    latency_ms = 120
+
+    [moq]
+    enabled = true
+    bind = "0.0.0.0:4443"
+
+    [record]
+    enabled = true
+    dir = "/data/recordings"
+    streams = ["*"]
+    segment_secs = 4
+
+    [admin]
+    session_ttl_secs = 43200
+    public_metrics = false
+    secure_cookies = false
+    allow_unauthenticated = false
+    # [[admin.users]] is appended at container start from the Secret named
+    # by templates/_helpers.tpl's "caudal.adminSecretName" — see the
+    # `merge-config` initContainer in templates/deployment.yaml.
+
+---
+# Source: caudal/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: caudal-recordings
+  labels:
+    helm.sh/chart: caudal-0.1.0
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# Source: caudal/templates/service-udp.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: caudal-udp
+  labels:
+    helm.sh/chart: caudal-0.1.0
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+  ports:
+    - name: webrtc
+      port: 8189
+      targetPort: webrtc
+      protocol: UDP
+    - name: srt
+      port: 9000
+      targetPort: srt
+      protocol: UDP
+    - name: moq
+      port: 4443
+      targetPort: moq
+      protocol: UDP
+
+---
+# Source: caudal/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: caudal
+  labels:
+    helm.sh/chart: caudal-0.1.0
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    - name: rtmp
+      port: 1935
+      targetPort: rtmp
+      protocol: TCP
+
+---
+# Source: caudal/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caudal
+  labels:
+    helm.sh/chart: caudal-0.1.0
+    app.kubernetes.io/name: caudal
+    app.kubernetes.io/instance: caudal
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: caudal
+      app.kubernetes.io/instance: caudal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: caudal
+        app.kubernetes.io/instance: caudal
+    spec:
+      serviceAccountName: caudal
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      # The image is `FROM scratch`: no shell, so the ConfigMap and the
+      # admin password hash (kept in separate resources — see
+      # templates/configmap.yaml and templates/secret-admin.yaml) are
+      # merged into the one file `caudal --config` reads by a small
+      # busybox initContainer, into a shared emptyDir.
+      initContainers:
+        - name: merge-config
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp /config/caudal.toml /work/caudal.toml
+              hash="$(cat /admin-secret/password-hash)"
+              {
+                echo ""
+                echo "[[admin.users]]"
+                echo "name = \"admin\""
+                printf 'password_hash = "%s"\n' "$hash"
+              } >> /work/caudal.toml
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: work
+              mountPath: /work
+            - name: admin-secret
+              mountPath: /admin-secret
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+      containers:
+        - name: caudal
+          image: ghcr.io/saul-punybz/caudal:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/work/caudal.toml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: rtmp
+              containerPort: 1935
+              protocol: TCP
+            - name: webrtc
+              containerPort: 8189
+              protocol: UDP
+            - name: srt
+              containerPort: 9000
+              protocol: UDP
+            - name: moq
+              containerPort: 4443
+              protocol: UDP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+              readOnly: true
+            - name: recordings
+              mountPath: /data/recordings
+      volumes:
+        - name: config
+          configMap:
+            name: caudal
+        - name: work
+          emptyDir: {}
+        - name: admin-secret
+          secret:
+            secretName: caudal-admin
+        - name: recordings
+          persistentVolumeClaim:
+            claimName: caudal-recordings

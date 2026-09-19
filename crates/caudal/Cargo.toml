@@ -34,13 +34,24 @@ tracing.workspace = true
 toml = "1.1.6"
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+# `caudal doctor`: a blocking HTTP client (own /healthz, a running
+# server's /api/v1/streams, and the online clock check) is simpler here
+# than pulling the tokio runtime in before we know a subcommand needs it.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+# Cert/key match validation (`CertifiedKey::from_der`) for `doctor`'s TLS
+# check, same crypto provider (`ring`) caudal-tls already uses.
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
+rustls-pki-types = "1"
+# Certificate expiry and SAN inspection for `doctor`'s TLS check; already
+# in the dependency tree via rustls-acme and moq-native.
+x509-parser = "0.18"
+rustix.workspace = true
 
 [dev-dependencies]
-rustix.workspace = true
-ureq = { version = "3", default-features = false }
 tempfile = "3"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 rcgen = "0.14"
+time = "0.3"
 serde_json.workspace = true
 tower = { version = "0.5", features = ["util"] }
 sha2 = "=0.10.9"

@@ -1,3 +1,8 @@
+# Validate this file with `caudal check <path>`. Once you've filled it in,
+# `caudal doctor [--config <path>]` checks the setup it describes — ports,
+# NAT, TLS, clock, tools — and prints what to fix; add `--url http://host:port`
+# once a server is running to also flag stream codecs a browser can't play.
+
 [server]
 # HTTP server bind address. Without an [admin] login (below) Caudal refuses
 # to listen on anything but loopback; set [admin] before using 0.0.0.0.

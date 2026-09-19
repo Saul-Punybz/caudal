@@ -1,0 +1,151 @@
+{{- include "caudal.checkAdmin" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "caudal.fullname" . }}
+  labels:
+    {{- include "caudal.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "caudal.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "caudal.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.udp.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      serviceAccountName: {{ include "caudal.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The image is `FROM scratch`: no shell, so the ConfigMap and the
+      # admin password hash (kept in separate resources — see
+      # templates/configmap.yaml and templates/secret-admin.yaml) are
+      # merged into the one file `caudal --config` reads by a small
+      # busybox initContainer, into a shared emptyDir.
+      initContainers:
+        - name: merge-config
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp /config/caudal.toml /work/caudal.toml
+              {{- if .Values.admin.enabled }}
+              hash="$(cat /admin-secret/{{ include "caudal.adminSecretKey" . }})"
+              {
+                echo ""
+                echo "[[admin.users]]"
+                echo "name = \"{{ .Values.admin.name }}\""
+                printf 'password_hash = "%s"\n' "$hash"
+              } >> /work/caudal.toml
+              {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: work
+              mountPath: /work
+            {{- if .Values.admin.enabled }}
+            - name: admin-secret
+              mountPath: /admin-secret
+              readOnly: true
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      containers:
+        - name: caudal
+          image: {{ include "caudal.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/work/caudal.toml"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: rtmp
+              containerPort: 1935
+              protocol: TCP
+            {{- if .Values.webrtc.enabled }}
+            - name: webrtc
+              containerPort: {{ .Values.webrtc.udpPort }}
+              protocol: UDP
+            {{- end }}
+            {{- if .Values.srt.enabled }}
+            - name: srt
+              containerPort: {{ .Values.srt.udpPort }}
+              protocol: UDP
+            {{- end }}
+            {{- if .Values.moq.enabled }}
+            - name: moq
+              containerPort: {{ .Values.moq.udpPort }}
+              protocol: UDP
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: work
+              mountPath: /work
+              readOnly: true
+            {{- if .Values.persistence.enabled }}
+            - name: recordings
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "caudal.fullname" . }}
+        - name: work
+          emptyDir: {}
+        {{- if .Values.admin.enabled }}
+        - name: admin-secret
+          secret:
+            secretName: {{ include "caudal.adminSecretName" . }}
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: recordings
+          persistentVolumeClaim:
+            claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{ else }}{{ include "caudal.fullname" . }}-recordings{{ end }}
+        {{- end }}

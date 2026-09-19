@@ -600,16 +600,20 @@ dependencies = [
  "parking_lot",
  "rcgen 0.14.10",
  "rustix",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "time",
  "tokio",
  "toml",
  "tower",
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "x509-parser",
 ]
 
 [[package]]
@@ -5796,8 +5800,11 @@ dependencies = [
  "base64 0.23.1",
  "log",
  "percent-encoding",
+ "rustls",
+ "rustls-pki-types",
  "ureq-proto",
  "utf8-zero",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

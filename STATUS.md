@@ -30,7 +30,7 @@ Test hygiene (19 Sep): never probe a free port and release it; bind port 0 or re
 | Platform | TOML config with hot reload, API, metrics, TLS/HTTP2/ACME, tokens + webhooks, admin login (password, OIDC, API tokens), health alerts, M3 UI (Overview, Stream, Publish, Channels, Restreams, Recordings, Login) |
 | Running | Benchmark vs MediaMTX (next) |
 | Next | Batch 9: SCTE-35 (`docs/research/SCTE35.md`), admin login, health alerts. Roadmap in `PLAN.md` |
-| OMT | `vmx-codec` ported in pure Rust, byte-identical to libvmx both ways; private repo `Saul-Punybz/open-media-transport` |
+| OMT | `vmx-codec` ported in pure Rust, byte-identical to libvmx both ways; public repo `Saul-Punybz/open-media-transport` |
 
 ## Finding, 17 Sep (evening)
 SRT and RIST **do exist in pure Rust**: `rsrt` (cesbo, verified against libsrt 1.5.6: 668 tests + interop) and `rist-core` (wavey-ai, Simple + Main profiles, interop against librist). Details in `REUSE.md`. No need to port gosrt or libRIST.

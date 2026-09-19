@@ -12,7 +12,7 @@ Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; 
 
 **Running:** agent finishing `perf/webrtc-batched-send` (quinn-udp GSO/batch; macOS x100 69→58 %, x300 315→293 %; Linux before/after runs on bench.yml pending), then its PR.
 **Set aside by Saul:** MistServer in the bench (branch `bench/mistserver`, see below); MCP server (future, PLAN batch 14).
-**Pending decision from Saul:** what goes into v0.1. Proposed: the running item + RSS per live stream + soak test + v0.1 release (static binaries x86_64/aarch64 + GHCR image) + Saul's OBS glass-to-glass check.
+**v0.1 scope (approved by Saul, 19 Sep 2026):** the running item + RSS per live stream + soak test + v0.1 release (static binaries x86_64/aarch64 + GHCR image) + Saul's OBS glass-to-glass check.
 
 **Queue after that:** kTLS + sendfile (batch 13), io_uring/pacing evaluation, OMT protocol, Raspberry Pi image, MoQ on Safari, DASH, player SDKs, watermarking, CEA-608, GPU transcoding, TEST-AUDIT phase 2/3.
 **MistServer bench (set aside):** `bench/mistserver` @ c553882 builds MistServer 3.11.2 on the runner with its own mbedtls 3.6.6 (Ubuntu's 2.28 breaks it); last blocker: binaries need libmist.so + subproject .so at run time → next step `meson setup --default-library=static`. MistServer's LL-HLS part is a compile-time 500 ms (vs 200 ms) — note it in any comparison.

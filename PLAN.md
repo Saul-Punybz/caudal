@@ -169,6 +169,13 @@ claiming in public.
 - NDI itself: proprietary SDK, license restricts reverse engineering, trademarked. Covered instead by OMT (M12), an MIT protocol for the same job.
 - Content protection: CENC/ClearKey first, Widevine/FairPlay only with a real customer.
 
+## v0.1 (scope approved by Saul, 19 Sep 2026)
+1. Batched UDP sends for WebRTC (`perf/webrtc-batched-send`), measured on Linux.
+2. RSS per live stream: close the gap with MediaMTX (98 vs 80 MB on the M4; 11 MB of it is the 50 s default buffer).
+3. Soak test: hours of publish + viewers on GitHub's runners, RSS/fd/CPU over time, no growth.
+4. Release: tag `v0.1.0`, GitHub Release with static binaries (x86_64, aarch64 musl) + checksums, image `ghcr.io/saul-punybz/caudal:0.1.0`.
+5. Saul's own check: OBS → Caudal → a browser, glass-to-glass under 3 s, by a person.
+
 ## Road to "finished" (Saul, 18 Sep 2026: finish Caudal with everything, all in Rust)
 
 | Batch | Work | Agent / model | State |

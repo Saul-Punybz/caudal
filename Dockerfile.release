@@ -1,0 +1,19 @@
+# Multi-arch release image: packages the static musl binaries the release
+# workflow already built with cargo-zigbuild (same approach as ci.yml's
+# build-static job). No compilation happens in this Dockerfile — `docker
+# buildx build --platform linux/amd64,linux/arm64` needs no QEMU/emulation
+# because there is nothing here to *run* for the target platform, only a
+# COPY of the binary already built for it.
+#
+# Build context layout expected (see .github/workflows/release.yml):
+#   dist/amd64/caudal   (x86_64-unknown-linux-musl release build)
+#   dist/arm64/caudal   (aarch64-unknown-linux-musl release build)
+FROM scratch
+
+ARG TARGETARCH
+
+COPY dist/${TARGETARCH}/caudal /caudal
+
+EXPOSE 1935 8080
+
+ENTRYPOINT ["/caudal"]

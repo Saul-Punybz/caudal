@@ -1,0 +1,4 @@
+SETUP rtsp://127.0.0.1:8554/stream/streamid=1 RTSP/1.0
+CSeq: 3
+Transport: RTP/AVP/TCP;unicast;interleaved=0-1
+

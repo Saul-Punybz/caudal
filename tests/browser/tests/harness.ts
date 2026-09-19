@@ -72,8 +72,9 @@ function resolveBinary(): string {
  * @param opts.tls If true, generates a self-signed cert for localhost and
  *   127.0.0.1 and adds TLS binding to the config. The httpsBaseUrl will be set
  *   on the returned CaudalServer.
+ * @param opts.extraToml Appended to the config (new sections only).
  */
-export async function startCaudal(opts?: { tls?: boolean }): Promise<CaudalServer> {
+export async function startCaudal(opts?: { tls?: boolean; extraToml?: string }): Promise<CaudalServer> {
   const bin = resolveBinary();
   const fs = await import("node:fs");
   if (!fs.existsSync(bin)) {
@@ -149,6 +150,7 @@ export async function startCaudal(opts?: { tls?: boolean }): Promise<CaudalServe
     "segment_ms = 2000",
     tlsSection,
     "",
+    opts?.extraToml ?? "",
   ].join("\n");
   await writeFile(cfgPath, toml, "utf8");
 

@@ -227,6 +227,27 @@ impl HealthService {
         http::router(self.shared.clone())
     }
 
+    /// Sends a `failover_switched` webhook (a backup-source switch from
+    /// `caudal-failover`) and lists it in `GET /api/v1/alerts`' events.
+    /// Not a rule: it never becomes an active alert.
+    pub fn failover_switched(&self, stream: &str, from: Option<&str>, to: &str, reason: &'static str) {
+        let payload = delivery::AlertPayload::failover_switched(stream, from, to, reason);
+        let mut events = self.shared.events.lock();
+        events.push_back(EventLog {
+            event: payload.event,
+            rule: payload.rule,
+            stream: stream.to_owned(),
+            value: 0.0,
+            threshold: 0.0,
+            at: payload.at.clone(),
+        });
+        while events.len() > EVENTS_KEPT {
+            events.pop_front();
+        }
+        drop(events);
+        self.shared.delivery.send(payload);
+    }
+
     /// Active-alert count and lifetime fire count per rule, for
     /// `caudal_alerts_active{rule}` / `caudal_alerts_fired_total{rule}`.
     pub fn metrics(&self) -> Vec<RuleMetrics> {

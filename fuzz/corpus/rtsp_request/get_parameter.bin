@@ -1,0 +1,4 @@
+GET_PARAMETER rtsp://127.0.0.1:8554/stream RTSP/1.0
+CSeq: 6
+Session: 0123456789ABCDEF
+

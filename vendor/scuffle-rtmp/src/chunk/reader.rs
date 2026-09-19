@@ -122,6 +122,30 @@ impl ChunkReader {
                 }
             };
 
+            // Caudal patch: a Type 0/1/2 header always starts a message
+            // header afresh (RTMP spec 5.3.1); `test_reader_chunk_type0_double_sized`
+            // and `test_reader_extended_timestamp` show real streams do
+            // restate one with the *same* (or a larger) `msg_length` for a
+            // message already partway buffered, and that must keep working
+            // as a continuation. But if the restated `msg_length` is
+            // *smaller* than what's already buffered, the old bytes can
+            // only be leftovers from a message that was abandoned
+            // mid-stream (a buggy encoder, or a malicious one deliberately
+            // shrinking `msg_length` mid-message): they must be discarded
+            // before computing how much of the new message is left to
+            // read. Without this, `get_payload_range`'s subtraction
+            // (`message_header.msg_length as usize - <old, larger,
+            // buffered length>`) underflowed and panicked, a
+            // pre-authentication remote crash found by
+            // `fuzz/fuzz_targets/rtmp_chunk.rs`.
+            if header.format != ChunkType::Type3 {
+                let key = (header.chunk_stream_id, message_header.msg_stream_id);
+                if self.partial_chunks.get(&key).is_some_and(|buffered| buffered.len() > message_header.msg_length as usize)
+                {
+                    self.partial_chunks.remove(&key);
+                }
+            }
+
             let (payload_range_start, payload_range_end) =
                 match self.get_payload_range(&header, &message_header, &mut cursor) {
                     Ok(data) => data,
@@ -487,7 +511,16 @@ impl ChunkReader {
 
                 // We calculate the timestamp by adding the delta timestamp to the previous
                 // timestamp.
-                let timestamp = previous_header.timestamp + timestamp_delta;
+                //
+                // Caudal patch: RTMP timestamps are milliseconds on a 32-bit
+                // wire counter that is expected to wrap every 49.7 days (see
+                // `caudal-rtmp::demux::RtmpClock`, built specifically to
+                // extend this wrapping counter into an absolute one); a
+                // plain `+` panicked on overflow instead of wrapping,
+                // a pre-authentication remote crash on any long-running
+                // publisher (or a stream built to hit it immediately),
+                // found by `fuzz/fuzz_targets/rtmp_chunk.rs`.
+                let timestamp = previous_header.timestamp.wrapping_add(timestamp_delta);
 
                 Ok(ChunkMessageHeader {
                     timestamp,
@@ -554,9 +587,14 @@ impl ChunkReader {
         let key = (header.chunk_stream_id, message_header.msg_stream_id);
 
         // Check how much we still need to read (if we have already read some of the
-        // chunk)
-        let remaining_read_length =
-            message_header.msg_length as usize - self.partial_chunks.get(&key).map(|data| data.len()).unwrap_or(0);
+        // chunk). `read_chunk` clears any stale partial buffer before calling this for
+        // a Type 0/1/2 header, so in the normal case the buffered length never exceeds
+        // `msg_length`; `saturating_sub` is defense in depth against a future caller
+        // (or a case this file's authors didn't foresee) doing that subtraction with a
+        // shorter `msg_length` than what's already buffered, which must never panic on
+        // attacker-controlled input.
+        let remaining_read_length = (message_header.msg_length as usize)
+            .saturating_sub(self.partial_chunks.get(&key).map(|data| data.len()).unwrap_or(0));
 
         // We get the min between our max chunk size and the remaining read length.
         // This is the amount of bytes we need to read.
@@ -1150,5 +1188,82 @@ mod tests {
             .map(|c| c.message_header.timestamp)
             .collect();
         assert_eq!(timestamps, vec![0, 33, 66]);
+    }
+
+    /// Caudal patch regression: found by `fuzz/fuzz_targets/rtmp_chunk.rs`
+    /// within the first fuzzing run. A Type 0 header always starts a brand
+    /// new message (RTMP spec 5.3.1); if one starts, only partially
+    /// arrives, and is then followed by another Type 0 header on the same
+    /// chunk stream + message stream whose `msg_length` is *smaller* than
+    /// what's already buffered for the abandoned first message,
+    /// `get_payload_range` used to compute `new_msg_length -
+    /// old_buffered_len` and panic on the `usize` underflow: a
+    /// pre-authentication remote crash from any RTMP publisher.
+    #[test]
+    fn a_smaller_msg_length_on_a_fresh_header_abandons_the_old_partial_message() {
+        let mut buf = BytesMut::new();
+        #[rustfmt::skip]
+        buf.extend_from_slice(&[
+            4, // format 0, chunk stream id 4
+            0x00, 0x00, 0x00, // timestamp
+            0x00, 0x01, 0x2C, // msg_length = 300: bigger than the 128-byte default chunk size
+            0x09, // video
+            0x01, 0x00, 0x00, 0x00, // msg_stream_id = 1
+        ]);
+        buf.extend_from_slice(&[0xAA; 128]); // one chunk's worth only: message stays partial
+
+        let mut reader = ChunkReader::default();
+        assert!(reader.read_chunk(&mut buf).unwrap().is_none(), "message 1 is still incomplete");
+
+        // A second, unrelated Type 0 header on the very same chunk stream +
+        // message stream, but with a much smaller msg_length than the 128
+        // bytes still buffered for message 1.
+        #[rustfmt::skip]
+        buf.extend_from_slice(&[
+            4, // format 0, chunk stream id 4 (same as above)
+            0x00, 0x00, 0x00,
+            0x00, 0x00, 0x0A, // msg_length = 10
+            0x09,
+            0x01, 0x00, 0x00, 0x00,
+        ]);
+        buf.extend_from_slice(&[0xBB; 10]);
+
+        let chunk = reader.read_chunk(&mut buf).expect("must not panic").expect("message 2 is complete");
+        assert_eq!(chunk.message_header.msg_length, 10);
+        assert_eq!(&chunk.payload[..], &[0xBB; 10], "message 1's stale bytes must not leak into message 2");
+    }
+
+    /// Regression: found by `fuzz/fuzz_targets/rtmp_chunk.rs` in the same
+    /// run as the test above. RTMP's 32-bit millisecond timestamp is a
+    /// wire counter expected to wrap every 49.7 days (`caudal-rtmp`'s own
+    /// `RtmpClock` exists specifically to un-wrap it downstream); a Type 2
+    /// chunk's `previous_timestamp + delta` used plain `+` and panicked on
+    /// overflow instead of wrapping, unlike the Type 1 branch just above it
+    /// (which already used `checked_add`).
+    #[test]
+    fn a_type2_delta_wraps_the_32_bit_timestamp_instead_of_panicking() {
+        let mut buf = BytesMut::new();
+        #[rustfmt::skip]
+        buf.extend_from_slice(&[
+            4, // format 0, chunk stream id 4
+            0xFF, 0xFF, 0xFF, // timestamp >= 0xFFFFFF: read as a 4-byte extended timestamp below
+            0x00, 0x00, 0x01, // msg_length = 1
+            0x09,
+            0x01, 0x00, 0x00, 0x00,
+            0xFF, 0xFF, 0xFF, 0xF0, // extended timestamp = u32::MAX - 15
+        ]);
+        buf.extend_from_slice(&[0xAA]);
+        #[rustfmt::skip]
+        buf.extend_from_slice(&[
+            (2 << 6) | 4, // format 2, chunk stream id 4: delta timestamp only
+            0x00, 0x00, 0x20, // delta = 32: pushes the timestamp past u32::MAX
+        ]);
+        buf.extend_from_slice(&[0xBB]);
+
+        let mut reader = ChunkReader::default();
+        let first = reader.read_chunk(&mut buf).unwrap().unwrap();
+        assert_eq!(first.message_header.timestamp, u32::MAX - 15);
+        let second = reader.read_chunk(&mut buf).expect("must not panic on the wrap").expect("chunk");
+        assert_eq!(second.message_header.timestamp, 16, "wraps through 0, doesn't panic or saturate");
     }
 }

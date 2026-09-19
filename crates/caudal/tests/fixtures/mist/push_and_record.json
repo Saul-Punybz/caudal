@@ -1,0 +1,19 @@
+{
+  "config": {
+    "protocols": [
+      {"connector": "RTMP", "port": 1935}
+    ],
+    "triggers": {
+      "STREAM_BUFFER": [["http://ops.example.com/hooks/buffer", false, "", ""]],
+      "PUSH_REWRITE": [["http://ops.example.com/hooks/rewrite", true, "", ""]]
+    }
+  },
+  "auto_push": [
+    {"stream": "main", "target": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"},
+    {"stream": "main", "target": "/records/main/$Y$m$d.mp4"},
+    {"stream": "backup", "target": "rtmp://live.twitch.tv/app/live_xxxxxxxx", "scheduletime": 1767225600}
+  ],
+  "account": {
+    "ana": {"password": "5f4dcc3b5aa765d61d8327deb882cf99"}
+  }
+}

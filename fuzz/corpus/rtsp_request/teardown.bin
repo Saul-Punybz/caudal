@@ -1,0 +1,4 @@
+TEARDOWN rtsp://127.0.0.1:8554/stream RTSP/1.0
+CSeq: 5
+Session: 0123456789ABCDEF
+

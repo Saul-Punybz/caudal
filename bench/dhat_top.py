@@ -10,21 +10,23 @@ import json
 import re
 import sys
 
-# Frames that say nothing about who allocated: the allocator, std
-# containers, and third-party buffer types.
-NOISE = re.compile(
-    r"\b(dhat|alloc|core|std|hashbrown|bytes|__rust|rust_begin|<\?>|tokio::runtime|smallvec)\b|\[root\]"
-)
+# The global allocator shim sits in caudal's main.rs; it says nothing about
+# who allocated.
+SHIM = re.compile(r"__rust_\w*alloc|dhat")
+# Frame files are relative to their crate: "(caudal-rtmp/src/lib.rs:82:33)".
+OURS = re.compile(r"\(caudal[-a-z0-9]*/src/")
+STD = re.compile(r"\((alloc|core|std)/src/|\(src/(raw_vec|vec|sync|alloc)/")
 
 
 def site(frames, ftbl):
-    """First frame worth reading, preferring Caudal's own code."""
+    """The innermost frame in Caudal's own crates, else the innermost frame
+    outside the allocator, Rust's std and dhat."""
     names = [ftbl[i] for i in frames]
     for n in names:
-        if "caudal" in n and not NOISE.search(n.split(":", 1)[-1].split("(")[0]):
+        if OURS.search(n) and not SHIM.search(n):
             return n
     for n in names:
-        if not NOISE.search(n.split(":", 1)[-1].split("(")[0]):
+        if not SHIM.search(n) and not STD.search(n):
             return n
     return names[0] if names else "?"
 

@@ -240,6 +240,29 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         None => axum::Router::new(),
     };
 
+    // Origin-edge clustering: an origin answers edges' locate requests; an
+    // edge pulls a stream from its origins when its first viewer asks.
+    let cluster_router = match &cfg.cluster {
+        Some(c) => match c.edge_config(cfg.buffer.to_buffer_config()).expect("validated") {
+            None => {
+                tracing::info!(node_id = %c.node_id(), "cluster origin");
+                caudal_cluster::origin_router(registry.clone(), c.secret().expect("validated"), c.node_id())
+            }
+            Some(edge) => {
+                let origins = edge.origins.len();
+                match caudal_cluster::Edge::start(&registry, edge) {
+                    Ok(e) => {
+                        tracing::info!(node_id = %c.node_id(), origins, "cluster edge");
+                        state.set_edge(e);
+                    }
+                    Err(e) => tracing::error!(error = %e, "cluster edge disabled"),
+                }
+                axum::Router::new()
+            }
+        },
+        None => axum::Router::new(),
+    };
+
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
         .merge(hls_router)
@@ -250,6 +273,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         .merge(started.restream_router)
         .merge(reload::router(reload_state))
         .merge(health_router)
+        .merge(cluster_router)
         .merge(caudal_ui::router());
     let app = admin::wrap(app, admin);
 

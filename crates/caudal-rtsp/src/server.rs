@@ -416,7 +416,8 @@ async fn handle_describe(req: &Request<Vec<u8>>, registry: &Arc<Registry>, state
     if let Err(d) = registry.authorize(Access::Play, &name, token.as_deref(), Some(state.peer_ip)).await {
         return denied(d);
     }
-    let Some(stream) = registry.get(&name) else {
+    // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
+    let Some(stream) = registry.get_or_demand(&name).await else {
         return simple(StatusCode::NotFound);
     };
     let tracks = stream.tracks();

@@ -26,7 +26,7 @@
 //!   independently spawned task, not a child of the listener's accept
 //!   loop.
 //! - **`requires_restart`:** `[server]`, `[tls]`, `[webrtc]`, `[moq]`,
-//!   `[hls]`, `[record]`, `[buffer]`, `[admin]`, `[health]` are wired once at startup into the
+//!   `[hls]`, `[record]`, `[buffer]`, `[admin]`, `[health]`, `[cluster]` are wired once at startup into the
 //!   single `axum::Router` passed to `axum::serve`; swapping them without
 //!   restarting the process is out of scope here. A reload reports these
 //!   sections changed, never silently ignoring them.
@@ -51,6 +51,10 @@ pub struct CombinedGate {
     /// gate installed at all; see `Supervisor::start`. Its own ruleset is
     /// swapped by `caudal_access::Checker::reload`, independent of `auth`.
     access: Arc<caudal_access::Checker>,
+    /// `[cluster]`'s secret: a valid inter-node token may play any stream,
+    /// before `[[access.rules]]` and `[auth]` (an edge enforces those for
+    /// its own viewers). `None` outside a cluster.
+    cluster: Option<caudal_cluster::Secret>,
 }
 
 impl caudal_core::Gate for CombinedGate {
@@ -62,6 +66,12 @@ impl caudal_core::Gate for CombinedGate {
         ip: Option<std::net::IpAddr>,
     ) -> caudal_core::GateFuture<'a> {
         Box::pin(async move {
+            if access == caudal_core::Access::Play
+                && let (Some(secret), Some(t)) = (&self.cluster, token)
+                && secret.verify(t).is_some()
+            {
+                return Ok(());
+            }
             if let Err(denied) = self.access.check(access, stream, ip) {
                 tracing::info!(
                     stream, ip = ?ip, reason = denied.reason, detail = %denied.detail,
@@ -85,14 +95,23 @@ impl caudal_core::Gate for CombinedGate {
 /// combined gate with a fresh `Authorizer`, keeping the current
 /// `caudal-access` checker (its ruleset is independent, see
 /// `apply_access`).
-fn apply_auth(registry: &Arc<Registry>, access: &Arc<caudal_access::Checker>, section: &config::AuthSection) {
+fn apply_auth(
+    registry: &Arc<Registry>,
+    access: &Arc<caudal_access::Checker>,
+    cluster: &Option<caudal_cluster::Secret>,
+    section: &config::AuthSection,
+) {
     let auth = section.to_auth_config().expect("validated");
     if auth.keys.is_none() {
         tracing::warn!("no [auth] keys: anyone who can reach the server can publish and play (subject to [[access]])");
     } else {
         tracing::info!(publish = auth.publish, play = auth.play, "token auth enabled");
     }
-    registry.set_gate(Arc::new(CombinedGate { auth: caudal_auth::Authorizer::new(auth), access: access.clone() }));
+    registry.set_gate(Arc::new(CombinedGate {
+        auth: caudal_auth::Authorizer::new(auth),
+        access: access.clone(),
+        cluster: cluster.clone(),
+    }));
 }
 
 /// Applies the loaded `[access]` / `[[access]]` sections: swaps the
@@ -282,6 +301,8 @@ pub struct Supervisor {
     /// place (see `apply_access`), never replaced, so `/metrics`' denial
     /// counters survive a reload.
     access: Arc<caudal_access::Checker>,
+    /// `[cluster]`'s secret, fixed at startup (`[cluster]` needs a restart).
+    cluster: Option<caudal_cluster::Secret>,
 
     /// The last config a reload was applied against (or the startup
     /// config); also the mutex that serializes concurrent reloads (SIGHUP
@@ -312,7 +333,8 @@ impl Supervisor {
         let trusted_proxies = cfg.server.trusted_proxy_cidrs().expect("validated");
 
         let access = cfg.access.to_access_config().expect("validated").checker().expect("validated");
-        apply_auth(&registry, &access, &cfg.auth);
+        let cluster = cfg.cluster.as_ref().map(|c| c.secret().expect("validated"));
+        apply_auth(&registry, &access, &cluster, &cfg.auth);
         let hooks_task = Mutex::new(None);
         apply_hooks(&registry, &hooks_task, &cfg.hooks);
 
@@ -355,6 +377,7 @@ impl Supervisor {
             transcode,
             hooks_task,
             access: access.clone(),
+            cluster,
             current: Mutex::new(cfg.clone()),
         });
         Started { supervisor, restream_router, channel_router, access }
@@ -406,7 +429,7 @@ impl Supervisor {
             }
         }
         if old.auth != new_cfg.auth {
-            apply_auth(&self.registry, &self.access, &new_cfg.auth);
+            apply_auth(&self.registry, &self.access, &self.cluster, &new_cfg.auth);
             report.applied.push("auth".into());
         }
         if old.access != new_cfg.access {
@@ -495,8 +518,37 @@ impl Supervisor {
         if old.health != new_cfg.health {
             report.requires_restart.push("health".into());
         }
+        if old.cluster != new_cfg.cluster {
+            report.requires_restart.push("cluster".into());
+        }
 
         *current = new_cfg;
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use caudal_core::{Access, Denied, Gate};
+
+    #[tokio::test]
+    async fn cluster_tokens_may_play_past_auth() {
+        let cluster = caudal_cluster::Secret::new("the-cluster-secret").unwrap();
+        let auth = caudal_auth::AuthConfig {
+            keys: Some(caudal_auth::KeySource::Secret("0123456789abcdef0123456789abcdef".into())),
+            publish: true,
+            play: true,
+        };
+        let access = caudal_access::AccessConfig { rules: Vec::new(), geoip_db: None }.checker().unwrap();
+        let gate = CombinedGate { auth: caudal_auth::Authorizer::new(auth), access, cluster: Some(cluster.clone()) };
+
+        let node = cluster.mint("edge-1");
+        assert_eq!(gate.check(Access::Play, "cam", Some(&node), None).await, Ok(()));
+        // Only play: a node token never publishes.
+        assert!(gate.check(Access::Publish, "cam", Some(&node), None).await.is_err());
+        let other = caudal_cluster::Secret::new("some-other-secret!").unwrap().mint("edge-1");
+        assert!(matches!(gate.check(Access::Play, "cam", Some(&other), None).await, Err(Denied::Refused(_))));
+        assert_eq!(gate.check(Access::Play, "cam", None, None).await, Err(Denied::Missing));
     }
 }

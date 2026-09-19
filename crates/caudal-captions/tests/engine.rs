@@ -45,7 +45,8 @@ enum Voice {
 fn speak(lang: &str, text: &str) -> Option<(Vec<f32>, Voice)> {
     let dir = tempfile_dir();
     let wav = dir.join(format!("{lang}.wav"));
-    let voice = if have("say") {
+    // CAUDAL_TTS=espeak forces the CI voice on a Mac (it has both).
+    let voice = if have("say") && std::env::var("CAUDAL_TTS").as_deref() != Ok("espeak") {
         let v = say_voice(lang);
         let ok = Command::new("say")
             .args(["-v", &v, "-o"])
@@ -161,7 +162,7 @@ async fn a_live_aac_stream_gets_cues() {
             model_dir: dir,
             model: name,
             threads: 4,
-            device: DeviceChoice::Auto,
+            device: if std::env::var("CAUDAL_CAPTIONS_DEVICE").as_deref() == Ok("cpu") { DeviceChoice::Cpu } else { DeviceChoice::Auto },
             max_streams: 1,
             min_display_ms: 3000,
             rules: vec![StreamRule { streams: vec!["news*".into()], language: Language::Fixed("es".into()) }],
@@ -242,6 +243,7 @@ async fn a_live_aac_stream_gets_cues() {
         assert!(c.text.lines().all(|l| l.chars().count() <= caudal_captions::cues::LINE), "{c:?}");
     }
     let m = &captions.metrics()[0];
+    eprintln!("pipeline metrics: {m:?}");
     assert_eq!(m.stream, "news-es");
     assert!(m.chunks >= 3 && m.cues >= cues.len() as u64, "{m:?}");
     assert_eq!(m.dropped_chunks, 0, "{m:?}");

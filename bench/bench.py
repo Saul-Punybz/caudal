@@ -12,6 +12,7 @@ fresh publisher), so no run inherits another one's memory or state.
 """
 
 import json
+import re
 import os
 import platform
 import resource
@@ -292,7 +293,9 @@ def machine():
     if LINUX:
         def first(path, key):
             try:
-                return next(l.split(":", 1)[1].strip() for l in open(path) if l.startswith(key))
+                # /proc files use "key: value", /etc/os-release "KEY=value".
+                line = next(l for l in open(path) if l.startswith(key))
+                return re.split(r"[:=]", line, maxsplit=1)[1].strip()
             except (OSError, StopIteration):
                 return None
         mem_kb = first("/proc/meminfo", "MemTotal") or "0 kB"

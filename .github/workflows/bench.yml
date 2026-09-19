@@ -56,6 +56,7 @@ jobs:
           echo "BENCH_PROFILE=${{ inputs.profile }}" >> "$GITHUB_ENV"
       - name: Run
         run: |
+          set -o pipefail   # `| tee` must not hide a failed run
           ulimit -n 65536 || true
           bench/run.sh --reps "${{ inputs.reps }}" --only "${{ inputs.only }}" \
             --protos "${{ inputs.protos }}" --levels "${{ inputs.levels }}" \

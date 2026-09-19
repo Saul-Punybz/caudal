@@ -20,6 +20,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+// `--features dhat-heap`: see bench/heap.sh.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[derive(Parser)]
 #[command(name = "caudal", about = "Caudal media server", version)]
 struct Cli {
@@ -124,6 +129,10 @@ pub(crate) fn resolve_config(explicit: Option<PathBuf>) -> Result<(config::Confi
 }
 
 fn main() -> ExitCode {
+    // Writes `dhat-heap.json` (in the working directory) when dropped, at
+    // the end of `main`.
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
     let cli = Cli::parse();
 
     if let Some(Command::HashPassword) = &cli.command {

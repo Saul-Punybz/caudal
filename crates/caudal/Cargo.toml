@@ -13,6 +13,10 @@ default = ["captions"]
 # binary has no speech-to-text engine (no candle); a config that sets
 # `[captions]` is rejected at `caudal check` and startup.
 captions = ["dep:caudal-captions"]
+# Heap profiling with dhat (bench/heap.sh, on the Linux bench runner): every
+# allocation is recorded with its backtrace, and `dhat-heap.json` is written
+# when the server exits. Slow; never for production builds.
+dhat-heap = ["dep:dhat"]
 
 [dependencies]
 caudal-core.workspace = true
@@ -48,6 +52,7 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 toml = "1.1.6"
+dhat = { version = "0.3", optional = true }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 # `caudal doctor`: a blocking HTTP client (own /healthz, a running

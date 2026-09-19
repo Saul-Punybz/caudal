@@ -213,6 +213,7 @@ jobs:
       - name: Minimal [admin] config (allow_unauthenticated, so /healthz has something to answer on 0.0.0.0)
         run: |
           cat > /tmp/caudal.toml <<'EOF'
+          [server]
           http_bind = "0.0.0.0:8080"
 
           [admin]

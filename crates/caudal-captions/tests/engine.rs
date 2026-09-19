@@ -227,10 +227,12 @@ async fn a_live_aac_stream_gets_cues() {
     let r = recall(ES, &text);
     eprintln!("pipeline ({voice:?}): recall {:.0}%, {} cues: {text}", r * 100.0, cues.len());
     assert!(r >= if voice == Voice::Say { 0.8 } else { 0.5 }, "recall {r:.2}: {text}");
-    // On the stream's clock, after the speech began, never before it.
+    // On the stream's clock, after the speech began, never before it; at
+    // most the live edge (speech, then 4 s of silence) plus the reading
+    // time of the cues before them.
     let start = 100_000_000;
     for c in &cues {
-        assert!(c.start_us >= start && c.start_us <= start + total_us + 8_000_000, "{c:?}");
+        assert!(c.start_us >= start && c.start_us <= start + total_us + 15_000_000, "{c:?}");
         assert!(c.end_us > c.start_us && c.text.lines().count() <= 2, "{c:?}");
         assert!(c.text.lines().all(|l| l.chars().count() <= caudal_captions::cues::LINE), "{c:?}");
     }

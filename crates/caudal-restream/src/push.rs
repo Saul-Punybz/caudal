@@ -41,9 +41,10 @@ async fn wait_for_publish(registry: &Arc<Registry>, name: &str) -> Option<Arc<St
     // A publish may have landed between the caller's check and this
     // subscription; check once more before waiting on the broadcast.
     if let Some(s) = registry.get(name)
-        && !s.is_ended() {
-            return Some(s);
-        }
+        && !s.is_ended()
+    {
+        return Some(s);
+    }
     loop {
         match publishes.recv().await {
             Ok(stream) if stream.name() == name => return Some(stream),

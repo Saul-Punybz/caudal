@@ -213,23 +213,24 @@ impl Demuxer {
                 build_avcc(state.sps.as_deref().unwrap(), state.pps.as_deref().unwrap())
             };
             if let Some(init) = init
-                && state.init.as_deref() != Some(&init[..]) {
-                    let (width, height) = if h265 {
-                        h265_dimensions(state.sps.as_deref().unwrap()).unwrap_or((0, 0))
-                    } else {
-                        h264_dimensions(state.sps.as_deref().unwrap()).unwrap_or((0, 0))
-                    };
-                    state.init = Some(init.clone());
-                    out.push(DemuxEvent::VideoInit(TrackInfo {
-                        id: VIDEO_TRACK,
-                        codec: if h265 { Codec::H265 } else { Codec::H264 },
-                        timescale: 90_000,
-                        init: Bytes::from(init),
-                        lang: None,
-                        video: Some(VideoParams { width, height, fps: None }),
-                        audio: None,
-                    }));
-                }
+                && state.init.as_deref() != Some(&init[..])
+            {
+                let (width, height) = if h265 {
+                    h265_dimensions(state.sps.as_deref().unwrap()).unwrap_or((0, 0))
+                } else {
+                    h264_dimensions(state.sps.as_deref().unwrap()).unwrap_or((0, 0))
+                };
+                state.init = Some(init.clone());
+                out.push(DemuxEvent::VideoInit(TrackInfo {
+                    id: VIDEO_TRACK,
+                    codec: if h265 { Codec::H265 } else { Codec::H264 },
+                    timescale: 90_000,
+                    init: Bytes::from(init),
+                    lang: None,
+                    video: Some(VideoParams { width, height, fps: None }),
+                    audio: None,
+                }));
+            }
         }
 
         if data.is_empty() {

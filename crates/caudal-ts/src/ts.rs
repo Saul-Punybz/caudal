@@ -316,9 +316,10 @@ impl TsDemux {
         let Some(partial) = self.partial.get_mut(&pid) else { return };
         partial.data.extend_from_slice(data);
         if partial.is_complete()
-            && let Some(partial) = self.partial.remove(&pid) {
-                out.push(partial.finish());
-            }
+            && let Some(partial) = self.partial.remove(&pid)
+        {
+            out.push(partial.finish());
+        }
     }
 }
 

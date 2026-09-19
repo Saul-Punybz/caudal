@@ -225,8 +225,7 @@ mod reload_tests {
     #[tokio::test]
     async fn unchanged_channel_keeps_its_task() {
         let registry = Registry::new();
-        let handle =
-            start(registry, ChannelConfig { channels: vec![ch("a", true)], buffer: BufferConfig::default() });
+        let handle = start(registry, ChannelConfig { channels: vec![ch("a", true)], buffer: BufferConfig::default() });
         let before = task_ids(&handle);
         handle.reload(ChannelConfig { channels: vec![ch("a", true)], buffer: BufferConfig::default() });
         assert_eq!(task_ids(&handle), before, "unchanged channel must not be restarted");
@@ -243,10 +242,7 @@ mod reload_tests {
 
         // `a`'s `loop` flag changes (restart), `b` is dropped (stop), `c`
         // is new (start).
-        handle.reload(ChannelConfig {
-            channels: vec![ch("a", false), ch("c", true)],
-            buffer: BufferConfig::default(),
-        });
+        handle.reload(ChannelConfig { channels: vec![ch("a", false), ch("c", true)], buffer: BufferConfig::default() });
 
         let names: Vec<String> = handle.status().iter().map(|s| s.name.clone()).collect();
         assert!(names.contains(&"a".to_string()));

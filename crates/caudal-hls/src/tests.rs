@@ -470,7 +470,13 @@ fn render_master_formats_attrs_and_preserves_caller_order() {
         ),
         (
             "main+lo".to_string(),
-            VariantAttrs { codecs: "avc1.42001f".to_string(), resolution: None, frame_rate: None, peak: 500_000, average: None },
+            VariantAttrs {
+                codecs: "avc1.42001f".to_string(),
+                resolution: None,
+                frame_rate: None,
+                peak: 500_000,
+                average: None,
+            },
         ),
     ];
     let m = render_master(&variants);

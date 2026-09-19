@@ -427,12 +427,8 @@ async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) 
     let mut variants = vec![(name.to_owned(), root_attrs)];
     if !name.contains('+') {
         let prefix = format!("{name}+");
-        let siblings: Vec<(String, Arc<Entry>)> = hls
-            .streams()
-            .iter()
-            .filter(|(n, _)| n.starts_with(&prefix))
-            .map(|(n, e)| (n.clone(), e.clone()))
-            .collect();
+        let siblings: Vec<(String, Arc<Entry>)> =
+            hls.streams().iter().filter(|(n, _)| n.starts_with(&prefix)).map(|(n, e)| (n.clone(), e.clone())).collect();
         for (n, e) in siblings {
             if let Some(attrs) = e.pkg().variant_attrs() {
                 variants.push((n, attrs));

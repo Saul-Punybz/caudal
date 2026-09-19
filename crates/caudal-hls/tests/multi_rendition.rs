@@ -101,9 +101,12 @@ async fn abr_family_serves_and_ffprobes_clean() {
     wait_http(&format!("{base}/hls/abr+low/index.m3u8"), |b| b.contains("#EXTINF"), Duration::from_secs(10)).await;
 
     // Master lists both, relative URIs, tokens carried through.
-    let master =
-        wait_http(&format!("{base}/hls/abr/master.m3u8?token=tkn.val.sig"), |b| b.contains("STREAM-INF"), Duration::from_secs(5))
-            .await;
+    let master = wait_http(
+        &format!("{base}/hls/abr/master.m3u8?token=tkn.val.sig"),
+        |b| b.contains("STREAM-INF"),
+        Duration::from_secs(5),
+    )
+    .await;
     assert!(master.contains("../abr/index.m3u8?token=tkn.val.sig"), "{master}");
     assert!(master.contains("../abr+low/index.m3u8?token=tkn.val.sig"), "{master}");
     assert_eq!(master.matches("#EXT-X-STREAM-INF:").count(), 2, "{master}");
@@ -120,13 +123,9 @@ async fn abr_family_serves_and_ffprobes_clean() {
     if !have("ffprobe") {
         eprintln!("SKIP: ffprobe not on PATH");
     } else {
-        let out = Guarded::spawn(Command::new("ffprobe").args([
-            "-v",
-            "error",
-            "-i",
-            &format!("{base}/hls/abr/master.m3u8"),
-        ]))
-        .wait_with_output();
+        let out =
+            Guarded::spawn(Command::new("ffprobe").args(["-v", "error", "-i", &format!("{base}/hls/abr/master.m3u8")]))
+                .wait_with_output();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && stderr.trim().is_empty(), "ffprobe reported errors:\n{stderr}");
     }

@@ -179,16 +179,18 @@ fn compatible(fixed: &[TrackInfo], file: &[TrackInfo]) -> Result<(), String> {
             return Err(format!("{kind} timescale differs: {} vs {}", a.timescale, b.timescale));
         }
         if let (Some(x), Some(y)) = (a.video, b.video)
-            && (x.width, x.height) != (y.width, y.height) {
-                return Err(format!("resolution differs: {}x{} vs {}x{}", x.width, x.height, y.width, y.height));
-            }
+            && (x.width, x.height) != (y.width, y.height)
+        {
+            return Err(format!("resolution differs: {}x{} vs {}x{}", x.width, x.height, y.width, y.height));
+        }
         if let (Some(x), Some(y)) = (a.audio, b.audio)
-            && x != y {
-                return Err(format!(
-                    "audio differs: {} Hz/{} ch vs {} Hz/{} ch",
-                    x.sample_rate, x.channels, y.sample_rate, y.channels
-                ));
-            }
+            && x != y
+        {
+            return Err(format!(
+                "audio differs: {} Hz/{} ch vs {} Hz/{} ch",
+                x.sample_rate, x.channels, y.sample_rate, y.channels
+            ));
+        }
         if a.init != b.init {
             return Err(format!("{kind} codec configuration differs"));
         }

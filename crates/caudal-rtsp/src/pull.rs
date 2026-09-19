@@ -187,11 +187,12 @@ async fn pull_once(pull: &RtspPull, registry: &Arc<Registry>, buffer: BufferConf
                     continue;
                 }
                 if (video_track_info.is_none() || vf.has_new_parameters())
-                    && let Some(ParametersRef::Video(vp)) = demuxed.streams()[vf.stream_id()].parameters() {
-                        let info = video_track(&demuxed.streams()[vf.stream_id()], vp, is_h265);
-                        video_track_info = Some(info);
-                        announce(&publisher, &video_track_info, &audio_track_info)?;
-                    }
+                    && let Some(ParametersRef::Video(vp)) = demuxed.streams()[vf.stream_id()].parameters()
+                {
+                    let info = video_track(&demuxed.streams()[vf.stream_id()], vp, is_h265);
+                    video_track_info = Some(info);
+                    announce(&publisher, &video_track_info, &audio_track_info)?;
+                }
                 if video_track_info.is_none() {
                     continue;
                 }
@@ -209,10 +210,11 @@ async fn pull_once(pull: &RtspPull, registry: &Arc<Registry>, buffer: BufferConf
                     continue;
                 }
                 if audio_track_info.is_none()
-                    && let Some(ParametersRef::Audio(ap)) = demuxed.streams()[af.stream_id()].parameters() {
-                        audio_track_info = Some(audio_track(&demuxed.streams()[af.stream_id()], ap));
-                        announce(&publisher, &video_track_info, &audio_track_info)?;
-                    }
+                    && let Some(ParametersRef::Audio(ap)) = demuxed.streams()[af.stream_id()].parameters()
+                {
+                    audio_track_info = Some(audio_track(&demuxed.streams()[af.stream_id()], ap));
+                    announce(&publisher, &video_track_info, &audio_track_info)?;
+                }
                 if audio_track_info.is_none() {
                     continue;
                 }

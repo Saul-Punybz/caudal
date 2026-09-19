@@ -74,7 +74,30 @@ function resolveBinary(): string {
  *   on the returned CaudalServer.
  * @param opts.extraToml Appended to the config (new sections only).
  */
+/**
+ * One line about machine load and media processes still alive, printed when
+ * a server starts. Firefox (the last project in CI) stalled on LL-HLS a few
+ * times after the reconnect/failover specs were added; this shows whether
+ * earlier specs left encoders or servers running. Linux only (CI).
+ */
+function logMachineLoad(): void {
+  if (process.platform !== "linux") return;
+  try {
+    const load = execSync("cat /proc/loadavg").toString().trim();
+    const procs = execSync("ps -eo pcpu=,etimes=,args= | grep -E 'ffmpeg|/caudal( |$)' | grep -vE 'grep|node' || true")
+      .toString()
+      .trim()
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => l.trim().slice(0, 90));
+    console.log(`[load] ${load}; ${procs.length} ffmpeg/caudal alive${procs.length ? ": " + procs.join(" | ") : ""}`);
+  } catch {
+    // Diagnostics only.
+  }
+}
+
 export async function startCaudal(opts?: { tls?: boolean; extraToml?: string }): Promise<CaudalServer> {
+  logMachineLoad();
   const bin = resolveBinary();
   const fs = await import("node:fs");
   if (!fs.existsSync(bin)) {

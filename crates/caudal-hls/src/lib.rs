@@ -77,7 +77,13 @@ const PLAY_HTML: &str = include_str!("../static/play.html");
 ///
 /// Must be called inside a tokio runtime: it spawns the task that starts a
 /// packager for every stream that gets published.
-pub fn router(registry: Arc<Registry>, cfg: HlsConfig) -> axum::Router {
+///
+/// `trusted_proxies` is `[server] trusted_proxies` (see
+/// `crates/caudal/src/config.rs`): reverse proxies allowed to set
+/// `X-Forwarded-For` for the address `Registry::authorize` (and
+/// `caudal-access`'s `[[access.rules]]`) judges a play request by. Empty:
+/// every peer's own address is used as is.
+pub fn router(registry: Arc<Registry>, cfg: HlsConfig, trusted_proxies: Vec<caudal_core::Cidr>) -> axum::Router {
     let cfg = HlsConfig {
         part_ms: cfg.part_ms.max(10),
         segment_ms: cfg.segment_ms.max(cfg.part_ms.max(10)),
@@ -85,7 +91,7 @@ pub fn router(registry: Arc<Registry>, cfg: HlsConfig) -> axum::Router {
         cue_out_tags: cfg.cue_out_tags,
         reconnect_grace: cfg.reconnect_grace,
     };
-    let hls = Arc::new(Hls { registry: registry.clone(), cfg, streams: Mutex::default() });
+    let hls = Arc::new(Hls { registry: registry.clone(), cfg, trusted_proxies, streams: Mutex::default() });
     match Handle::try_current() {
         Ok(rt) => {
             // Subscribe before listing, so a publish in between is seen at
@@ -104,6 +110,7 @@ pub fn router(registry: Arc<Registry>, cfg: HlsConfig) -> axum::Router {
 struct Hls {
     registry: Arc<Registry>,
     cfg: HlsConfig,
+    trusted_proxies: Vec<caudal_core::Cidr>,
     streams: Mutex<HashMap<String, Arc<Entry>>>,
 }
 
@@ -272,6 +279,17 @@ async fn count_viewers(entry: Weak<Entry>) {
     }
 }
 
+/// The address `Registry::authorize` should judge this request by: the TCP
+/// peer, or (only if it is itself a trusted proxy) the right-most untrusted
+/// `X-Forwarded-For` hop. `None` when the server wasn't started with
+/// connect info (never true in `crate::main::run`; only possible in a test
+/// harness that skips `into_make_service_with_connect_info`).
+fn client_ip(req: &Request, trusted_proxies: &[caudal_core::Cidr]) -> Option<std::net::IpAddr> {
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>()?.0.ip();
+    let xff = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    Some(caudal_core::net::resolve_forwarded(peer, xff, trusted_proxies))
+}
+
 /// A stable key for one player: its address (when the server was started
 /// with connect info) plus its user agent.
 fn viewer_key(req: &Request) -> u64 {
@@ -376,7 +394,8 @@ async fn hls_file(
     if token.is_some_and(|t| !token_is_url_safe(t)) {
         return error(StatusCode::FORBIDDEN);
     }
-    match hls.registry.authorize(caudal_core::Access::Play, &name, token).await {
+    let ip = client_ip(&req, &hls.trusted_proxies);
+    match hls.registry.authorize(caudal_core::Access::Play, &name, token, ip).await {
         Ok(()) => {}
         Err(caudal_core::Denied::Missing) => {
             let mut r = error(StatusCode::UNAUTHORIZED);

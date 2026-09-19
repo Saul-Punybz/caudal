@@ -501,6 +501,58 @@ fn recording_becomes_vod_and_clips_download() {
     assert!(matches!(s.get("/vod/recme/..%2F..%2Fetc/passwd").unwrap().0, 400 | 404));
 }
 
+#[test]
+fn access_rule_denies_rtmp_publish_from_a_matching_cidr() {
+    if !enabled() {
+        return;
+    }
+    // Every e2e client is loopback, so a rule naming 127.0.0.1/32 denies it
+    // and one naming an unrelated network (10.0.0.0/8) never does.
+    let s = Server::start_with("\n[[access.rules]]\nstreams = [\"*\"]\npublish_deny = [\"127.0.0.1/32\"]\n");
+    let _publ = Publisher::rtmp(&s.rtmp_url("blocked"), 5);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(s.get("/api/v1/streams/blocked").unwrap().0, 404, "publish from a denied IP never creates a stream");
+
+    let (status, body) = s.get("/metrics").unwrap();
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("caudal_access_denied_total{stream=\"blocked\",reason=\"ip_denied\"} 1"),
+        "denial must be counted and visible at /metrics:\n{body}"
+    );
+}
+
+#[test]
+fn access_rule_with_a_non_matching_cidr_never_blocks_the_real_client() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start_with(
+        "\n[[access.rules]]\nstreams = [\"*\"]\npublish_deny = [\"10.0.0.0/8\"]\nplay_deny = [\"10.0.0.0/8\"]\n",
+    );
+    let _publ = Publisher::rtmp(&s.rtmp_url("ok"), 20);
+    s.wait_until("/api/v1/streams/ok", Duration::from_secs(15), |b| b.contains("\"h264\""));
+    // `wait_until` itself only ever succeeds on a 200, so reaching this
+    // point already proves loopback plays: only 10.0.0.0/8 is denied.
+    s.wait_until("/hls/ok/index.m3u8", Duration::from_secs(15), |_| true);
+}
+
+#[test]
+fn access_rule_denies_hls_play_from_a_matching_cidr() {
+    if !enabled() {
+        return;
+    }
+    // Publish is unguarded here; only play is denied, so the stream exists
+    // and only the read side is refused.
+    let s = Server::start_with("\n[[access.rules]]\nstreams = [\"*\"]\nplay_deny = [\"127.0.0.1/32\"]\n");
+    let _publ = Publisher::rtmp(&s.rtmp_url("watched"), 15);
+    s.wait_until("/api/v1/streams/watched", Duration::from_secs(15), |b| b.contains("\"h264\""));
+
+    assert_eq!(s.get("/hls/watched/index.m3u8").unwrap().0, 403, "play from a denied IP is refused");
+    let (status, body) = s.get("/metrics").unwrap();
+    assert_eq!(status, 200);
+    assert!(body.contains("caudal_access_denied_total{stream=\"watched\",reason=\"ip_denied\"}"), "{body}");
+}
+
 /// Audit gap 4: an encoder drops and republishes the same name within the
 /// reconnect grace (default 10 s). The LL-HLS playlist must stay live
 /// across the gap (no ENDLIST, media sequence never goes back), mark the

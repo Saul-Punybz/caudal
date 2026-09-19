@@ -7,6 +7,11 @@
 # HTTP server bind address. Without an [admin] login (below) Caudal refuses
 # to listen on anything but loopback; set [admin] before using 0.0.0.0.
 http_bind = "127.0.0.1:8080"
+# Reverse proxies allowed to set X-Forwarded-For for the resolved client
+# address (HLS, WHIP/WHEP, recordings/VOD/clips, the channel skip route;
+# RTMP/SRT/RTSP/MoQ always see the raw transport peer, no such header
+# exists there). Empty (default): every peer is trusted as the real client.
+# trusted_proxies = ["10.0.0.0/8"]
 
 [rtmp]
 bind = "0.0.0.0:1935"  # RTMP server bind address
@@ -137,3 +142,25 @@ max_mb = 256  # Maximum buffer size in megabytes
 # udp_bind = "0.0.0.0:8189"
 # public_ips = []        # addresses to advertise behind a 1:1 NAT
 # threads = 0            # peer engines doing SRTP; 0 = one per core, at most 8
+
+# Geo-blocking / IP allow-lists per stream, enforced on every protocol
+# (RTMP, SRT, RTSP, WHIP/WHEP, HLS/VOD; MoQ only for country/token rules —
+# moq-native doesn't expose the peer address). "[[access]]" alone can't
+# coexist with "[access] geoip_db" in TOML (the key "access" can't be both
+# a table and an array of tables), so rules nest as [[access.rules]], same
+# as [[admin.users]] / [[health.stream]] / [[transcode.ladder]] above.
+#
+# [access]
+# geoip_db = "/etc/caudal/GeoLite2-Country.mmdb"  # MaxMind DB / DB-IP; required by any "country:" entry below, never bundled
+#
+# The first [[access.rules]] entry whose `streams` glob matches a stream
+# decides both play and publish for it; later entries are not consulted.
+# Within one entry: a deny match always wins over an allow match; an empty
+# allow list is not a whitelist (only the deny list applies); a non-empty
+# allow list *is* a whitelist (an address matching neither list is denied).
+# Entries are CIDRs (a bare address is a /32 or /128 host route) or
+# "country:XX" (ISO 3166-1 alpha-2).
+# [[access.rules]]
+# streams = ["live-*"]
+# play_deny = ["203.0.113.0/24", "country:KP"]
+# publish_allow = ["10.0.0.0/8"]   # only this network may publish live-*

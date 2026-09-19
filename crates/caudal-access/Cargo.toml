@@ -1,0 +1,24 @@
+[package]
+name = "caudal-access"
+description = "Per-stream IP/CIDR and country allow/deny rules (geo-blocking) for the Caudal access gate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+arc-swap.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+# Pure-Rust MaxMind DB (GeoIP2/GeoLite2/DB-IP) reader. ISC license. The
+# operator supplies their own .mmdb file; none is bundled or downloaded.
+maxminddb = "0.32"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+# Builds a tiny in-memory .mmdb for tests (MIT OR Apache-2.0); not a
+# runtime dependency, never bundled into the server.
+maxminddb-writer = "0.1"
+serde = { workspace = true }

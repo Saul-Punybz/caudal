@@ -52,7 +52,7 @@ pub async fn serve(cfg: RtmpConfig, registry: Arc<Registry>) -> std::io::Result<
         // Each connection runs on its own task: a panic, a slow client or a
         // malformed handshake in one never affects any other publisher.
         tokio::spawn(async move {
-            let handler = Handler::new(registry, app, buffer);
+            let handler = Handler::new(registry, app, buffer, addr.ip());
             let session = ServerSession::new(stream, handler);
             match session.run().await {
                 Ok(clean) => tracing::debug!(%addr, clean, "rtmp session ended"),

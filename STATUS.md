@@ -1,21 +1,26 @@
 # STATUS — Caudal
 
-**Last updated:** 19 Sep 2026, ~09:00 UTC (13 PRs merged today; #14, #15 open; see RESUME HERE)
+**Last updated:** 19 Sep 2026, ~12:30 UTC (PAUSED; v0.1 in progress; see RESUME HERE)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (19 Sep 2026, ~09:00 UTC) — read this first in a new session
-**Saul's permissions for finishing Caudal** (memory `caudal-permisos`): merge to main + push when CI and local gate are green; up to 3 agents at a time; upstream bug reports, GitHub Releases and GHCR images OK; crates.io NOT. Hard rule: never saturate CPU/RAM, no processes that never end.
+## RESUME HERE (19 Sep 2026, ~12:30 UTC, PAUSED by Saul: "stop, save and we will continue later")
+**Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI + local gate are green; up to 5 agents but ONE heavy local job at a time (shared lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); heavy benchmarks and soak on GitHub (`bench.yml`), never on the laptop; a question from Saul is not a request. Keep a health guard (load, free RAM, `pmset -g therm`) running while agents work.
 
-**main = `b132cb6`.** Merged 19 Sep: #1 crash safety + killpg fix, #2 LL-HLS latency tie (bench client bug), #3 WHEP 406, #4 WebRTC ARM AES + engines per core (WHEP x300 1,799 vs 1,666 Mbps, 300/300 kept up), #5 validator output, #6 LL-HLS survives publisher reconnect, #7 `caudal doctor` + Helm chart, #8 IP/CIDR/country access rules, #9 fuzzing (6 targets, 7 crashes fixed; upstream private advisory GHSA-3gqf-85hw-q8xf to ScuffleCloud/scuffle), #10 backup-source failover, #11 `caudal import-mist`, #12 CI robustness, #13 origin-edge clustering.
-**Open PRs:** #15 live captions (coalescing fix pushed at 25f76b5; Linux CI result not read yet — read the `test` job's `pipeline metrics:` line before merging; then make captions a cargo feature `captions`, default on, and measure the binary with/without, as Saul approved).
-**PAUSED 19 Sep ~10:00 UTC — Saul: "the computer is running hot, please stop".** All agents stopped, every build/bench/server process killed, Docker Desktop quit. Work in progress saved on branches (not built/verified after the stop): `perf/webrtc-batched-send` @ 443b9a8 (quinn-udp batched sends; several bench runs in bench/results/ of that branch, final 3-rep bench NOT done), `bench/mistserver` @ 5d6cfd2 (MistServer added to bench harness; MistServer not built or measured yet — no MistServer numbers exist). Resume only when Saul says so, one heavy job at a time.
+**main = `a8b1f78`, CI green.** 18 PRs merged 19 Sep (see git log; highlights: RTSP ~6x less CPU than MediaMTX on Linux, IP multicast output, live captions es/en with a `captions` cargo feature, origin-edge clustering, failover, fuzzing).
 
-**Known flaky/limits:** Firefox LL-HLS on the 4-core CI runner stalls sometimes (load 3–4, no leftover processes) → 1 CI retry for Firefox, reported as flaky. Docker Desktop hung on this Mac today (mounting a 61 GB target dir); Helm chart not deployed on a real cluster.
+**v0.1 scope (approved by Saul)** — status at pause, all agents stopped, every WIP pushed:
+1. Batched UDP sends for WebRTC — branch `perf/webrtc-batched-send` @ 3305c4f (code clean + 8 grouping unit tests; macOS x100 69→58 %, x300 315→293 %). TODO: Linux before/after with `gh workflow run bench.yml --ref <main|branch> -f protos=whep -f levels=100,300 -f reps=3 -f servers=caudal,mediamtx`, update BENCH doc, PR.
+2. RSS per live stream (98 vs 80 MB) — branch `perf/rss-per-stream` @ 8ce4236 (WIP: dhat feature started, nothing measured). TODO: measure on Linux (`-f only=idle`), fix, PR.
+3. Soak test — not started on a branch (agent was reading bench.py; plan: `.github/workflows/soak.yml`, 2 h on GitHub, RSS/fd/threads/CPU CSV + verdict).
+4. Release — branch `release/v0.1-pipeline` @ 97ba0d8 (WIP: Dockerfile.release + release notes draft; no workflow yet). TODO: `release.yml` on tag push + dry-run dispatch, GHCR multi-arch, Helm appVersion 0.1.0. Tag `v0.1.0` only after 1–3 merge.
+5. Saul's OBS glass-to-glass check (docs agent had started `docs/QUICKSTART.md` + `docs/OBS.md`; nothing saved — restart it).
 
-**Queue (one heavy job at a time, health guard on):** (0) PR #15 captions: merge when CI is green, then cargo feature `captions` (default on) + binary size with/without; (1) finish `perf/webrtc-batched-send` (final 3-rep bench); (1b) MistServer in the bench (`bench/mistserver`, not built yet); (1c) batch 13 in PLAN.md: IP multicast output, kTLS + sendfile, io_uring/pacing evaluation; (future, not now) batch 14: `caudal mcp`; (2) RTSP ~15 % more CPU than MediaMTX; (3) RSS per live stream (98 vs 80 MB); (4) remaining roadmap: DASH (low priority), MoQ on Safari 26.4+, Raspberry Pi image, OMT protocol + discovery, player SDKs, watermarking, CEA-608 in TS, GPU transcoding; (5) release v0.x + GHCR image; (6) TEST-AUDIT Phase 2/3 rest (proptest, interop nightly, soak, mutants).
-**Rule from Saul:** verify with tools outside Claude (memory `saul-verificacion-externa`); say what is not verified.
+**Set aside:** MistServer bench (`bench/mistserver` @ c553882; next: `meson setup --default-library=static`; MistServer LL-HLS part is a fixed 500 ms); MCP server (future).
+**After v0.1:** kTLS + sendfile, io_uring/pacing, OMT, Raspberry Pi image, MoQ on Safari, DASH, SDKs, watermarking, CEA-608, GPU transcoding, TEST-AUDIT phase 2/3.
+**Status page:** https://claude.ai/artifact/NGCn3AzWdLEKLGQkvuT56A (source in the session scratchpad; republish with `url`).
+**Rule from Saul:** verify with tools outside Claude; say what is not verified.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps
 `scuffle-rtmp` 0.2.3 (latest) returned the previous header unchanged for every Type 3 chunk, so a Type 3 chunk that starts a new message kept the previous timestamp instead of adding the delta (RTMP spec 5.3.1.2.4; FFmpeg `rtmppkt.c`). Any encoder that sends constant-rate frames as Type 3 got frozen timestamps **on Caudal's RTMP ingest**. Found by `caudal-restream`'s loopback test. Patched copy in `vendor/scuffle-rtmp` (`[patch.crates-io]`), regression test fails upstream (`[10, 50, 50, 50]`) and passes patched. Also fixed: the SRT tests probed TCP for free ports while SRT binds UDP (failed every full-workspace run); `caudal-restream`'s push loop now only reads inside `select!` (a cancelled write could corrupt the chunk stream).

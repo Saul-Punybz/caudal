@@ -1,0 +1,26 @@
+[package]
+name = "caudal-multicast"
+description = "IP multicast output for Caudal: MPEG-TS over UDP or RTP (RFC 2250) to a multicast group, paced to the stream's own clock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+caudal-ts.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+socket2 = "0.6"
+rand = "0.8"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+bytes.workspace = true
+mp4-atom = "0.15"
+tower = { version = "0.5", features = ["util"] }

@@ -4,11 +4,14 @@
 //! Annex B input, while `caudal-core::Frame` is always AVCC, so writing the
 //! (small, well-specified) fragmenter directly avoids a lossy round trip.
 //!
-//! [`packetize`] returns bare RTP packets (12-byte header + payload, no
-//! transport framing). The caller frames them per SETUP's chosen
-//! transport: [`interleave`] wraps one in RFC 2326 §10.12's `$` + channel +
-//! 16-bit length for TCP interleaved, or a UDP transport sends the bytes
-//! as-is via `UdpSocket::send_to`.
+//! [`packetize`] writes one access unit's RTP packets into a reusable
+//! [`Packets`] buffer, each already wrapped in RFC 2326 §10.12's `$` +
+//! channel + 16-bit length. TCP interleaved sends the whole buffer with one
+//! write ([`Packets::framed`]); UDP sends each bare packet (the same bytes
+//! minus the 4-byte prefix, [`Packets::bare`]) as its own datagram.
+//! Packetizing straight into one buffer, reused across frames, avoids three
+//! heap allocations per RTP packet and, on TCP, one write syscall per RTP
+//! packet: this runs once per frame per viewer, the RTSP fan-out hot path.
 
 use caudal_core::{Codec, Frame, TrackInfo};
 
@@ -51,71 +54,111 @@ impl PacketState {
     }
 }
 
-/// Wraps one bare RTP packet for TCP interleaved framing (RFC 2326 §10.12):
-/// `$` + channel + 16-bit big-endian length + the packet.
-pub(crate) fn interleave(channel: u8, packet: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(4 + packet.len());
-    buf.push(b'$');
-    buf.push(channel);
-    buf.extend_from_slice(&(packet.len() as u16).to_be_bytes());
-    buf.extend_from_slice(packet);
-    buf
+/// One access unit's RTP packets, interleave-framed back to back in one
+/// buffer. Reused across frames ([`packetize`] clears it), so steady-state
+/// packetizing allocates nothing.
+#[derive(Default)]
+pub(crate) struct Packets {
+    buf: Vec<u8>,
+    /// Offset of each packet's 4-byte interleaved prefix in `buf`.
+    starts: Vec<usize>,
+}
+
+impl Packets {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every packet with its TCP interleaved prefix, back to back: what a
+    /// TCP (or TLS) connection writes in one go.
+    pub(crate) fn framed(&self) -> &[u8] {
+        &self.buf
+    }
+
+    /// Drops an oversized buffer (a keyframe's) so an idle-between-keyframes
+    /// viewer doesn't hold a keyframe's worth of memory: with hundreds of
+    /// viewers that adds up, while reallocating once per keyframe is cheap.
+    pub(crate) fn trim(&mut self) {
+        const KEEP: usize = 64 * 1024;
+        if self.buf.capacity() > KEEP {
+            self.buf = Vec::new();
+        }
+    }
+
+    /// Each bare RTP packet (header + payload, no framing), for UDP.
+    pub(crate) fn bare(&self) -> impl Iterator<Item = &[u8]> + '_ {
+        self.starts.iter().enumerate().map(move |(i, &s)| {
+            let end = self.starts.get(i + 1).copied().unwrap_or(self.buf.len());
+            &self.buf[s + 4..end]
+        })
+    }
+
+    /// Appends one packet: interleaved prefix, 12-byte RTP header, then
+    /// `parts` (the payload, possibly split to avoid an intermediate copy).
+    fn push(&mut self, channel: u8, pt: u8, state: &mut PacketState, ts: u32, marker: bool, parts: &[&[u8]]) {
+        let payload_len: usize = parts.iter().map(|p| p.len()).sum();
+        let rtp_len = 12 + payload_len;
+        let seq = state.seq;
+        state.seq = state.seq.wrapping_add(1);
+        self.starts.push(self.buf.len());
+        self.buf.reserve(4 + rtp_len);
+        self.buf.extend_from_slice(&[b'$', channel]);
+        self.buf.extend_from_slice(&(rtp_len as u16).to_be_bytes());
+        self.buf.extend_from_slice(&[0x80, (u8::from(marker) << 7) | (pt & 0x7F)]); // V=2, P=0, X=0, CC=0
+        self.buf.extend_from_slice(&seq.to_be_bytes());
+        self.buf.extend_from_slice(&ts.to_be_bytes());
+        self.buf.extend_from_slice(&state.ssrc.to_be_bytes());
+        for p in parts {
+            self.buf.extend_from_slice(p);
+        }
+        state.packet_count = state.packet_count.wrapping_add(1);
+        state.octet_count = state.octet_count.wrapping_add(payload_len as u32);
+        state.last_ts = ts;
+    }
 }
 
 /// Splits AVCC (4-byte length-prefixed) NAL units.
-fn avcc_nalus(data: &[u8]) -> Vec<&[u8]> {
-    let mut nalus = Vec::new();
+fn avcc_nalus(data: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = data;
-    while rest.len() >= 4 {
-        let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
-        if rest.len() < 4 + len {
-            break;
+    std::iter::from_fn(move || {
+        if rest.len() < 4 {
+            return None;
         }
-        nalus.push(&rest[4..4 + len]);
+        let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+        if rest.len() - 4 < len {
+            return None;
+        }
+        let nalu = &rest[4..4 + len];
         rest = &rest[4 + len..];
-    }
-    nalus
+        Some(nalu)
+    })
 }
 
-fn rtp_packet(pt: u8, state: &mut PacketState, ts: u32, marker: bool, payload: &[u8]) -> Vec<u8> {
-    let seq = state.seq;
-    state.seq = state.seq.wrapping_add(1);
-    let mut buf = Vec::with_capacity(12 + payload.len());
-    buf.push(0x80); // V=2, P=0, X=0, CC=0
-    buf.push((u8::from(marker) << 7) | (pt & 0x7F));
-    buf.extend_from_slice(&seq.to_be_bytes());
-    buf.extend_from_slice(&ts.to_be_bytes());
-    buf.extend_from_slice(&state.ssrc.to_be_bytes());
-    buf.extend_from_slice(payload);
-    state.packet_count = state.packet_count.wrapping_add(1);
-    state.octet_count = state.octet_count.wrapping_add(payload.len() as u32);
-    state.last_ts = ts;
-    buf
-}
-
-/// Packetizes one access unit into bare RTP packets (no transport framing).
-/// Unsupported codecs produce no packets (never panics).
-pub(crate) fn packetize(info: &TrackInfo, frame: &Frame, state: &mut PacketState) -> Vec<Vec<u8>> {
+/// Packetizes one access unit into `out` (cleared first), each packet
+/// framed for TCP interleaved `channel` (UDP ignores it and sends
+/// [`Packets::bare`]). Unsupported codecs produce no packets (never
+/// panics).
+pub(crate) fn packetize(info: &TrackInfo, frame: &Frame, state: &mut PacketState, channel: u8, out: &mut Packets) {
+    out.buf.clear();
+    out.starts.clear();
     let ts = frame.pts as u32;
     match info.codec {
-        Codec::H264 => packetize_h264(&frame.data, state, ts),
-        Codec::H265 => packetize_h265(&frame.data, state, ts),
-        Codec::Aac => vec![packetize_aac(&frame.data, state, ts)],
-        _ => Vec::new(),
+        Codec::H264 => packetize_h264(&frame.data, state, ts, channel, out),
+        Codec::H265 => packetize_h265(&frame.data, state, ts, channel, out),
+        Codec::Aac => packetize_aac(&frame.data, state, ts, channel, out),
+        _ => {}
     }
 }
 
-fn packetize_h264(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>> {
-    let nalus = avcc_nalus(data);
-    let n = nalus.len();
-    let mut out = Vec::new();
-    for (i, nalu) in nalus.into_iter().enumerate() {
+fn packetize_h264(data: &[u8], state: &mut PacketState, ts: u32, channel: u8, out: &mut Packets) {
+    let mut nalus = avcc_nalus(data).peekable();
+    while let Some(nalu) = nalus.next() {
+        let last_nalu = nalus.peek().is_none();
         if nalu.is_empty() {
             continue;
         }
-        let last_nalu = i + 1 == n;
         if nalu.len() <= MTU {
-            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu, nalu));
+            out.push(channel, VIDEO_PT, state, ts, last_nalu, &[nalu]);
             continue;
         }
         // FU-A (RFC 6184 §5.8).
@@ -128,8 +171,6 @@ fn packetize_h264(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>>
             let end = (off + chunk).min(payload.len());
             let first = off == 0;
             let last = end == payload.len();
-            let mut fu = Vec::with_capacity(2 + (end - off));
-            fu.push(fnri | 28);
             let mut hdr = nal_type;
             if first {
                 hdr |= 0x80;
@@ -137,28 +178,23 @@ fn packetize_h264(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>>
             if last {
                 hdr |= 0x40;
             }
-            fu.push(hdr);
-            fu.extend_from_slice(&payload[off..end]);
-            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu && last, &fu));
+            out.push(channel, VIDEO_PT, state, ts, last_nalu && last, &[&[fnri | 28, hdr], &payload[off..end]]);
             off = end;
         }
     }
-    out
 }
 
 /// RFC 7798 §4.4.3 FU, for the H.265 tracks `retina` can hand us on pull.
 /// Best-effort: not exercised by the H.264 test suite.
-fn packetize_h265(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>> {
-    let nalus = avcc_nalus(data);
-    let n = nalus.len();
-    let mut out = Vec::new();
-    for (i, nalu) in nalus.into_iter().enumerate() {
+fn packetize_h265(data: &[u8], state: &mut PacketState, ts: u32, channel: u8, out: &mut Packets) {
+    let mut nalus = avcc_nalus(data).peekable();
+    while let Some(nalu) = nalus.next() {
+        let last_nalu = nalus.peek().is_none();
         if nalu.len() < 2 {
             continue;
         }
-        let last_nalu = i + 1 == n;
         if nalu.len() <= MTU {
-            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu, nalu));
+            out.push(channel, VIDEO_PT, state, ts, last_nalu, &[nalu]);
             continue;
         }
         let nal_type = (nalu[0] >> 1) & 0x3F;
@@ -171,9 +207,6 @@ fn packetize_h265(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>>
             let end = (off + chunk).min(payload.len());
             let first = off == 0;
             let last = end == payload.len();
-            let mut fu = Vec::with_capacity(3 + (end - off));
-            fu.push((49 << 1) | layer_id_high);
-            fu.push(layer_id_low_tid);
             let mut hdr = nal_type;
             if first {
                 hdr |= 0x80;
@@ -181,23 +214,148 @@ fn packetize_h265(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<Vec<u8>>
             if last {
                 hdr |= 0x40;
             }
-            fu.push(hdr);
-            fu.extend_from_slice(&payload[off..end]);
-            out.push(rtp_packet(VIDEO_PT, state, ts, last_nalu && last, &fu));
+            let fu = [(49 << 1) | layer_id_high, layer_id_low_tid, hdr];
+            out.push(channel, VIDEO_PT, state, ts, last_nalu && last, &[&fu, &payload[off..end]]);
             off = end;
         }
     }
-    out
 }
 
 /// RFC 3640 `mode=AAC-hbr`: one 16-bit AU-headers-length, one 16-bit
 /// AU-header (13-bit size, 3-bit index-delta = 0), then the raw AU. AAC
 /// frames are always well under the MTU, so no fragmentation is needed.
-fn packetize_aac(data: &[u8], state: &mut PacketState, ts: u32) -> Vec<u8> {
+fn packetize_aac(data: &[u8], state: &mut PacketState, ts: u32, channel: u8, out: &mut Packets) {
     let size = (data.len() as u16) & 0x1FFF;
-    let mut payload = Vec::with_capacity(4 + data.len());
-    payload.extend_from_slice(&16u16.to_be_bytes());
-    payload.extend_from_slice(&(size << 3).to_be_bytes());
-    payload.extend_from_slice(data);
-    rtp_packet(AUDIO_PT, state, ts, true, &payload)
+    let au = (size << 3).to_be_bytes();
+    out.push(channel, AUDIO_PT, state, ts, true, &[&16u16.to_be_bytes(), &au, data]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use caudal_core::TrackId;
+
+    fn track(id: u32, codec: Codec, timescale: u32) -> TrackInfo {
+        TrackInfo { id: TrackId(id), codec, timescale, init: Bytes::new(), lang: None, video: None, audio: None }
+    }
+
+    fn avcc(nalus: &[&[u8]]) -> Bytes {
+        let mut v = Vec::new();
+        for n in nalus {
+            v.extend_from_slice(&(n.len() as u32).to_be_bytes());
+            v.extend_from_slice(n);
+        }
+        Bytes::from(v)
+    }
+
+    fn frame(data: Bytes) -> Frame {
+        Frame { track: TrackId(0), dts: 3000, pts: 3000, keyframe: true, data }
+    }
+
+    /// Walks the interleaved buffer and checks every prefix against the
+    /// bare packets, so TCP and UDP carry exactly the same RTP bytes.
+    fn check_framing(out: &Packets, channel: u8) -> Vec<Vec<u8>> {
+        let mut rest = out.framed();
+        let mut from_tcp = Vec::new();
+        while !rest.is_empty() {
+            assert_eq!(rest[0], b'$');
+            assert_eq!(rest[1], channel);
+            let len = u16::from_be_bytes([rest[2], rest[3]]) as usize;
+            from_tcp.push(rest[4..4 + len].to_vec());
+            rest = &rest[4 + len..];
+        }
+        let from_udp: Vec<Vec<u8>> = out.bare().map(<[u8]>::to_vec).collect();
+        assert_eq!(from_tcp, from_udp);
+        from_udp
+    }
+
+    #[test]
+    fn small_nalus_are_single_packets_with_marker_on_the_last() {
+        let mut st = PacketState::new();
+        let seq0 = st.seq;
+        let mut out = Packets::new();
+        let data = avcc(&[&[0x67, 1, 2], &[0x68, 3], &[0x65, 4, 5, 6]]);
+        packetize(&track(0, Codec::H264, 90_000), &frame(data), &mut st, 2, &mut out);
+        let pkts = check_framing(&out, 2);
+        assert_eq!(pkts.len(), 3);
+        for (i, p) in pkts.iter().enumerate() {
+            assert_eq!(p[0], 0x80);
+            assert_eq!(p[1] & 0x80 != 0, i == 2, "marker only on the last packet");
+            assert_eq!(p[1] & 0x7F, VIDEO_PT);
+            assert_eq!(u16::from_be_bytes([p[2], p[3]]), seq0.wrapping_add(i as u16));
+            assert_eq!(u32::from_be_bytes([p[4], p[5], p[6], p[7]]), 3000);
+            assert_eq!(u32::from_be_bytes([p[8], p[9], p[10], p[11]]), st.ssrc());
+        }
+        assert_eq!(&pkts[2][12..], &[0x65, 4, 5, 6]);
+        assert_eq!(st.packet_count(), 3);
+        assert_eq!(st.octet_count(), 3 + 2 + 4);
+        assert_eq!(st.last_ts(), 3000);
+    }
+
+    #[test]
+    fn fu_a_fragments_reassemble_to_the_original_nalu() {
+        let mut nalu = vec![0x65u8];
+        nalu.extend((0..5000u32).map(|i| (i * 7) as u8));
+        let mut st = PacketState::new();
+        let mut out = Packets::new();
+        packetize(&track(0, Codec::H264, 90_000), &frame(avcc(&[&nalu])), &mut st, 0, &mut out);
+        let pkts = check_framing(&out, 0);
+        assert!(pkts.len() > 1);
+        let mut rebuilt = vec![(pkts[0][12] & 0xE0) | (pkts[0][13] & 0x1F)];
+        for (i, p) in pkts.iter().enumerate() {
+            assert!(p.len() - 12 <= MTU);
+            assert_eq!(p[12] & 0x1F, 28, "FU-A indicator");
+            assert_eq!(p[13] & 0x80 != 0, i == 0, "start bit");
+            assert_eq!(p[13] & 0x40 != 0, i + 1 == pkts.len(), "end bit");
+            assert_eq!(p[1] & 0x80 != 0, i + 1 == pkts.len(), "marker");
+            rebuilt.extend_from_slice(&p[14..]);
+        }
+        assert_eq!(rebuilt, nalu);
+    }
+
+    #[test]
+    fn h265_fu_reassembles_to_the_original_nalu() {
+        let mut nalu = vec![19 << 1, 1];
+        nalu.extend((0..3000u32).map(|i| (i * 13) as u8));
+        let mut st = PacketState::new();
+        let mut out = Packets::new();
+        packetize(&track(0, Codec::H265, 90_000), &frame(avcc(&[&nalu])), &mut st, 0, &mut out);
+        let pkts = check_framing(&out, 0);
+        let mut rebuilt = vec![(pkts[0][14] & 0x3F) << 1, pkts[0][13]];
+        for p in &pkts {
+            assert_eq!(p[12] >> 1, 49, "FU type");
+            rebuilt.extend_from_slice(&p[15..]);
+        }
+        assert_eq!(rebuilt, nalu);
+    }
+
+    #[test]
+    fn aac_is_one_rfc3640_packet_and_the_buffer_is_reused() {
+        let aac = track(1, Codec::Aac, 48_000);
+        let mut st = PacketState::new();
+        let mut out = Packets::new();
+        let au = [9u8; 300];
+        for _ in 0..2 {
+            packetize(&aac, &frame(Bytes::copy_from_slice(&au)), &mut st, 3, &mut out);
+            let pkts = check_framing(&out, 3);
+            assert_eq!(pkts.len(), 1);
+            let p = &pkts[0];
+            assert_eq!(p[1], 0x80 | AUDIO_PT);
+            assert_eq!(&p[12..14], &16u16.to_be_bytes());
+            assert_eq!(u16::from_be_bytes([p[14], p[15]]) >> 3, 300);
+            assert_eq!(&p[16..], &au);
+        }
+        assert_eq!(st.packet_count(), 2);
+    }
+
+    #[test]
+    fn truncated_avcc_stops_without_panicking() {
+        let mut data = avcc(&[&[0x65, 1, 2, 3]]).to_vec();
+        data.extend_from_slice(&[0, 0, 0xFF, 0xFF, 1]);
+        let mut st = PacketState::new();
+        let mut out = Packets::new();
+        packetize(&track(0, Codec::H264, 90_000), &frame(Bytes::from(data)), &mut st, 0, &mut out);
+        assert_eq!(check_framing(&out, 0).len(), 1);
+    }
 }

@@ -169,6 +169,13 @@ claiming in public.
 - NDI itself: proprietary SDK, license restricts reverse engineering, trademarked. Covered instead by OMT (M12), an MIT protocol for the same job.
 - Content protection: CENC/ClearKey first, Widevine/FairPlay only with a real customer.
 
+## v0.1 (scope approved by Saul, 19 Sep 2026)
+1. Batched UDP sends for WebRTC (`perf/webrtc-batched-send`), measured on Linux.
+2. RSS per live stream: close the gap with MediaMTX (98 vs 80 MB on the M4; 11 MB of it is the 50 s default buffer).
+3. Soak test: hours of publish + viewers on GitHub's runners, RSS/fd/CPU over time, no growth.
+4. Release: tag `v0.1.0`, GitHub Release with static binaries (x86_64, aarch64 musl) + checksums, image `ghcr.io/saul-punybz/caudal:0.1.0`.
+5. Saul's own check: OBS → Caudal → a browser, glass-to-glass under 3 s, by a person.
+
 ## Road to "finished" (Saul, 18 Sep 2026: finish Caudal with everything, all in Rust)
 
 | Batch | Work | Agent / model | State |
@@ -181,7 +188,7 @@ claiming in public.
 | 9 | Stream health alerts (no keyframes, bitrate drop, publisher gone) → webhooks | Haiku/Sonnet | next |
 | 9 | **Close the gap with MediaMTX (Saul, 18 Sep 2026):** (1) RTSP over UDP + RTSPS in `caudal-rtsp` (today TCP only, UDP answers 461); (2) hot config reload without dropping viewers (SIGHUP + `POST /api/v1/config/reload`; diff sections, restart only what changed); (3) side-by-side benchmark vs MediaMTX v1.21 on the same machine: CPU, RSS, binary size, glass-to-glass latency at 1/100/1,000 viewers over LL-HLS, WHEP, RTSP; script in `bench/`, results in `docs/research/BENCH-MEDIAMTX.md`. No "faster" claim until (3) exists. | Sonnet (1, 2), Opus (3) | next |
 | 10 | M10 origin-edge clustering on `moq-relay` cluster (xiu as RTMP reference), failover/backup source | Opus | planned |
-| 10 | Live captions (Whisper-class, es/en) → WebVTT in LL-HLS | Opus | planned |
+| 10 | Live captions (Whisper-class, es/en) → WebVTT in LL-HLS: `caudal-captions` (candle, pure Rust), `[captions]`; design + measured RTF in docs/research/CAPTIONS.md. CEA-608 in TS not built | Opus | done (feat/live-captions) |
 | 11 | Recording schedules ([[record.schedule]]) and MoQ ingest (`publish/<name>`) done; geo-blocking/IP lists shipped earlier (PR #8); DASH and MoQ on Safari 26.4+ still open | Sonnet | partly done |
 | 12 | Helm chart, Raspberry Pi image, `caudal doctor`, hot config reload, MistServer config import | Haiku/Sonnet | planned |
 | 12 | OMT protocol + discovery (`open-media-transport`), player SDKs, watermarking (visible first, then A/B segment forensic) | Opus/Sonnet | planned |

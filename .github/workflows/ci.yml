@@ -29,6 +29,16 @@ jobs:
           sudo tar -xJf /tmp/ffmpeg.tar.xz -C /opt
           echo "/opt/ffmpeg-n8.1-latest-linux64-gpl-8.1/bin" >> "$GITHUB_PATH"
       - run: ffmpeg -hide_banner -muxers | grep -i whip && srt-live-transmit -version 2>&1 | head -1
+      # Live captions: espeak-ng speaks the test sentences (macOS uses `say`),
+      # and the Whisper tiny model (~150 MB, pinned revision, SHA-256
+      # checked by `caudal captions fetch-model`) is cached between runs, so
+      # the engine and e2e caption tests run instead of printing SKIP.
+      - run: sudo apt-get install -y espeak-ng
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/caudal-models
+          key: whisper-tiny-169d4a4341b33bc18d8881c4b69c2e104e1cc0af
+      - run: cargo run -p caudal -- captions fetch-model tiny --dir ~/.cache/caudal-models
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # --no-fail-fast: one failing crate used to hide every crate after it
@@ -45,6 +55,7 @@ jobs:
         timeout-minutes: 40
         env:
           CAUDAL_E2E: "1"
+          CAUDAL_WHISPER_MODELS: /home/runner/.cache/caudal-models
         run: |
           set -o pipefail
           status=0
@@ -66,6 +77,51 @@ jobs:
             exit 1
           fi
 
+  # Live captions are the `captions` cargo feature of the caudal binary, on by
+  # default (the `test` job above). This job keeps the build without them
+  # honest: it must not contain caudal-captions or candle, must lint clean,
+  # and passes caudal's own tests (a `[captions]` config is an error there).
+  test-no-captions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ffmpeg 8 and srt-tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y srt-tools
+          curl -fsSL -o /tmp/ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+          sudo tar -xJf /tmp/ffmpeg.tar.xz -C /opt
+          echo "/opt/ffmpeg-n8.1-latest-linux64-gpl-8.1/bin" >> "$GITHUB_PATH"
+      - name: No speech-to-text in the build
+        run: |
+          if cargo tree -p caudal --no-default-features -e normal | grep -E "caudal-captions|candle"; then
+            echo "::error::caudal --no-default-features still depends on the captions engine"
+            exit 1
+          fi
+      - run: cargo clippy -p caudal --all-targets --no-default-features -- -D warnings
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: caudal tests without captions
+        timeout-minutes: 40
+        env:
+          CAUDAL_E2E: "1"
+        run: |
+          set -o pipefail
+          cargo nextest run --profile ci -p caudal --no-default-features --test-threads 1 2>&1 | tee test.log
+      - name: No unexpected SKIPs
+        if: always()
+        run: |
+          grep -oE "SKIP[^\"]*" test.log | sort | uniq -c > skips.txt || true
+          { echo "### Skipped tests (no captions)"; echo '```'; cat skips.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -v "mediastreamvalidator" skips.txt | grep -q .; then
+            echo "::error title=Tests skipped::$(grep -v mediastreamvalidator skips.txt | tr '\n' ' ')"
+            exit 1
+          fi
+
   deny:
     runs-on: ubuntu-latest
     steps:
@@ -79,6 +135,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: brew install ffmpeg
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/caudal-models
+          key: whisper-tiny-169d4a4341b33bc18d8881c4b69c2e104e1cc0af
+      - run: cargo run -p caudal -- captions fetch-model tiny --dir ~/.cache/caudal-models
       - name: Is Apple's validator installed?
         id: msv
         run: |
@@ -95,6 +156,7 @@ jobs:
           CAUDAL_E2E: "1"
           CAUDAL_REQUIRE_HLS_VALIDATOR: ${{ steps.msv.outputs.present }}
           CAUDAL_VALIDATION_DIR: ${{ github.workspace }}/hls-validation
+          CAUDAL_WHISPER_MODELS: /Users/runner/.cache/caudal-models
         run: cargo test -p caudal --test e2e -- --test-threads=1 --nocapture
       - name: Evidence the validator ran
         if: steps.msv.outputs.present == '1'
@@ -126,7 +188,23 @@ jobs:
           tool: cargo-zigbuild
       - uses: Swatinem/rust-cache@v2
       - run: cargo zigbuild --release -p caudal --target ${{ matrix.target }}
-      - run: ls -lh target/${{ matrix.target }}/release/caudal
+      - run: cp target/${{ matrix.target }}/release/caudal caudal-with-captions
+      # The size live captions (caudal-captions + candle) add to the binary.
+      - run: cargo zigbuild --release -p caudal --no-default-features --target ${{ matrix.target }}
+      - name: Binary size with and without captions
+        run: |
+          mv target/${{ matrix.target }}/release/caudal caudal-no-captions
+          cp caudal-with-captions target/${{ matrix.target }}/release/caudal
+          with=$(stat -c %s caudal-with-captions)
+          without=$(stat -c %s caudal-no-captions)
+          {
+            echo "### Release binary size, ${{ matrix.target }} (static, stripped)"
+            echo "| build | bytes | MiB |"
+            echo "|---|---:|---:|"
+            awk -v b="$with" 'BEGIN { printf "| default (captions) | %d | %.1f |\n", b, b / 1048576 }'
+            awk -v b="$without" 'BEGIN { printf "| --no-default-features | %d | %.1f |\n", b, b / 1048576 }'
+            awk -v a="$with" -v b="$without" 'BEGIN { printf "| captions add | %d | %.1f |\n", a - b, (a - b) / 1048576 }'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: caudal-${{ matrix.target }}

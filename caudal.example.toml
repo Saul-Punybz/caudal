@@ -154,6 +154,24 @@ max_mb = 256  # Maximum buffer size in megabytes
 # stream = "main"
 # url = "rtmp://live.twitch.tv/app/live_xxxxxxxx"
 
+# IP multicast: send a stream to a multicast group while it is live, so on a
+# cable/IPTV, campus or hotel network one copy leaves the server and the
+# switches replicate it. MPEG-TS, 7 x 188-byte packets per UDP datagram, paced
+# to the stream's own clock. Needs a network that carries multicast (IGMP
+# snooping on the switches); it does not cross the internet. See
+# docs/MULTICAST.md. Hot-reloadable; counters in GET /api/v1/multicast and
+# /metrics. Receivers: `ffplay udp://239.1.1.1:5000`, VLC `udp://@239.1.1.1:5000`
+# (`rtp://@...` for format = "rtp"), set-top boxes.
+# [[multicast]]
+# stream = "main"
+# group = "239.1.1.1:5000"      # IPv6: "[ff15::1]:5000"
+# format = "ts"                 # "ts" (raw UDP, default) or "rtp" (RFC 2250, PT 33)
+# ttl = 16                      # default 16; 1 keeps it on the local subnet
+# interface = "10.0.0.5"        # this host's address on the video network
+#                               # (IPv6: the interface index); default: the OS route
+# loopback = false              # also deliver to receivers on this host
+# pacing = true                 # default true: switches drop bursts
+
 # Admin login for the web UI and every /api/v1 route (not for players and
 # encoders: /hls, /play, /vod, /whip, /whep and /moq keep their own [auth]
 # tokens). Without [admin], the HTTP listeners must be on loopback.
@@ -225,6 +243,35 @@ max_mb = 256  # Maximum buffer size in megabytes
 # streams = ["live-*"]
 # play_deny = ["203.0.113.0/24", "country:KP"]
 # publish_allow = ["10.0.0.0/8"]   # only this network may publish live-*
+
+# Automatic live captions: speech-to-text on this machine (Whisper on the
+# pure-Rust `candle` engine; Metal on macOS, CPU elsewhere; no cloud
+# service). LL-HLS viewers get a WebVTT subtitle rendition ("Español
+# (auto)" / "English (auto)") a few seconds behind the audio. Off unless a
+# [[captions.stream]] entry names a stream. AAC or Opus audio.
+# The model is downloaded once by the operator, never bundled (Whisper
+# weights: MIT, OpenAI), checksum-verified:
+#   caudal captions fetch-model base --dir /var/lib/caudal/models
+# Measured on an Apple M4, 4 threads (docs/research/CAPTIONS.md): real-time
+# factor (inference time / audio time) tiny 0.04 Metal / 0.12 CPU, base
+# 0.08 / 0.24, small 0.22 / 0.80. One captioned stream costs about RTF x
+# `threads` cores; `threads` is a hard cap for all streams together. On a
+# slower machine chunks queued while inference runs are transcribed together
+# (up to 30 s per run) rather than dropped. /metrics:
+# caudal_captions_real_time_factor (all audio so far; above 1 = falling
+# behind), caudal_captions_last_real_time_factor, and
+# caudal_captions_inferences_total vs caudal_captions_chunks_total.
+# [captions]
+# model_dir = "models"      # holds whisper-<model>/ (config.json, tokenizer.json, model.safetensors)
+# model = "base"            # tiny (~150 MB), base (~290 MB) or small (~970 MB, best Spanish)
+# threads = 2               # inference threads, all streams together (1-64)
+# device = "cpu"            # cpu | metal | auto (GPU is opt-in: a driver abort would stop the server)
+# max_streams = 2           # streams captioned at once; later ones get none
+# [[captions.stream]]
+# streams = ["noticias*"]   # names or prefix* globs; renditions (name+label) share the source's captions
+# language = "es"           # es | en | auto (detected per chunk) | any code the model knows (pt, fr, ...)
+#                           # Verified: Spanish and English only; other languages work but their
+#                           # quality is unmeasured (docs/research/CAPTIONS.md, "Languages").
 
 # Origin-edge clustering (docs/research/CLUSTER.md). Publishers push to any
 # origin; viewers connect to any edge. An edge pulls a stream over MoQ from

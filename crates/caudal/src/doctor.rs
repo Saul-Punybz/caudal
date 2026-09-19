@@ -120,6 +120,7 @@ pub fn run(config_path: Option<&Path>, opts: &Options) -> Report {
     check_clock(opts.online, &mut checks);
     check_ffmpeg(&cfg, &mut checks);
     check_ulimit(&cfg, &mut checks);
+    check_captions(&mut checks);
     if let Some(url) = &opts.url {
         check_running_server(url, &mut checks);
     }
@@ -636,6 +637,18 @@ fn check_ulimit(_cfg: &Config, checks: &mut Vec<Check>) {
     checks.push(Check::ok("ulimit -n", "not checked on this platform"));
 }
 
+// ---------------------------------------------------------------- captions ---
+
+/// Whether this build has live captions. A config that sets `[captions]`
+/// in a build without them already failed the config check.
+fn check_captions(checks: &mut Vec<Check>) {
+    if cfg!(feature = "captions") {
+        checks.push(Check::ok("captions", "built in (feature `captions`)"));
+    } else {
+        checks.push(Check::ok("captions", crate::captions::NOT_BUILT));
+    }
+}
+
 // ------------------------------------------------------------ running server ---
 
 #[derive(Debug, serde::Deserialize)]
@@ -751,6 +764,22 @@ mod tests {
         assert_eq!(report.checks.len(), 1, "{:?}", report.checks);
         assert_eq!(report.checks[0].status, Status::Fail);
         assert_eq!(report.exit_code(), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn captions_in_a_build_without_them_is_a_config_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("caudal.toml");
+        std::fs::write(&path, "[[captions.stream]]\nstreams = [\"a\"]\nlanguage = \"es\"\n").unwrap();
+        let report = run(Some(&path), &Options::default());
+        let config = find(&report.checks, "config");
+        if cfg!(feature = "captions") {
+            assert_eq!(config.status, Status::Ok, "{}", config.detail);
+            assert!(find(&report.checks, "captions").detail.starts_with("built in"));
+        } else {
+            assert_eq!(config.status, Status::Fail);
+            assert!(config.detail.contains(crate::captions::NOT_BUILT), "{}", config.detail);
+        }
     }
 
     #[test]

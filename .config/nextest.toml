@@ -18,3 +18,14 @@ threads-required = "num-cpus"
 [[profile.ci.overrides]]
 filter = 'package(caudal-transcode) & test(rusty_h264_rendition)'
 threads-required = "num-cpus"
+
+# Whisper inference on CPU in real time (caudal-captions' engine tests):
+# a_live_aac_stream_gets_cues missed its deadline once while other tests
+# shared the cores; like rusty_h264, it gets the machine to itself.
+[[profile.default.overrides]]
+filter = 'package(caudal-captions) & binary(engine)'
+threads-required = "num-cpus"
+
+[[profile.ci.overrides]]
+filter = 'package(caudal-captions) & binary(engine)'
+threads-required = "num-cpus"

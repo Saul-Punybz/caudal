@@ -618,6 +618,8 @@ async fn play_task(
     writer: Arc<Mutex<DynWriter>>,
 ) {
     let mut state: HashMap<TrackId, PacketState> = HashMap::new();
+    // Reused for every frame: packetizing allocates nothing in steady state.
+    let mut packets = rtp::Packets::new();
     let mut sr_ticker = tokio::time::interval(RTCP_SR_INTERVAL);
     sr_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -630,23 +632,23 @@ async fn play_task(
                         let Some(transport) = setups.get(&frame.track) else { continue };
                         let Some(info) = tracks.iter().find(|t| t.id == frame.track) else { continue };
                         let ps = state.entry(frame.track).or_insert_with(PacketState::new);
-                        let packets = rtp::packetize(info, &frame, ps);
                         match transport {
                             PlayTransport::Tcp { channel } => {
-                                let mut w = writer.lock().await;
-                                for pkt in &packets {
-                                    let framed = rtp::interleave(*channel, pkt);
-                                    if w.write_all(&framed).await.is_err() {
-                                        return;
-                                    }
+                                rtp::packetize(info, &frame, ps, *channel, &mut packets);
+                                // The whole access unit in one write: one
+                                // syscall per frame, not one per RTP packet.
+                                if writer.lock().await.write_all(packets.framed()).await.is_err() {
+                                    return;
                                 }
                             }
                             PlayTransport::Udp { rtp_socket, client_rtp_addr, .. } => {
-                                for pkt in &packets {
+                                rtp::packetize(info, &frame, ps, 0, &mut packets);
+                                for pkt in packets.bare() {
                                     let _ = rtp_socket.send_to(pkt, *client_rtp_addr).await;
                                 }
                             }
                         }
+                        packets.trim();
                     }
                     Event::TracksChanged | Event::Lagged { .. } | Event::Cue(_) => continue,
                     Event::End => {

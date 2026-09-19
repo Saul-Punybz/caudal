@@ -1,0 +1,8 @@
+# CI profile: a hung test is terminated and named instead of stalling the
+# job for hours (19 Sep 2026: the test step sat at 34 min with no log).
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 4 }
+# Print passing tests' output too, so the SKIP gate can see it.
+success-output = "immediate"
+failure-output = "immediate-final"

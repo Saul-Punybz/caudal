@@ -25,6 +25,7 @@ caudal-transcode.workspace = true
 caudal-scte35.workspace = true
 caudal-admin.workspace = true
 caudal-health.workspace = true
+caudal-failover.workspace = true
 axum.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

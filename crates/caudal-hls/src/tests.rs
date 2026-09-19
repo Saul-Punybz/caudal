@@ -787,6 +787,38 @@ fn resume_keeps_counting_and_marks_the_discontinuity() {
     assert!(msns.windows(2).all(|w| w[1] == w[0] + 1), "{pl}");
 }
 
+/// A keyframe off the segment cadence (a backup-source switch, a scene
+/// cut) starts an INDEPENDENT part, and no part before it is left under
+/// 85% of PART-TARGET unless it ends its segment (Apple -12642).
+#[test]
+fn an_off_cadence_keyframe_starts_an_independent_part() {
+    let fx = fixture();
+    let mut pkg = Packager::new(CFG);
+    pkg.set_tracks(&fx.tracks);
+    feed(&mut pkg, &fx, 0..1);
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    for key_at in [32usize, 36] {
+        let mut video = 0usize;
+        for mut f in fx.looped(if key_at == 32 { 1 } else { 2 }) {
+            if f.track.0 == 0 {
+                f.keyframe |= video == key_at;
+                video += 1;
+            }
+            pkg.push(&f, t0 + Duration::from_micros(fx.micros(&f) as u64));
+        }
+    }
+    let pl = pkg.playlist();
+    let all = parts(&pl);
+    for (i, &(msn, part, dur, independent)) in all.iter().enumerate() {
+        let last_in_segment = all.get(i + 1).is_none_or(|n| n.0 != msn);
+        assert!(dur >= 0.17 || independent || last_in_segment, "s{msn}.p{part} is {dur} s:\n{pl}");
+    }
+    // Frame 32 lands two frames into a part: the segment ends there.
+    assert!(pl.contains("#EXTINF:1.06667,") || pl.contains("#EXTINF:1.06700,"), "{pl}");
+    // Frame 36 lands on a part boundary: a new INDEPENDENT part only.
+    assert!(all.iter().any(|&(_, part, _, independent)| part == 6 && independent), "{pl}");
+}
+
 #[test]
 fn resume_with_a_new_init_segment_adds_an_ext_x_map() {
     let fx = fixture();

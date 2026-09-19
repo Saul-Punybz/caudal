@@ -195,6 +195,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
                     tracing::info!(webhooks, "stream health alerts enabled");
                     let svc = std::sync::Arc::new(svc);
                     state.set_health(svc.clone());
+                    spawn_failover_webhooks(&started.failover, svc.clone());
                     svc.router()
                 }
                 Err(e) => {
@@ -213,6 +214,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         .merge(moq_router)
         .merge(record_router)
         .merge(started.channel_router)
+        .merge(started.failover_router)
         .merge(started.restream_router)
         .merge(reload::router(reload_state))
         .merge(health_router)
@@ -269,4 +271,23 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Sends a `failover_switched` health webhook for every failover switch.
+fn spawn_failover_webhooks(
+    failover: &caudal_failover::FailoverHandle,
+    health: std::sync::Arc<caudal_health::HealthService>,
+) {
+    let mut switches = failover.subscribe_switches();
+    tokio::spawn(async move {
+        loop {
+            match switches.recv().await {
+                Ok(ev) => health.failover_switched(&ev.stream, ev.from.as_deref(), &ev.to, ev.reason),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(missed = n, "failover webhooks lagged");
+                }
+                Err(_) => return,
+            }
+        }
+    });
 }

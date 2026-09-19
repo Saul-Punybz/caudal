@@ -588,6 +588,180 @@ fn ll_hls_survives_a_publisher_reconnect() {
     drop(second);
 }
 
+/// Backup source (PLAN batch 10): the public stream `fo` is fed by
+/// `fo-primary`, then by `fo-backup` when the primary dies, then by the
+/// primary again once it has been back for the hold. A real player
+/// (ffmpeg's HLS demuxer) reading `fo` must decode straight through both
+/// switches without exiting, the playlist must never end, and the API
+/// must show the switches.
+#[test]
+fn failover_keeps_ll_hls_playing_across_a_switch_and_back() {
+    if !enabled() {
+        return;
+    }
+    let s = Server::start_with(
+        "[[failover]]\nstream = \"fo\"\nsources = [\"fo-primary\", \"fo-backup\"]\nswitch_after_ms = 1000\nswitch_back_after_secs = 4\n",
+    );
+    let failover = || -> serde_json::Value {
+        let (code, body) = s.get("/api/v1/failover").unwrap();
+        assert_eq!(code, 200);
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()[0].clone()
+    };
+    let wait_active = |source: &str, limit: Duration| -> Duration {
+        let t0 = Instant::now();
+        while t0.elapsed() < limit {
+            if failover()["active"] == source {
+                return t0.elapsed();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("{source} never went on air within {limit:?}: {}", failover());
+    };
+
+    let primary = Publisher::rtmp(&s.rtmp_url("fo-primary"), 90);
+    wait_active("fo-primary", Duration::from_secs(20));
+    let backup = Publisher::rtmp(&s.rtmp_url("fo-backup"), 90);
+    s.wait_until("/hls/fo/index.m3u8", Duration::from_secs(20), |b| b.matches("#EXTINF").count() >= 3);
+    s.wait_until("/api/v1/failover", Duration::from_secs(20), |b| {
+        serde_json::from_str::<serde_json::Value>(b).unwrap()[0]["sources"][1]["healthy"] == true
+    });
+
+    // A viewer that must decode 20 s of video: it joins about 6 s behind
+    // the live edge, so it has to cross both switches.
+    const FRAMES: u32 = 600;
+    let reader = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-i"])
+        .arg(s.url("/hls/fo/index.m3u8"))
+        .args(["-map", "0:v:0", "-frames:v", &FRAMES.to_string(), "-progress", "pipe:1", "-f", "null", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn ffmpeg reader");
+    let reader = KillOnDrop(Some(reader));
+
+    // The playlist stays live and never renumbers, whatever happens.
+    let mut last_seq = 0u64;
+    let mut check_playlist = || {
+        let (code, pl) = s.get("/hls/fo/index.m3u8").unwrap();
+        assert_eq!(code, 200, "playlist must keep answering across a switch");
+        assert!(!pl.contains("#EXT-X-ENDLIST"), "the playlist ended:\n{pl}");
+        let seq: u64 = pl
+            .lines()
+            .find_map(|l| l.strip_prefix("#EXT-X-MEDIA-SEQUENCE:"))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("media sequence");
+        assert!(seq >= last_seq, "media sequence went back {last_seq} -> {seq}:\n{pl}");
+        last_seq = seq;
+    };
+    std::thread::sleep(Duration::from_secs(2));
+    check_playlist();
+
+    // The primary dies: the backup takes over within switch_after + slack.
+    drop(primary);
+    let took = wait_active("fo-backup", Duration::from_secs(10));
+    assert!(took < Duration::from_secs(4), "switch took {took:?}");
+    assert_eq!(failover()["last_switch"]["reason"], "silent");
+    for _ in 0..10 {
+        check_playlist();
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // The primary comes back; after the 4 s hold it is on air again.
+    let primary = Publisher::rtmp(&s.rtmp_url("fo-primary"), 90);
+    wait_active("fo-primary", Duration::from_secs(20));
+    assert_eq!(failover()["last_switch"]["reason"], "recovered");
+    for _ in 0..10 {
+        check_playlist();
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let history: Vec<String> = failover()["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| format!("{}:{}", e["to"].as_str().unwrap(), e["reason"].as_str().unwrap()))
+        .collect();
+    assert_eq!(history, ["fo-primary:start", "fo-backup:silent", "fo-primary:recovered"]);
+
+    // Apple's validator on a playlist spanning the switches.
+    let dir = tempfile::tempdir().unwrap();
+    match support::validate_hls(&s.url("/hls/fo/master.m3u8"), dir.path(), "failover") {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("mediastreamvalidator reported errors across a failover:\n{report}"),
+        None => eprintln!("NOT VERIFIED: mediastreamvalidator not installed; failover conformance unchecked"),
+    }
+
+    // The viewer decoded all its frames and exited cleanly.
+    let out = reader.wait_timeout(Duration::from_secs(60)).expect("ffmpeg reader never finished");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let frames: u32 =
+        stdout.lines().rev().find_map(|l| l.strip_prefix("frame=")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    assert!(out.status.success(), "ffmpeg reader failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(frames, FRAMES, "the reader stopped early (the playlist ended?)\n{stdout}");
+    drop((primary, backup));
+}
+
+/// A `file:` backup: a slate with other codec parameters (640x360) plays
+/// in a loop while the primary is gone. The LL-HLS playlist marks the seam
+/// with EXT-X-DISCONTINUITY and a second EXT-X-MAP, never ends, and the
+/// slate's player stops once the primary is back. No ffmpeg reader here:
+/// ffmpeg's HLS demuxer keeps the first init segment's decoder config
+/// across an EXT-X-MAP change and stalls, which says nothing about us.
+#[test]
+fn failover_to_a_file_slate_and_back() {
+    if !enabled() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let slate = dir.path().join("slate.mp4");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "smptebars=size=640x360:rate=30"])
+        .args(["-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000", "-t", "4"])
+        .args(["-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-c:a", "aac", "-movflags", "+faststart"])
+        .arg(&slate)
+        .status()
+        .unwrap();
+    assert!(made.success(), "ffmpeg could not write the slate");
+    let s = Server::start_with(&format!(
+        "[[failover]]\nstream = \"fs\"\nsources = [\"fs-primary\", \"file:{}\"]\nswitch_after_ms = 1000\nswitch_back_after_secs = 3\n",
+        slate.display()
+    ));
+    let active = || -> String {
+        let v: serde_json::Value = serde_json::from_str(&s.get("/api/v1/failover").unwrap().1).unwrap();
+        v[0]["active"].as_str().unwrap_or_default().to_owned()
+    };
+    let wait_active = |want: &str| {
+        let t0 = Instant::now();
+        while active() != want {
+            assert!(t0.elapsed() < Duration::from_secs(20), "{want} never went on air");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let slate_label = format!("file:{}", slate.display());
+
+    let primary = Publisher::rtmp(&s.rtmp_url("fs-primary"), 60);
+    wait_active("fs-primary");
+    s.wait_until("/hls/fs/index.m3u8", Duration::from_secs(20), |b| b.matches("#EXTINF").count() >= 3);
+
+    drop(primary);
+    wait_active(&slate_label);
+    let seam = s.wait_until("/hls/fs/index.m3u8", Duration::from_secs(15), |b| b.contains("#EXT-X-DISCONTINUITY\n"));
+    assert_eq!(seam.matches("#EXT-X-MAP:").count(), 2, "the slate's init segment gets its own EXT-X-MAP:\n{seam}");
+    assert!(!seam.contains("#EXT-X-ENDLIST"), "{seam}");
+    assert_eq!(s.get("/api/v1/streams/failover.fs.1").unwrap().0, 200, "the slate plays under its internal name");
+
+    let primary = Publisher::rtmp(&s.rtmp_url("fs-primary"), 60);
+    wait_active("fs-primary");
+    let t0 = Instant::now();
+    while s.get("/api/v1/streams/failover.fs.1").unwrap().0 != 404 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the slate's player kept running off air");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Back on the primary's parameters: a third EXT-X-MAP after another seam.
+    let back = s.wait_until("/hls/fs/index.m3u8", Duration::from_secs(15), |b| b.matches("#EXT-X-MAP:").count() == 3);
+    assert!(!back.contains("#EXT-X-ENDLIST"), "{back}");
+    drop(primary);
+}
+
 /// A child process killed when dropped, so a failed assertion never leaves
 /// an ffmpeg behind.
 struct KillOnDrop(Option<std::process::Child>);

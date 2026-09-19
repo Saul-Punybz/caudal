@@ -175,6 +175,9 @@ pub struct Config {
     /// Multistreaming: `[[restream]]` entries, each pushing one stream to an
     /// RTMP/RTMPS ingest (YouTube, Twitch, Facebook, another server).
     pub restream: Vec<RestreamEntry>,
+    /// Backup sources: `[[failover]]` entries, each a public stream fed by
+    /// the best healthy source of an ordered list.
+    pub failover: Vec<FailoverEntry>,
     /// Admin login for the UI and management API. Absent: no login, and
     /// the server refuses to listen on a non-loopback address.
     pub admin: Option<caudal_admin::AdminSection>,
@@ -189,6 +192,30 @@ pub struct Config {
 pub struct RestreamEntry {
     pub stream: String,
     pub url: String,
+}
+
+/// One failover stream: viewers play `stream`, fed by the first healthy
+/// entry of `sources` (ingest stream names, or `file:<path>` for a looping
+/// slate).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailoverEntry {
+    pub stream: String,
+    pub sources: Vec<String>,
+    /// No frames from the active source for this long: switch.
+    #[serde(default = "default_switch_after_ms")]
+    pub switch_after_ms: u64,
+    /// A better-ranked source healthy this long: switch back.
+    #[serde(default = "default_switch_back_after_secs")]
+    pub switch_back_after_secs: u64,
+}
+
+fn default_switch_after_ms() -> u64 {
+    2000
+}
+
+fn default_switch_back_after_secs() -> u64 {
+    10
 }
 
 /// One 24/7 channel: a playlist of files (or directories) published as a
@@ -747,7 +774,38 @@ impl Config {
             admin.validate()?;
         }
         self.health.to_health_config()?;
+        self.failovers()?;
         Ok(())
+    }
+
+    /// `[[failover]]` as the runtime type `caudal-failover` takes, checked:
+    /// valid names and sources, one entry per stream, and no stream that a
+    /// `[[channel]]` also publishes.
+    pub fn failovers(&self) -> Result<Vec<caudal_failover::Failover>, String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(self.failover.len());
+        for e in &self.failover {
+            let sources = e
+                .sources
+                .iter()
+                .map(|s| caudal_failover::Source::parse(s).map_err(|err| format!("[[failover]] `{}`: {err}", e.stream)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let f = caudal_failover::Failover {
+                stream: e.stream.clone(),
+                sources,
+                switch_after: Duration::from_millis(e.switch_after_ms),
+                switch_back_after: Duration::from_secs(e.switch_back_after_secs),
+            };
+            f.validate()?;
+            if !seen.insert(e.stream.clone()) {
+                return Err(format!("[[failover]] duplicate stream `{}`", e.stream));
+            }
+            if self.channel.iter().any(|c| c.name == e.stream) {
+                return Err(format!("[[failover]] stream `{}` is also a [[channel]]", e.stream));
+            }
+            out.push(f);
+        }
+        Ok(out)
     }
 
     /// `[[restream]]` as the runtime type `caudal-restream` takes.
@@ -810,6 +868,27 @@ mod tests {
         assert_eq!(cfg.hls.segment_ms, 2000);
         assert_eq!(cfg.buffer.window_secs, 50);
         assert_eq!(cfg.buffer.max_mb, 256);
+    }
+
+    #[test]
+    fn failover_entries_parse_and_validate() {
+        let cfg: Config = toml::from_str(
+            "[[failover]]\nstream = \"main\"\nsources = [\"main-primary\", \"main-backup\", \"file:/slate.mp4\"]\n",
+        )
+        .unwrap();
+        let f = &cfg.failovers().unwrap()[0];
+        assert_eq!(f.switch_after, Duration::from_millis(2000));
+        assert_eq!(f.switch_back_after, Duration::from_secs(10));
+        assert_eq!(f.sources[2], caudal_failover::Source::File("/slate.mp4".into()));
+
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[failover]]\nstream = \"main\"\nsources = []\n").contains("at least one source"));
+        assert!(bad("[[failover]]\nstream = \"main\"\nsources = [\"a b\"]\n").contains("neither"));
+        let twice =
+            "[[failover]]\nstream = \"main\"\nsources = [\"a\"]\n[[failover]]\nstream = \"main\"\nsources = [\"b\"]\n";
+        assert!(bad(twice).contains("duplicate"));
+        let channel = "[[channel]]\nname = \"main\"\nitems = []\n[[failover]]\nstream = \"main\"\nsources = [\"a\"]\n";
+        assert!(bad(channel).contains("[[channel]]"));
     }
 
     #[test]

@@ -90,6 +90,26 @@ max_mb = 256  # Maximum buffer size in megabytes
 # loop = true      # default true; false ends the stream after the last item
 # shuffle = false  # default false; reshuffles on every pass
 
+# Backup sources: viewers play `stream`, fed by the first healthy entry of
+# `sources` (priority order). A source is an ingest stream name (any protocol:
+# RTMP, SRT, WHIP, an [[rtsp.pull]]) or `file:<path>`, a file looped by the
+# channel player (it runs only while on air, as stream `failover.<stream>.<n>`).
+# The active source sending no frames for `switch_after_ms` hands over to the
+# next healthy one on its newest keyframe; a better-ranked source healthy for
+# `switch_back_after_secs` takes back over. Timestamps continue across every
+# switch, so players never restart; a source with different codec parameters
+# starts a new EXT-X-MAP after an EXT-X-DISCONTINUITY in LL-HLS.
+# GET /api/v1/failover shows the active source, per-source health and the
+# last switches. POST /api/v1/failover/{stream}/switch {"source": "main-backup"}
+# switches now and prefers that source until {"source": null} (automatic).
+# With [health] webhooks, every switch also sends a `failover_switched` event.
+# Hot-reloadable; `stream` must not also be a [[channel]].
+# [[failover]]
+# stream = "main"
+# sources = ["main-primary", "main-backup", "file:/media/slate.mp4"]
+# switch_after_ms = 2000        # default 2000
+# switch_back_after_secs = 10   # default 10
+
 # Multistreaming: push a stream to one or more RTMP/RTMPS ingests while it is
 # live, reconnecting with backoff. The stream key is never logged and shows as
 # **** in GET /api/v1/restreams. H.264 and AAC; H.265, AV1 and Opus as Enhanced RTMP.

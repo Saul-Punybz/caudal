@@ -20,23 +20,53 @@ use tokio::sync::mpsc;
 /// it and read normally by any other receiver).
 #[derive(Debug, Clone, Serialize)]
 pub struct AlertPayload {
-    pub event: &'static str, // "alert" | "resolved"
+    pub event: &'static str, // "alert" | "resolved" | "failover_switched"
     pub rule: &'static str,
     pub stream: String,
     pub value: f64,
     pub threshold: f64,
     pub at: String,
     pub text: String,
+    /// `failover_switched` only: the source on air before (absent on the
+    /// first switch), the one on air now, and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 impl AlertPayload {
     pub fn new(event: &'static str, rule: &'static str, stream: &str, value: f64, threshold: f64) -> Self {
-        let at = OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+        let at = now_rfc3339();
         let text = format!(
             "[caudal] {} {rule} on {stream}: value {value:.2}, threshold {threshold:.2}",
             if event == "alert" { "ALERT" } else { "RESOLVED" }
         );
-        Self { event, rule, stream: stream.to_owned(), value, threshold, at, text }
+        Self { event, rule, stream: stream.to_owned(), value, threshold, at, text, from: None, to: None, reason: None }
+    }
+
+    /// A backup-source switch on `stream` (`caudal-failover`). `rule` is
+    /// `failover`; `value` and `threshold` carry nothing and are 0.
+    pub fn failover_switched(stream: &str, from: Option<&str>, to: &str, reason: &'static str) -> Self {
+        let text = format!("[caudal] FAILOVER on {stream}: {} -> {to} ({reason})", from.unwrap_or("nothing"));
+        Self {
+            event: "failover_switched",
+            rule: "failover",
+            stream: stream.to_owned(),
+            value: 0.0,
+            threshold: 0.0,
+            at: now_rfc3339(),
+            text,
+            from: from.map(str::to_owned),
+            to: Some(to.to_owned()),
+            reason: Some(reason),
+        }
     }
 }
 
@@ -139,5 +169,22 @@ async fn deliver_one(http: &reqwest::Client, webhook: &standardwebhooks::Webhook
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failover_payload_carries_the_switch() {
+        let v = serde_json::to_value(AlertPayload::failover_switched("main", Some("cam"), "slate", "silent")).unwrap();
+        assert_eq!(v["event"], "failover_switched");
+        assert_eq!(v["rule"], "failover");
+        assert_eq!((&v["from"], &v["to"], &v["reason"]), (&"cam".into(), &"slate".into(), &"silent".into()));
+        assert!(v["text"].as_str().unwrap().contains("cam -> slate"));
+        // Alert payloads keep their shape.
+        let a = serde_json::to_value(AlertPayload::new("alert", "no_keyframe", "main", 12.0, 10.0)).unwrap();
+        assert!(a.get("from").is_none() && a.get("to").is_none() && a.get("reason").is_none());
     }
 }

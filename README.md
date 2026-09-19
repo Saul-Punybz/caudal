@@ -15,6 +15,18 @@ cargo test --workspace
 cargo build --release
 ```
 
+## Operate
+
+`caudal doctor` diagnoses a setup before you go live: config, ports, NAT,
+TLS, clock, tools, and (with `--url`) a running server's stream codecs.
+Each check prints OK/WARN/FAIL with a fix; see `caudal doctor --help`.
+
+## Deploy
+
+A Helm chart is at [deploy/helm/caudal](deploy/helm/caudal) (README there);
+a rendered example for `kubectl apply` without Helm is at
+[deploy/kubernetes/example.yaml](deploy/kubernetes/example.yaml).
+
 ## License
 
 MIT OR Apache-2.0, at your option.

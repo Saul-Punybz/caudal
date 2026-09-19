@@ -171,24 +171,34 @@ impl Outbox {
     /// segmented send, and their segment size: same destination, same
     /// size, except that the last may be shorter.
     fn next_run(&self) -> (usize, usize) {
-        let (first, to) = &self.queue[0];
-        let segment = first.len();
-        let max = self.state.max_gso_segments();
-        let mut n = 1;
-        let mut total = segment;
-        while n < max {
-            let Some((d, t)) = self.queue.get(n) else { break };
-            if t != to || d.is_empty() || d.len() > segment || total + d.len() > MAX_SEND_BYTES {
-                break;
-            }
-            total += d.len();
-            n += 1;
-            if d.len() < segment {
-                break;
-            }
-        }
-        (n, segment)
+        group_run(&self.queue, self.state.max_gso_segments())
     }
+}
+
+/// How many datagrams at the front of `queue` can leave in one segmented
+/// send, and their segment size (the first datagram's length): same
+/// destination, non-empty, no larger than the first, and a shorter one ends
+/// the run (GSO requires every segment but the last to be the same size).
+/// Never more than `max_segments`, and never past [`MAX_SEND_BYTES`].
+/// Pulled out of [`Outbox::next_run`] so the grouping decision is testable
+/// without a real socket (`max_gso_segments()` needs one).
+fn group_run(queue: &VecDeque<(Vec<u8>, SocketAddr)>, max_segments: usize) -> (usize, usize) {
+    let (first, to) = &queue[0];
+    let segment = first.len();
+    let mut n = 1;
+    let mut total = segment;
+    while n < max_segments {
+        let Some((d, t)) = queue.get(n) else { break };
+        if t != to || d.is_empty() || d.len() > segment || total + d.len() > MAX_SEND_BYTES {
+            break;
+        }
+        total += d.len();
+        n += 1;
+        if d.len() < segment {
+            break;
+        }
+    }
+    (n, segment)
 }
 
 /// Which engine owns each session, by the server's ICE ufrag.
@@ -620,8 +630,82 @@ fn on_event(slot: &mut Slot, ev: Event) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Outbox, stun_server_ufrag};
+    use super::{MAX_SEND_BYTES, Outbox, group_run, stun_server_ufrag};
+    use std::collections::VecDeque;
+    use std::net::SocketAddr;
     use tokio::net::UdpSocket;
+
+    fn addr(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn queue(items: &[(usize, u16)]) -> VecDeque<(Vec<u8>, SocketAddr)> {
+        items.iter().map(|(len, port)| (vec![0u8; *len], addr(*port))).collect()
+    }
+
+    #[test]
+    fn groups_equal_size_datagrams_to_one_destination() {
+        let q = queue(&[(1200, 1), (1200, 1), (1200, 1), (1200, 1)]);
+        assert_eq!(group_run(&q, 64), (4, 1200));
+    }
+
+    #[test]
+    fn a_shorter_datagram_ends_the_run_but_is_included() {
+        let q = queue(&[(1200, 1), (1200, 1), (700, 1), (1200, 1)]);
+        // The 700-byte datagram is a valid last segment (<=1200), and GSO
+        // requires the shorter one to be last, so the run stops there.
+        assert_eq!(group_run(&q, 64), (3, 1200));
+    }
+
+    #[test]
+    fn a_longer_datagram_starts_a_new_run() {
+        let q = queue(&[(1200, 1), (1200, 1), (1300, 1)]);
+        assert_eq!(group_run(&q, 64), (2, 1200));
+        // Alone, or once it is the front, it sends by itself.
+        let q2 = queue(&[(1300, 1)]);
+        assert_eq!(group_run(&q2, 64), (1, 1300));
+    }
+
+    #[test]
+    fn different_destinations_never_share_a_send() {
+        let q = queue(&[(1200, 1), (1200, 1), (1200, 2), (1200, 1)]);
+        assert_eq!(group_run(&q, 64), (2, 1200));
+    }
+
+    #[test]
+    fn capped_at_max_gso_segments() {
+        let items: Vec<(usize, u16)> = std::iter::repeat_n((1000, 1), 10).collect();
+        let q = queue(&items);
+        assert_eq!(group_run(&q, 4), (4, 1000));
+        assert_eq!(group_run(&q, 1), (1, 1000));
+    }
+
+    #[test]
+    fn no_gso_available_sends_one_at_a_time() {
+        // max_gso_segments() == 1 on platforms without segmentation
+        // offload (e.g. macOS): every run is a single datagram.
+        let q = queue(&[(1200, 1), (1200, 1), (1200, 1)]);
+        assert_eq!(group_run(&q, 1), (1, 1200));
+    }
+
+    #[test]
+    fn stops_at_the_max_send_bytes_cap() {
+        // Four equal segments would total 68,000 bytes: only 3 fit under
+        // MAX_SEND_BYTES (64,000).
+        let per = MAX_SEND_BYTES / 4 + 1000;
+        let q = queue(&[(per, 1), (per, 1), (per, 1), (per, 1)]);
+        let (n, segment) = group_run(&q, 64);
+        assert_eq!(segment, per);
+        assert_eq!(n, 3);
+        assert!(n * per <= MAX_SEND_BYTES, "{n} * {per} exceeds the cap");
+        assert!((n + 1) * per > MAX_SEND_BYTES, "cap should have stopped the run");
+    }
+
+    #[test]
+    fn an_empty_datagram_ends_the_run() {
+        let q = queue(&[(1200, 1), (0, 1), (1200, 1)]);
+        assert_eq!(group_run(&q, 64), (1, 1200));
+    }
 
     /// Every datagram arrives whole and in order per destination, whether
     /// the platform segments (Linux GSO) or not: runs of equal sizes, a

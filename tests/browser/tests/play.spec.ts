@@ -109,9 +109,11 @@ test.describe("Caudal LL-HLS in a real browser", () => {
     // If the page doesn't already mute+autoplay for this browser, force it
     // via Playwright rather than relying on a user gesture that never
     // happens in a headless run.
-    const isMuted = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).muted);
+    // The page's intent (the muted attribute), not the live property:
+    // Linux WebKit in CI turns `muted` off while playing (see steady.spec).
+    const isMuted = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).defaultMuted);
     if (!isMuted) {
-      throw new Error("play.html's <video> is not muted; expected muted autoplay per the brief");
+      throw new Error("play.html's <video> does not ask for muted autoplay (no muted attribute)");
     }
     const isPaused = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).paused);
     if (isPaused) {

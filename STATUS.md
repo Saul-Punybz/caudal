@@ -1,22 +1,21 @@
 # STATUS — Caudal
 
-**Last updated:** 19 Sep 2026, ~03:45 UTC (killpg fix, Firefox WHEP, WHEP perf, latency tie; see RESUME HERE)
+**Last updated:** 19 Sep 2026, ~05:15 UTC (PRs #1–#4 merged, main green; see RESUME HERE)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (19 Sep 2026, ~03:45 UTC) — read this first in a new session
+## RESUME HERE (19 Sep 2026, ~05:15 UTC) — read this first in a new session
 **Saul's permissions for finishing Caudal** (memory `caudal-permisos`): merge to main + push when CI and local gate are green; up to 3 agents at a time; upstream bug reports, GitHub Releases and GHCR images OK; crates.io NOT. Hard rule: never saturate CPU/RAM, no processes that never end.
 
-**Branches, in merge order:**
-1. `harden/ci-and-crash-safety` = PR #1. Adds (since the last resume): SRT e2e publisher SIGKILLs its group (was leaky); **`a2d3e84` killpg fix** (see finding below); `bac3798` browser suite binds WebRTC on 0.0.0.0 (Firefox WHEP was never a regression: Firefox gathers no 127.0.0.1 candidate, so ICE failed; Firefox + Chromium now play). Local gate green (fmt, clippy, 252 + 50 e2e, doctests, deny). Waiting on GitHub CI for `a2d3e84`/`bac3798`.
-2. `perf/llhls-edge-latency` (`44a71ff`, on top of PR #1's merge of main): **the LL-HLS latency gap was the bench client**, not Caudal (ffmpeg 9 constant-frame-rate + frame-threaded rawvideo kept a startup backlog). Fixed decoder: LL-HLS Caudal 212/224 ms vs MediaMTX 210/223 ms (tie), RTSP 45 vs 45 ms, floor 10 ms. Report updated. STATUS benchmark lines below are stale on latency.
-3. `perf/whep-socket` (`9e07201`, `bb4b1c0`, docs commit): **WHEP throughput.** Root cause by profiling: on aarch64, `aes` 0.8 / `polyval` 0.6 run in software unless built with `--cfg aes_armv8 --cfg polyval_armv8` (`.cargo/config.toml`, runtime-detected; x86 auto-detects AES-NI). Plus non-blocking sends + outbox, 8 MB socket buffers, burst reads/drains, queue-full counter. Then **WebRTC across cores**: one receive task routes datagrams by STUN ufrag / source to `[webrtc] threads` engines (0 = one per core, max 8) on the same UDP port. Measured before multi-core (1 rep, vs MediaMTX): x100 CPU 40 % vs 68 %; x300 1,008 vs 1,656 Mbps (was 245); x1000 556 vs 1,533. **Multi-core not benchmarked yet** — next step: `bench/run.sh --reps 3 --only fanout --protos whep --levels 100,300,1000`.
+**main = `0e861a9`, all CI green including the browser suite** (first time in days). Merged today: PR #1 (crash safety, honest CI, killpg fix), PR #2 (LL-HLS latency gap was the bench client: tie 212 vs 210 ms), PR #3 (WHEP 406 instead of a black session; Firefox on Linux has no H.264 for WebRTC), PR #4 (WebRTC: ARM hardware AES, non-blocking sends, one SO_REUSEPORT engine per core; WHEP x300 1,799 vs 1,666 Mbps, 300/300 kept up vs 262, RSS 829 vs 1,394 MB, CPU 315 vs 178 %). Details: `docs/research/BENCH-MEDIAMTX.md` "WHEP after the fixes".
 
-**Finding (19 Sep): `/bin/kill -KILL -<pgid>` on Linux (procps) killed every process of the user**, not the group. That killed the GitHub runner mid-test ("hosted runner lost communication"; the 40+ min hangs with no log) and, in production, `caudal-transcode` did it whenever a transcode ended. Reproduced in a Linux container. Fixed with `rustix::process::kill_process_group`; regression test `kills_its_group_and_spares_everyone_else`.
+**Running (agents, own branches, pushed to origin when done; merge after CI):** `fix/hls-publisher-reconnect` (LL-HLS viewers survive a republish: same playlist, DISCONTINUITY, grace window), `test/fuzz-parsers` (cargo-fuzz targets for RTMP/FLV/AMF, TS, SCTE-35, RTSP, SDP/STUN + CI smoke).
 
-**Queue after the merges:** (1) benchmark multi-core WHEP (3 reps) and update BENCH-MEDIAMTX.md; (2) RTSP ~15 % more CPU than MediaMTX: flamegraph at 300 viewers; (3) RSS with one stream (98 vs 80 MB; 11 MB is the 50 s buffer); (4) HLS viewers across a publisher reconnect (`crates/caudal-hls/src/lib.rs:148`); (5) TEST-AUDIT Phase 1 (fuzz, oracles); (6) batches 10–12 in PLAN.md (clustering, captions, DASH/geo/schedules, Helm/Pi/MistServer import, OMT).
-**Housekeeping:** `target/` is 61 GB (debug/deps 40 G, incremental 15 G); disk has 450 GB free, clean when convenient. Docker Desktop hung once mounting the repo with that target dir: mount a clean worktree instead (`git worktree add --detach`), and remove it after.
+**Findings today:** (1) `/bin/kill -KILL -<pgid>` on Linux procps killed every process of the user (runner deaths in CI; `caudal-transcode` in production) — now `rustix::process::kill_process_group`. (2) aarch64 AES was software without `--cfg aes_armv8/polyval_armv8`. (3) One UDP socket shared by several threads serializes on the kernel send lock (`__sendto`). (4) Firefox never gathers 127.0.0.1 candidates: browser tests bind WebRTC on 0.0.0.0.
+
+**Queue:** (1) WHEP CPU per packet at 300 (Vec per datagram, batched sendmmsg/GSO on Linux) — CPU 315 vs 178 %; (2) RTSP ~15 % more CPU than MediaMTX: profile at 300 viewers (release build with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none`, `sample <pid>`); (3) RSS per live stream (98 vs 80 MB); (4) `crates/caudal-hls/validation_data.json` is rewritten by e2e validator runs — write it outside the repo; (5) WebKit steady.spec `video.muted` flake on Linux (diagnostics added; play.html sets muted in script); (6) TEST-AUDIT Phase 1/2 rest; (7) batches 10–12 in PLAN.md (clustering, captions, DASH/geo/schedules, Helm/Pi/MistServer import, OMT); (8) release v0.x + GHCR image when the roadmap warrants.
+**Housekeeping:** `target/` ~61 GB (disk has 450 GB free). Docker Desktop hung mounting the repo with that target dir; mount a clean `git worktree add --detach` instead, remove it after.
 **Rule from Saul:** verify with tools outside Claude (memory `saul-verificacion-externa`); say what is not verified.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps

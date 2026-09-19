@@ -55,6 +55,7 @@ impl Origin {
             caudal_moq::MoqConfig {
                 bind: "127.0.0.1:0".parse().unwrap(),
                 cert: caudal_moq::MoqCert::SelfSigned { hosts: vec!["127.0.0.1".into()] },
+                buffer: BufferConfig::default(),
             },
         )
         .expect("moq");

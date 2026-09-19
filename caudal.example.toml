@@ -125,3 +125,9 @@ max_mb = 256  # Maximum buffer size in megabytes
 # allowed_emails = ["ana@example.com"]   # needs email_verified in the ID token
 # allowed_groups = []                    # matched against the `groups` claim
 # scopes = []                            # extra scopes, e.g. ["groups"]
+
+# WebRTC: WHIP ingest and WHEP playback, every peer on one UDP port.
+# [webrtc]
+# udp_bind = "0.0.0.0:8189"
+# public_ips = []        # addresses to advertise behind a 1:1 NAT
+# threads = 0            # peer engines doing SRTP; 0 = one per core, at most 8

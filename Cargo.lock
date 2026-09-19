@@ -945,6 +945,7 @@ dependencies = [
  "if-addrs",
  "mp4-atom",
  "scuffle-h264",
+ "socket2 0.6.5",
  "str0m",
  "tokio",
  "tracing",

@@ -456,11 +456,14 @@ pub struct WebRtcSection {
     pub udp_bind: SocketAddr,
     /// Public addresses to advertise when behind NAT.
     pub public_ips: Vec<std::net::IpAddr>,
+    /// Peer engines sharing the UDP port (cores doing SRTP). 0: one per
+    /// core, at most 8.
+    pub threads: usize,
 }
 
 impl Default for WebRtcSection {
     fn default() -> Self {
-        Self { udp_bind: default_webrtc_udp(), public_ips: Vec::new() }
+        Self { udp_bind: default_webrtc_udp(), public_ips: Vec::new(), threads: 0 }
     }
 }
 

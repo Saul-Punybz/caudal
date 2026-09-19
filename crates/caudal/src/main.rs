@@ -139,6 +139,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             udp_bind: cfg.webrtc.udp_bind,
             public_ips: cfg.webrtc.public_ips.clone(),
             buffer: cfg.buffer.to_buffer_config(),
+            threads: cfg.webrtc.threads,
         },
     );
 

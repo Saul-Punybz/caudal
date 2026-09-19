@@ -33,6 +33,10 @@ pub(crate) enum Ctl {
     Restart,
 }
 
+/// Frames a viewer dropped because the engine's media queue was full
+/// (each one sends that viewer back to the next keyframe).
+pub(crate) static QUEUE_FULL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) async fn forward(
     id: u64,
     mut sub: Subscriber,
@@ -71,6 +75,7 @@ pub(crate) async fn forward(
                     match tx.try_send((id, Out::Frame(f))) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
+                            QUEUE_FULL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             need_key = true;
                             sub.skip_to_live();
                         }

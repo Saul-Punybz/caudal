@@ -19,6 +19,7 @@ mp4-atom = "0.15"
 if-addrs = "0.15"
 getrandom = "0.3"
 socket2 = "0.6"
+quinn-udp = { version = "0.5.15", default-features = false, features = ["tracing"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util", "process"] }

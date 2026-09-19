@@ -15,11 +15,12 @@
 //! the loop sleeps until the earliest one. HTTP handlers and WHEP
 //! forwarders talk to the loop over channels.
 //!
-//! The loop never waits on the socket. Sends use `try_send_to`; whatever
-//! the kernel refuses waits in an [`Outbox`] flushed when the socket turns
-//! writable, so one full send buffer can't stall reads, commands or other
-//! peers. After every wake-up the loop drains a burst of incoming
-//! datagrams, so STUN consent and RTCP are read even while media is busy.
+//! The loop never waits on the socket. Datagrams are queued in an
+//! [`Outbox`] and sent in batches once a peer's output is drained; whatever
+//! the kernel refuses waits there until the socket turns writable, so one
+//! full send buffer can't stall reads, commands or other peers. After
+//! every wake-up the loop drains a burst of incoming datagrams, so STUN
+//! consent and RTCP are read even while media is busy.
 //! Benchmark 18 Sep 2026 (`docs/research/BENCH-MEDIAMTX.md`): the old loop
 //! awaited every `send_to` behind a `biased` select that served media
 //! before the socket; at 300 WHEP viewers it delivered 245 Mbps on 47 % of
@@ -45,36 +46,68 @@ use crate::net::Destinations;
 const IDLE: Duration = Duration::from_secs(30);
 const PLI_EVERY: Duration = Duration::from_millis(500);
 const MEDIA_QUEUE: usize = 4096;
-/// Datagrams held while the kernel's send buffer is full. Past this the
-/// newest are dropped (RTP recovers through NACK/PLI; blocking would stall
-/// every peer).
+/// Datagrams held while the kernel's send buffer is full; see [`Outbox`].
 const OUTBOX_MAX: usize = 65_536;
 /// Queued frames handled per loop turn.
 const MEDIA_BURST: usize = 2048;
 /// Incoming datagrams read per loop turn before other work runs again.
 const RECV_BURST: usize = 256;
 
-/// Datagrams the socket would not take yet, in send order.
-#[derive(Default)]
+/// Datagrams queued before a flush in the middle of one peer's output (a
+/// keyframe for one viewer can be a few hundred).
+const FLUSH_AT: usize = 512;
+/// Largest payload handed to the kernel in one segmented send. A UDP
+/// datagram carries at most 65,507 bytes over IPv4; Linux also caps a GSO
+/// send at 64 segments (`UDP_MAX_SEGMENTS`).
+const MAX_SEND_BYTES: usize = 64_000;
+
+/// Outgoing datagrams, in send order, sent in batches.
+///
+/// A peer's `Output::Transmit`s are queued here while its output is
+/// drained, and the queue is flushed right after (or when it reaches
+/// [`FLUSH_AT`]).
+/// Consecutive datagrams to the same destination with the same size (the
+/// last may be shorter) leave in one `sendmsg` with a segment size (UDP GSO,
+/// Linux 4.18+) through `quinn-udp`; where the platform has no segmentation
+/// (macOS) each datagram is its own `sendmsg`. Profile 19 Sep 2026 (300 WHEP
+/// viewers): one `sendto` per ~1.2 KB datagram, about 190,000 a second, was
+/// 75 % of the server's CPU. A WHEP frame is many equal-size RTP packets
+/// to one viewer, so one send carries a whole frame. Flushing per peer
+/// rather than per loop turn gives the same batches (they never span
+/// destinations) without holding datagrams back: at 300 viewers a
+/// per-turn flush kept the oldest datagram waiting 1 to 5 ms in about a
+/// quarter of the turns.
+///
+/// Whatever the kernel refuses (`WouldBlock`) stays queued until the socket
+/// turns writable, so one full send buffer can't stall reads, commands or
+/// other peers. Order is kept: nothing is sent while older datagrams wait.
 struct Outbox {
     queue: VecDeque<(Vec<u8>, SocketAddr)>,
+    state: quinn_udp::UdpSocketState,
+    /// Contiguous copy of a segmented send's datagrams.
+    scratch: Vec<u8>,
+    /// The kernel refused the last send; wait for `writable()`.
+    blocked: bool,
     dropped: u64,
 }
 
 impl Outbox {
-    fn send(&mut self, socket: &UdpSocket, data: Vec<u8>, to: SocketAddr) {
-        // Only bypass the queue when it is empty, so order is kept.
-        if self.queue.is_empty() {
-            match socket.try_send_to(&data, to) {
-                Ok(_) => return,
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-                Err(e) => {
-                    tracing::debug!(error = %e, to = %to, "webrtc: udp send failed");
-                    return;
-                }
-            }
-        }
+    fn new(socket: &UdpSocket) -> std::io::Result<Self> {
+        let state = quinn_udp::UdpSocketState::new(socket.into())?;
+        Ok(Self {
+            queue: VecDeque::new(),
+            state,
+            scratch: Vec::with_capacity(MAX_SEND_BYTES),
+            blocked: false,
+            dropped: 0,
+        })
+    }
+
+    /// Queues one datagram; sends the queue if it has grown long.
+    fn push(&mut self, socket: &UdpSocket, data: Vec<u8>, to: SocketAddr) {
         if self.queue.len() >= OUTBOX_MAX {
+            // Past this the newest are dropped (RTP recovers through
+            // NACK/PLI; blocking would stall every peer).
             self.dropped += 1;
             if self.dropped.is_power_of_two() {
                 tracing::warn!(dropped = self.dropped, "webrtc: udp send queue full; dropping datagrams");
@@ -82,18 +115,79 @@ impl Outbox {
             return;
         }
         self.queue.push_back((data, to));
+        if self.queue.len() >= FLUSH_AT {
+            self.flush(socket);
+        }
     }
 
-    /// Sends queued datagrams until the socket refuses one.
+    /// Sends queued datagrams until the queue is empty or the socket
+    /// refuses one. Does nothing while blocked (see [`Outbox::writable`]).
     fn flush(&mut self, socket: &UdpSocket) {
-        while let Some((data, to)) = self.queue.front() {
-            match socket.try_send_to(data, *to) {
-                Ok(_) => {}
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+        while !self.blocked && !self.queue.is_empty() {
+            let (n, segment) = self.next_run();
+            let (first, to) = &self.queue[0];
+            let to = *to;
+            let contents: &[u8] = if n == 1 {
+                first
+            } else {
+                self.scratch.clear();
+                for (d, _) in self.queue.range(..n) {
+                    self.scratch.extend_from_slice(d);
+                }
+                &self.scratch
+            };
+            let transmit = quinn_udp::Transmit {
+                destination: to,
+                ecn: None,
+                contents,
+                segment_size: (n > 1).then_some(segment),
+                src_ip: None,
+            };
+            // `try_io` clears tokio's write readiness on `WouldBlock`, so
+            // `writable()` really waits.
+            let state = &self.state;
+            match socket.try_io(tokio::io::Interest::WRITABLE, || state.try_send(socket.into(), &transmit)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    self.blocked = true;
+                    return;
+                }
+                // The kernel or driver refused segmentation: quinn-udp has
+                // turned it off; send the same datagrams again one by one.
+                Err(_) if n > 1 && self.state.max_gso_segments() < n => continue,
                 Err(e) => tracing::debug!(error = %e, to = %to, "webrtc: udp send failed"),
             }
-            self.queue.pop_front();
+            self.queue.drain(..n);
         }
+    }
+
+    /// The socket may take more: resume sending.
+    fn writable(&mut self, socket: &UdpSocket) {
+        self.blocked = false;
+        self.flush(socket);
+    }
+
+    /// How many datagrams at the front of the queue can leave in one
+    /// segmented send, and their segment size: same destination, same
+    /// size, except that the last may be shorter.
+    fn next_run(&self) -> (usize, usize) {
+        let (first, to) = &self.queue[0];
+        let segment = first.len();
+        let max = self.state.max_gso_segments();
+        let mut n = 1;
+        let mut total = segment;
+        while n < max {
+            let Some((d, t)) = self.queue.get(n) else { break };
+            if t != to || d.is_empty() || d.len() > segment || total + d.len() > MAX_SEND_BYTES {
+                break;
+            }
+            total += d.len();
+            n += 1;
+            if d.len() < segment {
+                break;
+            }
+        }
+        (n, segment)
     }
 }
 
@@ -217,7 +311,13 @@ pub(crate) async fn run(
     let (media_tx, mut media_rx) = mpsc::channel::<(u64, Out)>(MEDIA_QUEUE);
     let mut slots: HashMap<u64, Slot> = HashMap::new();
     let mut router = Router { dest, by_source: HashMap::new() };
-    let mut outbox = Outbox::default();
+    let mut outbox = match Outbox::new(&socket) {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(engine = me, error = %e, "webrtc: cannot set up the udp socket; engine stopped");
+            return;
+        }
+    };
     let mut queue_full_seen = 0u64;
     let mut bframes_warned: HashSet<Arc<str>> = HashSet::new();
     let mut next_id: u64 = 0;
@@ -271,9 +371,9 @@ pub(crate) async fn run(
                     on_media(id, out, &socket, &mut outbox, &mut slots, &mut bframes_warned);
                 }
             }
-            r = socket.writable(), if !outbox.queue.is_empty() => {
+            r = socket.writable(), if outbox.blocked => {
                 if r.is_ok() {
-                    outbox.flush(&socket);
+                    outbox.writable(&socket);
                 }
             }
             r = socket.recv_from(&mut buf) => match r {
@@ -443,9 +543,14 @@ fn on_datagram(
     drive(socket, outbox, id, slots);
 }
 
-/// Drains one peer's output: sends datagrams, handles events, records the
-/// next timeout.
+/// Drains one peer's output: sends its datagrams (batched, see [`Outbox`]),
+/// handles events, records the next timeout.
 fn drive(socket: &UdpSocket, outbox: &mut Outbox, id: u64, slots: &mut HashMap<u64, Slot>) {
+    poll(socket, outbox, id, slots);
+    outbox.flush(socket);
+}
+
+fn poll(socket: &UdpSocket, outbox: &mut Outbox, id: u64, slots: &mut HashMap<u64, Slot>) {
     let Some(slot) = slots.get_mut(&id) else { return };
     loop {
         if !slot.peer.rtc.is_alive() {
@@ -466,7 +571,7 @@ fn drive(socket: &UdpSocket, outbox: &mut Outbox, id: u64, slots: &mut HashMap<u
                 slot.deadline = t;
                 return;
             }
-            Output::Transmit(t) => outbox.send(socket, t.contents.into(), t.destination),
+            Output::Transmit(t) => outbox.push(socket, t.contents.into(), t.destination),
             Output::Event(ev) => on_event(slot, ev),
         }
     }
@@ -515,7 +620,60 @@ fn on_event(slot: &mut Slot, ev: Event) {
 
 #[cfg(test)]
 mod tests {
-    use super::stun_server_ufrag;
+    use super::{Outbox, stun_server_ufrag};
+    use tokio::net::UdpSocket;
+
+    /// Every datagram arrives whole and in order per destination, whether
+    /// the platform segments (Linux GSO) or not: runs of equal sizes, a
+    /// shorter last one, a longer one that must start a new send, two
+    /// destinations interleaved, and more than one flush's worth.
+    #[tokio::test]
+    async fn outbox_batches_keep_datagrams_and_order() {
+        let tx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        for s in [&a, &b] {
+            // Room for everything: nothing reads until all is sent.
+            let _ = socket2::SockRef::from(s).set_recv_buffer_size(4 << 20);
+        }
+        let (to_a, to_b) = (a.local_addr().unwrap(), b.local_addr().unwrap());
+        let mut outbox = Outbox::new(&tx).unwrap();
+        let mut sizes = vec![1200, 1200, 1200, 700, 1200, 1300, 1300, 90];
+        sizes.extend(std::iter::repeat_n(1100, 150));
+        sizes.push(40);
+        let mut sent_a = Vec::new();
+        let mut sent_b = Vec::new();
+        for round in 0..4u8 {
+            for (i, len) in sizes.iter().enumerate() {
+                let d: Vec<u8> = (0..*len).map(|j| (j as u8) ^ (i as u8) ^ round).collect();
+                if i % 40 < 30 {
+                    sent_a.push(d.clone());
+                    outbox.push(&tx, d, to_a);
+                } else {
+                    sent_b.push(d.clone());
+                    outbox.push(&tx, d, to_b);
+                }
+            }
+        }
+        while !outbox.queue.is_empty() {
+            if outbox.blocked {
+                tx.writable().await.unwrap();
+                outbox.writable(&tx);
+            } else {
+                outbox.flush(&tx);
+            }
+        }
+        for (sock, sent) in [(&a, sent_a), (&b, sent_b)] {
+            let mut buf = vec![0u8; 65_536];
+            for (k, want) in sent.iter().enumerate() {
+                let got = tokio::time::timeout(std::time::Duration::from_secs(5), sock.recv(&mut buf))
+                    .await
+                    .expect("datagram arrives")
+                    .unwrap();
+                assert_eq!(&buf[..got], &want[..], "datagram {k}");
+            }
+        }
+    }
 
     /// A STUN binding request with the given attributes (type, value).
     fn stun(attrs: &[(u16, &[u8])]) -> Vec<u8> {

@@ -1,0 +1,15 @@
+name: probe (temporary)
+on:
+  push:
+    branches: [feat/live-captions]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: nproc; cat /proc/cpuinfo | grep "model name" | head -1
+      - run: cargo test -p caudal-captions --test pipeline --no-run
+      - run: cargo test -p caudal-captions --test pipeline -- --nocapture 2>&1 | grep -v "feed: frame forwarded\|frame pts" | tee probe1.log
+      - run: cargo test -p caudal-captions --test pipeline -- --nocapture 2>&1 | tee probe2.log | grep -E "slow engine|engine:|offer|submit|held|slow frame|test\]"

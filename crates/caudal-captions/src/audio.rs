@@ -34,6 +34,7 @@ impl AudioDecoder {
     pub fn decode(&mut self, packet: &[u8]) -> Result<Vec<f32>, String> {
         match self {
             Self::Aac { dec, resampler } => {
+                let t_aac = std::time::Instant::now();
                 let out = match dec.decode(packet, None) {
                     Ok(out) => out,
                     Err(rusty_aac::Error::Again) => return Ok(Vec::new()),
@@ -44,7 +45,10 @@ impl AudioDecoder {
                 if r.from != out.sample_rate {
                     *r = Resampler::new(out.sample_rate, SAMPLE_RATE as u32);
                 }
-                Ok(r.process(&mono))
+                let t_rs = std::time::Instant::now();
+                let res = r.process(&mono);
+                probe!("audio: aac decode {:?}, resample {:?}", t_rs - t_aac, t_rs.elapsed());
+                Ok(res)
             }
             Self::Opus { dec, buf } => {
                 let n = dec.decode_float(packet, buf, false).map_err(|e| format!("opus: {e:?}"))?;

@@ -108,9 +108,11 @@ async fn short_chunks_on_a_slow_engine_are_coalesced_not_dropped() {
     for run in frames.chunks(RUN_FRAMES) {
         for d in run {
             p.push(Frame { track: TrackId(0), dts: ts, pts: ts, keyframe: true, data: d.clone() }).unwrap();
+            let _ = caudal_captions::PROBE_T0.get_or_init(Instant::now);
             ts += 1024;
         }
         ts += GAP_FRAMES as i64 * 1024;
+        eprintln!("PROBE {:>7.1}ms [test] pushed run ending ts {ts}", caudal_captions::PROBE_T0.get().unwrap().elapsed().as_secs_f64() * 1e3);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let last_push = Instant::now();

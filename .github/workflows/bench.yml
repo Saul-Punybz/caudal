@@ -1,0 +1,55 @@
+name: Benchmark (Linux)
+
+# Heavy benchmarks run here, on GitHub's Linux runners, instead of on a
+# developer laptop (19 Sep 2026: the M4 overheated running them next to
+# builds). Shared runners are noisy: compare Caudal and MediaMTX within the
+# same run, not absolute numbers across runs.
+on:
+  workflow_dispatch:
+    inputs:
+      protos:
+        description: "Protocols (hls,rtsp,whep)"
+        default: "whep"
+      levels:
+        description: "Viewer levels"
+        default: "100,300"
+      reps:
+        description: "Repetitions per cell"
+        default: "3"
+      only:
+        description: "Scenarios (idle,fanout,latency)"
+        default: "fanout"
+      servers:
+        description: "Servers"
+        default: "caudal,mediamtx"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            bench/client
+      - name: Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          nproc; free -g; uname -a
+      - name: Run
+        run: |
+          ulimit -n 65536 || true
+          bench/run.sh --reps "${{ inputs.reps }}" --only "${{ inputs.only }}" \
+            --protos "${{ inputs.protos }}" --levels "${{ inputs.levels }}" \
+            --servers "${{ inputs.servers }}" | tee bench-out.md
+          cat bench-out.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results
+          path: |
+            bench/results/
+            bench-out.md

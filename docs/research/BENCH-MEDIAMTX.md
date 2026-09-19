@@ -275,6 +275,54 @@ MediaMTX's 1,528, but the load client used 260 % CPU and the kernel dropped
 Caudal still uses more CPU than MediaMTX at 300 viewers; the next profile
 should look at per-packet allocation (`Vec` per datagram) and batched sends.
 
+### WHEP batched sends (19 Sep 2026)
+
+Follow-up on "the next profile should look at ... batched sends" above:
+engines now queue outgoing datagrams in an [`Outbox`] and flush them in one
+GSO-sized `sendmmsg`-style call via `quinn-udp`
+(`crates/caudal-webrtc/src/engine.rs`) instead of awaiting one `send_to`
+per packet.
+
+**macOS** (laptop, same machine as Setup): Caudal CPU dropped from 69 % to
+58 % at 100 viewers (about 16 %) and from 315 % to 293 % at 300 viewers
+(about 7 %). MediaMTX, unchanged code, measured at 71 % (x100) and 178 %
+(x300) in the same session for reference.
+
+**Linux**, GitHub's `ubuntu-latest` runners,
+`.github/workflows/bench.yml` (`protos=whep levels=100,300 reps=3
+only=fanout servers=caudal,mediamtx`), same command before and after:
+before
+[35463769506](https://github.com/Saul-Punybz/caudal/actions/runs/35463769506),
+after
+[35463779625](https://github.com/Saul-Punybz/caudal/actions/runs/35463779625).
+Shared runners are noisy between runs (see Setup), so compare Caudal
+against MediaMTX inside each run, not across runs — MediaMTX's own CPU %
+at x100 moved from 82.8 % (before run) to 140 % (after run) though its
+code never changed between them.
+
+| Run | Viewers | Server | CPU % (range) | Kept up |
+|---|---|---|---|---|
+| before | 100 | Caudal | 76.6 (76.5–77.5) | 100/100 |
+| before | 100 | MediaMTX | 82.8 (82.6–84.5) | 100/100 |
+| before | 300 | Caudal | 234 (224–240) | 300/300 (3/3 reps) |
+| before | 300 | MediaMTX | 156 (155–156) | 0/300 (collapsed, 3/3 reps) |
+| after | 100 | Caudal | 75.0 (74.8–76.6) | 100/100 |
+| after | 100 | MediaMTX | 140 (138–142) | 100/100 |
+| after | 300 | Caudal | 217 (217–219) | 225–300/300 (2/3 reps stopped at 225) |
+| after | 300 | MediaMTX | 157 (156–157) | 0/300 (collapsed, 3/3 reps) |
+
+Within each run, Caudal beats MediaMTX on CPU at x100 both times. At x300
+Caudal still uses more raw CPU than MediaMTX, but MediaMTX is the one
+collapsing (0 kept up) in both runs while Caudal mostly keeps viewers up.
+The batched-send change itself: a small win on Linux CPU at x300 (234→217,
+about 7 %, in line with the macOS x300 result) and barely measurable at
+x100 (76.6→75.0, about 2 %, far short of the macOS x100 win) — but it also
+shows a kept-up regression at x300 not present before: the "before" run
+kept all 300 viewers up in all 3 reps, the "after" run only did that in 1
+of 3 (the other two stopped at 225/300), with UDP full drops swinging wider
+(165–2,501 after vs. 59–1,009 before). Not a clean win yet on Linux; needs
+a follow-up before merging this as a pure improvement.
+
 ### RTSP after the send-path fix (19 Sep 2026, Linux)
 
 Measured on GitHub's `ubuntu-latest` runners with `.github/workflows/bench.yml`

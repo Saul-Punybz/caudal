@@ -22,7 +22,6 @@ mod net;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -51,18 +50,41 @@ pub struct WebRtcConfig {
 /// The running engines and how sessions are spread over them.
 struct Engines {
     cmds: Vec<mpsc::Sender<Cmd>>,
-    next: AtomicUsize,
     ufrags: engine::Ufrags,
 }
 
+/// Sessions an engine takes before the next one is used. Filling engines in
+/// turn keeps a light load on one or two cores: spreading 100 viewers over
+/// 8 engines woke 8 threads per frame and cost 141 % CPU against 40 % on
+/// one (bench, 19 Sep 2026).
+const FILL: usize = 50;
+
 impl Engines {
-    /// Hands a new session to the next engine, round robin.
-    async fn add(&self, mut peer: Peer) -> bool {
-        let i = self.next.fetch_add(1, Ordering::Relaxed) % self.cmds.len();
-        let ufrag = peer.rtc.direct_api().local_ice_credentials().ufrag;
-        if let Ok(mut u) = self.ufrags.lock() {
-            u.insert(ufrag.clone(), i);
+    /// The first engine with room, else the least loaded one, given the
+    /// live sessions (ufrag -> engine).
+    fn pick(&self, live: &std::collections::HashMap<String, usize>) -> usize {
+        let mut load = vec![0usize; self.cmds.len()];
+        for &e in live.values() {
+            if let Some(n) = load.get_mut(e) {
+                *n += 1;
+            }
         }
+        load.iter()
+            .position(|&n| n < FILL)
+            .unwrap_or_else(|| load.iter().enumerate().min_by_key(|(_, n)| **n).map_or(0, |(i, _)| i))
+    }
+
+    /// Hands a new session to an engine (see [`FILL`]).
+    async fn add(&self, mut peer: Peer) -> bool {
+        let ufrag = peer.rtc.direct_api().local_ice_credentials().ufrag;
+        // Pick and register under one lock, so concurrent adds count each
+        // other.
+        let i = {
+            let Ok(mut live) = self.ufrags.lock() else { return false };
+            let i = self.pick(&live);
+            live.insert(ufrag.clone(), i);
+            i
+        };
         if self.cmds[i].send(Cmd::Add(Box::new(peer))).await.is_ok() {
             return true;
         }
@@ -102,34 +124,59 @@ pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig) -> axum::Router {
         .with_state(state)
 }
 
-fn start(cfg: &WebRtcConfig) -> std::io::Result<(Engines, Vec<SocketAddr>)> {
-    let std_sock = std::net::UdpSocket::bind(cfg.udp_bind)?;
-    std_sock.set_nonblocking(true)?;
+/// A non-blocking UDP socket on `addr`, shareable with `SO_REUSEPORT`.
+fn bind_udp(addr: SocketAddr, reuse_port: bool) -> std::io::Result<tokio::net::UdpSocket> {
+    let s = socket2::Socket::new(socket2::Domain::for_address(addr), socket2::Type::DGRAM, None)?;
+    if reuse_port {
+        s.set_reuse_port(true)?;
+    }
+    s.set_nonblocking(true)?;
+    s.bind(&addr.into())?;
+    let std_sock: std::net::UdpSocket = s.into();
     grow_buffers(&std_sock);
-    let sock = Arc::new(tokio::net::UdpSocket::from_std(std_sock)?);
-    let local = sock.local_addr()?;
+    tokio::net::UdpSocket::from_std(std_sock)
+}
+
+fn start(cfg: &WebRtcConfig) -> std::io::Result<(Engines, Vec<SocketAddr>)> {
+    let wanted = match cfg.threads {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(8),
+        n => n,
+    };
+    // One socket per engine on the same address. Without SO_REUSEPORT (or
+    // when the port is taken without it) fall back to one engine.
+    let first = match bind_udp(cfg.udp_bind, wanted > 1) {
+        Ok(s) => s,
+        Err(_) if wanted > 1 => bind_udp(cfg.udp_bind, false)?,
+        Err(e) => return Err(e),
+    };
+    let local = first.local_addr()?;
+    let mut sockets = vec![first];
+    while sockets.len() < wanted {
+        match bind_udp(local, true) {
+            Ok(s) => sockets.push(s),
+            Err(e) => {
+                tracing::warn!(error = %e, engines = sockets.len(), "webrtc: SO_REUSEPORT unavailable; fewer engines");
+                break;
+            }
+        }
+    }
     let candidates = net::candidate_addrs(local, &cfg.public_ips);
     if candidates.is_empty() {
         return Err(std::io::Error::other("no address to advertise as an ICE candidate; set [webrtc] public_ips"));
     }
-    let threads = match cfg.threads {
-        0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(8),
-        n => n,
-    };
+    let threads = sockets.len();
     tracing::info!(bind = %local, candidates = ?candidates, threads, "webrtc: listening");
     let ufrags = engine::Ufrags::default();
+    let (in_txs, in_rxs): (Vec<_>, Vec<_>) = (0..threads).map(|_| mpsc::channel(engine::INBOUND_QUEUE)).unzip();
+    let routes = engine::Routes::new(ufrags.clone(), in_txs);
     let mut cmds = Vec::with_capacity(threads);
-    let mut inbound = Vec::with_capacity(threads);
-    for _ in 0..threads {
+    for (me, (sock, in_rx)) in sockets.into_iter().zip(in_rxs).enumerate() {
         let dest = net::Destinations::new(local, candidates.clone());
         let (tx, rx) = mpsc::channel(256);
-        let (in_tx, in_rx) = mpsc::channel(engine::INBOUND_QUEUE);
-        tokio::spawn(engine::run(sock.clone(), dest, rx, in_rx, ufrags.clone()));
+        tokio::spawn(engine::run(me, sock, dest, rx, in_rx, routes.clone()));
         cmds.push(tx);
-        inbound.push(in_tx);
     }
-    tokio::spawn(engine::receive(sock, inbound, ufrags.clone()));
-    Ok((Engines { cmds, next: AtomicUsize::new(0), ufrags }, candidates))
+    Ok((Engines { cmds, ufrags }, candidates))
 }
 
 /// Asks for large socket buffers: every WHEP viewer shares this one

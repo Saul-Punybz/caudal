@@ -1,10 +1,13 @@
-//! The peer loops. All peers share one UDP socket; `threads` engines each
-//! own a set of peers (their `Rtc`s), so SRTP and packetization run on
-//! several cores. One receive task reads the socket and hands each
-//! datagram to the engine that owns its session: STUN binding requests
-//! carry the server's ICE ufrag in USERNAME (the server is ICE-lite, so
-//! every session starts with one), which names the engine; after that the
-//! source address does.
+//! The peer loops. `threads` engines each own a set of peers (their
+//! `Rtc`s) and their own UDP socket, all bound to the same address with
+//! `SO_REUSEPORT`, so SRTP, packetization and sends run on several cores.
+//! (One socket shared by every engine made them fight over the kernel's
+//! per-socket send lock: 8 engines used 320 % CPU for what one did with
+//! 40 %.) The kernel may deliver a datagram to any engine's socket; the
+//! engine forwards it to the owner: STUN binding requests carry the
+//! server's ICE ufrag in USERNAME (the server is ICE-lite, so every session
+//! starts with one), which names the engine; after that the source address
+//! does.
 //!
 //! Inside an engine, incoming datagrams go to the peer whose `Rtc::accepts` them (the last
 //! peer seen at that source address is tried first). Each peer's
@@ -123,43 +126,41 @@ pub(crate) fn stun_server_ufrag(d: &[u8]) -> Option<&str> {
     None
 }
 
-/// Reads the shared socket and hands each datagram to its engine.
-pub(crate) async fn receive(socket: Arc<UdpSocket>, engines: Vec<mpsc::Sender<Inbound>>, ufrags: Ufrags) {
-    let mut by_source: HashMap<SocketAddr, usize> = HashMap::new();
-    let mut buf = vec![0u8; 2048];
-    let mut dropped: u64 = 0;
-    loop {
-        let (n, source) = match socket.recv_from(&mut buf).await {
-            Ok(v) => v,
-            // ICMP port unreachable and friends surface here; they concern
-            // one remote, never the socket as a whole.
-            Err(e) => {
-                tracing::debug!(error = %e, "webrtc: udp recv error");
-                continue;
-            }
-        };
-        let data = &buf[..n];
-        let from_stun = stun_server_ufrag(data).and_then(|u| ufrags.lock().ok()?.get(u).copied());
-        let engine = match from_stun {
+/// Which engine owns each datagram, shared by every engine.
+#[derive(Clone)]
+pub(crate) struct Routes {
+    pub(crate) ufrags: Ufrags,
+    sources: Arc<Mutex<HashMap<SocketAddr, usize>>>,
+    engines: Arc<Vec<mpsc::Sender<Inbound>>>,
+}
+
+impl Routes {
+    pub(crate) fn new(ufrags: Ufrags, engines: Vec<mpsc::Sender<Inbound>>) -> Self {
+        Self { ufrags, sources: Arc::default(), engines: Arc::new(engines) }
+    }
+
+    /// The engine that owns a datagram from `source`, learning the source
+    /// from a STUN request that names a session's ufrag.
+    fn owner(&self, data: &[u8], source: SocketAddr) -> Option<usize> {
+        let from_stun = stun_server_ufrag(data).and_then(|u| self.ufrags.lock().ok()?.get(u).copied());
+        let mut sources = self.sources.lock().ok()?;
+        match from_stun {
             Some(e) => {
-                if by_source.len() >= 65_536 {
-                    by_source.clear();
+                if sources.len() >= 65_536 {
+                    sources.clear();
                 }
-                by_source.insert(source, e);
+                sources.insert(source, e);
                 Some(e)
             }
-            None => by_source.get(&source).copied(),
-        };
-        let Some(tx) = engine.and_then(|e| engines.get(e)) else { continue };
-        match tx.try_send((data.to_vec(), source)) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                dropped += 1;
-                if dropped.is_power_of_two() {
-                    tracing::warn!(dropped, "webrtc: engine inbound queue full; dropping datagrams");
-                }
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {}
+            None => sources.get(&source).copied(),
+        }
+    }
+
+    /// Hands a datagram to another engine; dropped if its queue is full.
+    fn forward(&self, engine: usize, data: &[u8], source: SocketAddr) {
+        let Some(tx) = self.engines.get(engine) else { return };
+        if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send((data.to_vec(), source)) {
+            tracing::debug!(engine, "webrtc: engine inbound queue full; dropping a datagram");
         }
     }
 }
@@ -204,12 +205,15 @@ struct Slot {
 }
 
 pub(crate) async fn run(
-    socket: Arc<UdpSocket>,
+    me: usize,
+    socket: UdpSocket,
     dest: Destinations,
     mut cmds: mpsc::Receiver<Cmd>,
     mut inbound: mpsc::Receiver<Inbound>,
-    ufrags: Ufrags,
+    routes: Routes,
 ) {
+    let ufrags = routes.ufrags.clone();
+    let mut buf = vec![0u8; 2048];
     let (media_tx, mut media_rx) = mpsc::channel::<(u64, Out)>(MEDIA_QUEUE);
     let mut slots: HashMap<u64, Slot> = HashMap::new();
     let mut router = Router { dest, by_source: HashMap::new() };
@@ -272,6 +276,15 @@ pub(crate) async fn run(
                     outbox.flush(&socket);
                 }
             }
+            r = socket.recv_from(&mut buf) => match r {
+                Ok((n, source)) => match routes.owner(&buf[..n], source) {
+                    Some(e) if e != me => routes.forward(e, &buf[..n], source),
+                    _ => on_datagram(&buf[..n], source, &socket, &mut outbox, &mut router, &mut slots),
+                },
+                // ICMP port unreachable and friends surface here; they
+                // concern one remote, never the socket as a whole.
+                Err(e) => tracing::debug!(error = %e, "webrtc: udp recv error"),
+            },
             d = inbound.recv() => match d {
                 Some((data, source)) => on_datagram(&data, source, &socket, &mut outbox, &mut router, &mut slots),
                 None => break,
@@ -280,6 +293,16 @@ pub(crate) async fn run(
         }
 
         // Read what else arrived, without waiting.
+        for _ in 0..RECV_BURST {
+            match socket.try_recv_from(&mut buf) {
+                Ok((n, source)) => match routes.owner(&buf[..n], source) {
+                    Some(e) if e != me => routes.forward(e, &buf[..n], source),
+                    _ => on_datagram(&buf[..n], source, &socket, &mut outbox, &mut router, &mut slots),
+                },
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => tracing::debug!(error = %e, "webrtc: udp recv error"),
+            }
+        }
         for _ in 0..RECV_BURST {
             let Ok((data, source)) = inbound.try_recv() else { break };
             on_datagram(&data, source, &socket, &mut outbox, &mut router, &mut slots);

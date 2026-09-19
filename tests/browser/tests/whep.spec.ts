@@ -35,6 +35,17 @@ test.describe("WHEP playback in a real browser", () => {
 
   test("plays over WebRTC from the stream page", async ({ page, browserName }) => {
     await page.goto(`${server.baseUrl}/streams/${STREAM}`);
+    // Playwright's Firefox on Linux has no H.264 for WebRTC (desktop Firefox
+    // downloads OpenH264; macOS uses the system decoder): its offer carries
+    // no H.264, and Caudal answers 406. Measured in CI, 19 Sep 2026.
+    const h264 = await page.evaluate(async () => {
+      const pc = new RTCPeerConnection();
+      pc.addTransceiver("video", { direction: "recvonly" });
+      const offer = await pc.createOffer();
+      pc.close();
+      return /a=rtpmap:\d+ H264\/90000/i.test(offer.sdp ?? "") && /packetization-mode=1/.test(offer.sdp ?? "");
+    });
+    test.skip(!h264, `${browserName} offers no H.264 (packetization-mode=1) for WebRTC here`);
     await page.getByRole("radio", { name: "WebRTC" }).click();
 
     const video = page.locator("video");

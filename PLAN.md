@@ -107,6 +107,7 @@ Reference implementations to learn from: `xiu` (MIT), the `scuffle` crates (MIT/
   - **Standalone crates, not buried in Caudal**, so any Rust project can use them: `open-media-transport` (protocol, send/receive, discovery) and `vmx-codec` (the VMX codec), both free on crates.io as of 18 Sep 2026. Own repo; Caudal depends on them like any other crate (in the default build, since the license no longer restricts it).
   - Copyright: Saul González and Puny.bz Inc. (co-ownership agreement signed; the switch to MIT OR Apache-2.0 verified with legal, confirmed by Saul 18 Sep 2026). Keep the MIT notices of `libomtnet` and `libvmx` for ported parts, crediting their authors. Contributions under the usual Apache-2.0 inbound = outbound terms (DCO sign-off), no CLA needed.
   - Name: the crates may say what they implement ("Open Media Transport"); don't use OMT's logos as our branding.
+  - **Entry condition (21 Sep 2026): M12 starts only once `Saul-Punybz/open-media-transport` sends and receives against real equipment** — that is, `docs/INTEROP.md` there has our sender and receiver tested against vMix, OBS and the Raspberry Pi encoder, with versions and dates. Today that repo has the VMX codec (byte-identical to the reference) and no protocol at all, so there is nothing for Caudal to integrate yet. The protocol port runs in its own session; see that repo's `STATUS.md` and `docs/PROTOCOL_PLAN.md`.
 
 MistServer outputs that are dead in 2026 (HDS, Flash, Smooth Streaming) are
 not being ported.

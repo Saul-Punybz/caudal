@@ -29,7 +29,15 @@ Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; 
 1. *"The verdict fits a line from t=0, so short runs are dominated by warm-up"* — **wrong**. `bench/soak.py:502-506` already drops the first 600 s; the verdict figures match a post-warm-up fit exactly (11.148 vs 11.15, -17.261 vs -17.26). The 20-min run's 45 MB/h is real per-event growth measured over a short window, not a warm-up artifact.
 2. *"Heap at exit is 0.1 MB, so there is no leak"* — **not a valid inference**. dhat's at-exit report is taken after shutdown has dropped everything, so state that accumulates during the run and is freed on shutdown reads as zero. Use the at-peak figures (`gb`/`gbk`) instead, which is where the RTMP number above came from.
 
-**Still open:** which half of a churn event does it — the publisher restart, or the viewer batch. That needs one more pair of runs with the two isolated.
+**Still open:** which half of a churn event does it — the publisher restart, or the viewer batch. That needs one more pair of runs with the two isolated (`bench/soak.py` fires both together at `soak.py:359-380`; a `--churn-kind publisher|viewers|both` flag would split them).
+
+### Browser work, PR #26 (`test/browser-decoded-frames`, draft)
+Decoded-frame counter (TEST-AUDIT gap 12) done and green. `currentTime` never proved decoding because `play.html`'s catch-up guard seeks; the specs now count frames the decoder produced. **WebKit resets `totalVideoFrames` about every 300 ms** (65 resets in a 20 s window), so endpoint subtraction gave negative deltas — the counter accumulates forward movement instead and reports the reset count. Six browser runs on the branch: five green, one failure that finally caught the firefox MoQ flake.
+
+**Firefox MoQ flake diagnosed (run 35626725779):** not a late canvas resize, as earlier notes said. `frameCount=0` after 20.9 s and an empty page debug log (no `announced:`, no `subscribe start:`) while chromium logs all of it in 358 ms — **the MoQ session never establishes**. Everything else on firefox passed in the same run (LL-HLS failover, playback, reconnect, steady state at 1.64 s median), so the machine was fine. Unresolved and not to be guessed at: Firefox's WebTransport client vs moq-native accepting the session vs the harness certificate path. A server-side race in session accept would be a Caudal bug — do not add a retry. Full write-up in `tests/browser/NOTES.md`.
+
+### Open decision for Saul: the competing Rust OMT crates
+`MikanseiLaboratory/openmediatransport-rs` (protocol, ~9K lines) and `vmx-rs` (codec, claims "byte-compatible with libvmx", has CI and a Verified checklist) already cover this ground. Saul believes they do not work; **nobody has run them**, so that is unverified in both directions. A test was started and stopped before it cloned anything. Until it is run, "the first working native Rust OMT" is not a defensible public claim; "byte-identical to the C++ reference under test" is, and needs no comparison to anyone.
 
 **Do not tag v0.1.0** until a >= 60-min soak shows slope < 1 MB/h.
 

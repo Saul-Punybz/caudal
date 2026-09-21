@@ -343,7 +343,9 @@ def scenario_idle_publish(server, logf):
     idle = w.result["server"]
     pub = start_publisher(server, False, logf)
     ok = wait_playlist(server)
-    time.sleep(10)
+    # BENCH_SETTLE_S=60 measures a full 50 s live buffer; 10 was the M4
+    # report's setting (the buffer was then 12 to 42 s full).
+    time.sleep(float(os.environ.get("BENCH_SETTLE_S", "10")))
     with Window({"server": srv.pid, "publisher": pub.pid}) as w:
         time.sleep(30)
     publish = w.result

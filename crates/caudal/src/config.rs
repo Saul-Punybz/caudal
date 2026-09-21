@@ -36,8 +36,9 @@ fn default_segment_ms() -> u32 {
     2000
 }
 
+/// 15 s, not MistServer's 50: see `[buffer]` in caudal.example.toml.
 fn default_window_secs() -> u64 {
-    50
+    15
 }
 
 fn default_max_mb() -> usize {
@@ -1192,7 +1193,7 @@ mod tests {
         assert_eq!(cfg.rtmp.app, "live");
         assert_eq!(cfg.hls.part_ms, 200);
         assert_eq!(cfg.hls.segment_ms, 2000);
-        assert_eq!(cfg.buffer.window_secs, 50);
+        assert_eq!(cfg.buffer.window_secs, 15);
         assert_eq!(cfg.buffer.max_mb, 256);
     }
 

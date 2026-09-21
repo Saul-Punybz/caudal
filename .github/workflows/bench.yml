@@ -25,6 +25,12 @@ on:
       profile:
         description: "perf-record these fan-out cells, first rep only (e.g. rtsp:300); empty = off"
         default: ""
+      heap:
+        description: "dhat heap profile with one publisher for this many seconds instead of the benchmark (bench/heap.sh); empty = off"
+        default: ""
+      settle:
+        description: "Seconds a publisher runs before the publish RSS window (10 = the M4 report; 60 = a full 50 s buffer)"
+        default: "10"
 
 jobs:
   bench:
@@ -54,7 +60,15 @@ jobs:
           echo "CARGO_PROFILE_RELEASE_DEBUG=line-tables-only" >> "$GITHUB_ENV"
           echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
           echo "BENCH_PROFILE=${{ inputs.profile }}" >> "$GITHUB_ENV"
+      - name: Heap profile
+        if: inputs.heap != ''
+        run: |
+          bench/heap.sh "${{ inputs.heap }}"
+          { echo '```'; cat bench/results/dhat-top.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Run
+        if: inputs.heap == ''
+        env:
+          BENCH_SETTLE_S: ${{ inputs.settle }}
         run: |
           set -o pipefail   # `| tee` must not hide a failed run
           ulimit -n 65536 || true

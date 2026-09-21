@@ -624,7 +624,17 @@ impl Packager {
         for p in &seg.parts {
             full.extend_from_slice(&p.data);
         }
-        seg.full = Some(full.freeze());
+        // The parts become views into the whole segment instead of a second
+        // copy of it: every listed segment's bytes are held once. They stay
+        // servable (a player may still be fetching the parts it saw listed).
+        let full = full.freeze();
+        let mut at = 0;
+        for p in &mut seg.parts {
+            let len = p.data.len();
+            p.data = full.slice(at..at + len);
+            at += len;
+        }
+        seg.full = Some(full);
         self.target = self.target.max(seg.duration().round() as u64);
         while self.segments.iter().filter(|s| s.full.is_some()).count() > WINDOW {
             if let Some(old) = self.segments.pop_front()

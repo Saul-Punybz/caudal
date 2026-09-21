@@ -19,6 +19,18 @@ use tokio::sync::broadcast::error::RecvError;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type MediaProducer = moq_mux::container::Producer<Container>;
 
+/// How long a group other than the newest stays cached for MoQ viewers.
+/// hang's default is 30 s, which kept a second copy of every stream's last
+/// 30 s in memory whether or not anyone watched over MoQ (about 25 MB for a
+/// 6 Mbps stream, measured with dhat: bench/heap.sh). A viewer joins at the
+/// newest group and one further behind than this has lost the live edge
+/// anyway; 5 s is moq-net's own default (`moq_net::track::DEFAULT_LATENCY_MAX`).
+const LATENCY_MAX: Duration = moq_net::track::DEFAULT_LATENCY_MAX;
+
+fn track_info() -> moq_net::track::Info {
+    hang::container::track_info().with_latency_max(LATENCY_MAX)
+}
+
 /// Longest audio group in an audio-only stream. With video, audio groups
 /// follow the video keyframes instead, so a late joiner gets both at once.
 const AUDIO_GROUP: Duration = Duration::from_secs(1);
@@ -227,7 +239,7 @@ impl Outputs {
                     0 => format!("{kind}{}", t.id.0),
                     g => format!("{kind}{}.{g}", t.id.0),
                 };
-                let track = broadcast.create_track(name.as_str(), hang::container::track_info())?;
+                let track = broadcast.create_track(name.as_str(), track_info())?;
                 let producer = MediaProducer::new(track, Container::Legacy);
                 self.tracks
                     .insert(t.id, Output { info: t.clone(), name, producer, group_start: 0, cut_pending: false });

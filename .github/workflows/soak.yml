@@ -13,6 +13,16 @@ on:
       churn_minutes:
         description: "Minutes between churn events (publisher restart + a batch of short-lived viewers)"
         default: "15"
+      heap:
+        description: "Build with the dhat-heap feature and print the allocation sites still holding bytes at exit (slow; use a short, light, churn-heavy run)"
+        type: boolean
+        default: false
+      streams:
+        description: "Publishers"
+        default: "3"
+      viewers:
+        description: "Long-lived viewers per stream per protocol"
+        default: "10"
   schedule:
     - cron: "17 6 * * 1" # Mondays 06:17 UTC
   # TEMPORARY, for PR #20 verification only: workflow_dispatch can't run
@@ -57,20 +67,29 @@ jobs:
             exit 1
           fi
           echo "CHURN_MINUTES=$CHURN" >> "$GITHUB_ENV"
+          echo "STREAMS=$(echo "${{ inputs.streams }}" | grep -E '^[0-9]+$' || echo 3)" >> "$GITHUB_ENV"
+          echo "VIEWERS=$(echo "${{ inputs.viewers }}" | grep -E '^[0-9]+$' || echo 10)" >> "$GITHUB_ENV"
       - name: Tools
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg python3-matplotlib
           nproc; free -g; uname -a
       - name: Build
         run: |
-          cargo build --release -p caudal
+          if [ "${{ inputs.heap }}" = "true" ]; then
+            # Symbols for the dhat backtraces; codegen is unchanged.
+            export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none
+            cargo build --release -p caudal --features dhat-heap
+          else
+            cargo build --release -p caudal
+          fi
           (cd bench/client && cargo build --release)
       - name: Soak
         run: |
           set -o pipefail
           ulimit -n 65536 || true
           echo "run length: ${MINUTES} minutes, churn every ${CHURN_MINUTES} min"
-          csv="$(python3 bench/soak.py run --minutes "$MINUTES" --churn-minutes "$CHURN_MINUTES")"
+          csv="$(python3 bench/soak.py run --minutes "$MINUTES" --churn-minutes "$CHURN_MINUTES" \
+            --streams "$STREAMS" --viewers "$VIEWERS")"
           echo "SOAK_CSV=$csv" >> "$GITHUB_ENV"
       - name: Verdict
         if: always() && env.SOAK_CSV != ''
@@ -80,10 +99,26 @@ jobs:
           status=${PIPESTATUS[0]}
           cat soak-summary.md >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+      - name: Heap profile
+        if: always() && inputs.heap
+        run: |
+          # The server runs with bench/.cache as its working directory, so
+          # dhat writes the profile there (main.rs, on SIGTERM).
+          json=bench/.cache/dhat-heap.json
+          if [ ! -f "$json" ]; then echo "no $json (server did not exit cleanly?)"; exit 0; fi
+          cp "$json" bench/results/dhat-heap.json
+          {
+            echo "### Heap still held at exit"; echo '```'
+            python3 bench/dhat_top.py "$json" 30 --at-end
+            echo '```'; echo "### Heap at peak"; echo '```'
+            python3 bench/dhat_top.py "$json" 20
+            echo '```'
+          } | tee bench/results/dhat-top.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: soak-results
           path: |
             bench/results/soak-*
+            bench/results/dhat-*
             soak-summary.md

@@ -1,26 +1,25 @@
 # STATUS — Caudal
 
-**Last updated:** 19 Sep 2026, ~12:30 UTC (PAUSED; v0.1 in progress; see RESUME HERE)
+**Last updated:** 21 Sep 2026 (v0.1 code complete; 120-min soak running; tag pending)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (19 Sep 2026, ~12:30 UTC, PAUSED by Saul: "stop, save and we will continue later")
-**Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI + local gate are green; up to 5 agents but ONE heavy local job at a time (shared lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); heavy benchmarks and soak on GitHub (`bench.yml`), never on the laptop; a question from Saul is not a request. Keep a health guard (load, free RAM, `pmset -g therm`) running while agents work.
+## RESUME HERE (21 Sep 2026) — v0.1 code complete, tag pending
+**Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI is green; up to 5 agents but ONE heavy local job at a time (lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); benchmarks and soak on GitHub (`bench.yml`, `soak.yml`), never on the laptop; a question is not a request.
 
-**main = `a8b1f78`, CI green.** 18 PRs merged 19 Sep (see git log; highlights: RTSP ~6x less CPU than MediaMTX on Linux, IP multicast output, live captions es/en with a `captions` cargo feature, origin-edge clustering, failover, fuzzing).
+**main = `86baee1`.** All four v0.1 code items merged:
+- #20 soak test (`soak.yml`, `bench/soak.py`): 30-min run PASSED (RSS slope -15 MB/h, growth -0.7 %, fd 115 and threads 11 flat, 3 streams / 63 viewers, 0 errors, reload + clip ok) — run 35464718699. **120-min run dispatched on main: 35606887553.**
+- #21 memory per live stream: 90 -> 55 MB (10 s in) and 145 -> 65 MB (steady) vs MediaMTX 84/93; heap profile found RTMP slice retention, hang's 30 s MoQ cache, LL-HLS double-held segments; `[buffer] window_secs` default 50 -> 15 (user-visible).
+- #22 batched UDP sends (GSO): x300 Linux 300/300 kept up, 1,803 Mbps, CPU 179 % vs main's 30/300 and 263 %; x100 60 % vs MediaMTX 104 %.
+- #23 release pipeline (`release.yml`): tag `v*.*.*` builds static musl binaries + SHA256SUMS + multi-arch GHCR image, publishes the GitHub Release from `docs/release-notes/v0.1.0.md`. Dry run green (35464788814); a manual dispatch never publishes.
+- #19 docs: `docs/QUICKSTART.md`, `docs/OBS.md` (Saul's glass-to-glass procedure).
 
-**v0.1 scope (approved by Saul)** — status at pause, all agents stopped, every WIP pushed:
-1. Batched UDP sends for WebRTC — branch `perf/webrtc-batched-send` @ 3305c4f (code clean + 8 grouping unit tests; macOS x100 69→58 %, x300 315→293 %). TODO: Linux before/after with `gh workflow run bench.yml --ref <main|branch> -f protos=whep -f levels=100,300 -f reps=3 -f servers=caudal,mediamtx`, update BENCH doc, PR.
-2. RSS per live stream (98 vs 80 MB) — branch `perf/rss-per-stream` @ 8ce4236 (WIP: dhat feature started, nothing measured). TODO: measure on Linux (`-f only=idle`), fix, PR.
-3. Soak test — not started on a branch (agent was reading bench.py; plan: `.github/workflows/soak.yml`, 2 h on GitHub, RSS/fd/threads/CPU CSV + verdict).
-4. Release — branch `release/v0.1-pipeline` @ 97ba0d8 (WIP: Dockerfile.release + release notes draft; no workflow yet). TODO: `release.yml` on tag push + dry-run dispatch, GHCR multi-arch, Helm appVersion 0.1.0. Tag `v0.1.0` only after 1–3 merge.
-5. Saul's OBS glass-to-glass check (docs agent had started `docs/QUICKSTART.md` + `docs/OBS.md`; nothing saved — restart it).
-
-**Set aside:** MistServer bench (`bench/mistserver` @ c553882; next: `meson setup --default-library=static`; MistServer LL-HLS part is a fixed 500 ms); MCP server (future).
-**After v0.1:** kTLS + sendfile, io_uring/pacing, OMT, Raspberry Pi image, MoQ on Safari, DASH, SDKs, watermarking, CEA-608, GPU transcoding, TEST-AUDIT phase 2/3.
-**Status page:** https://claude.ai/artifact/NGCn3AzWdLEKLGQkvuT56A (source in the session scratchpad; republish with `url`).
-**Gotcha (19 Sep):** debug builds of `caudal-ui` read `dist/` from disk at the path they were compiled in (rust-embed debug mode). A worktree build sharing `target/` left the main binary pointing at a deleted worktree → the UI 404s locally while CI passes. Fix: `touch crates/caudal-ui/src/lib.rs && cargo build -p caudal`; agents should use their own `CARGO_TARGET_DIR`.
+**Before tagging v0.1.0:** (1) 120-min soak green; (2) update `docs/release-notes/v0.1.0.md` with the final RSS / batched-send / soak numbers (the "Idle-publisher RSS" line still says MediaMTX is lighter — that is now fixed); (3) main CI green. Then `git tag -a v0.1.0 && git push origin v0.1.0` (publishes binaries + `ghcr.io/saul-punybz/caudal:0.1.0`).
+**Open:** agent on `fix/firefox-llhls-stall` — Firefox-only LL-HLS stall in the browser suite ("playback stalled after warm-up", also fails on retry; Chromium/WebKit fine). The blanket firefox CI retry is a band-aid to remove once diagnosed.
+**Set aside:** MistServer bench (`bench/mistserver`), MCP server (future).
+**After v0.1:** kTLS + sendfile, io_uring/pacing, OMT protocol, Raspberry Pi image, MoQ on Safari, DASH, SDKs, watermarking, CEA-608, GPU transcoding, TEST-AUDIT phase 2/3.
+**Pages:** status https://claude.ai/artifact/NGCn3AzWdLEKLGQkvuT56A · brief https://claude.ai/artifact/UYhTQHp2aJrS754w2W4J7w
 **Rule from Saul:** verify with tools outside Claude; say what is not verified.
 
 ## Finding, 19 Sep 2026: scuffle-rtmp froze timestamps

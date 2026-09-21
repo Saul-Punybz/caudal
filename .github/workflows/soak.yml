@@ -10,6 +10,9 @@ on:
       minutes:
         description: "Run length in minutes (max 330)"
         default: "120"
+      churn_minutes:
+        description: "Minutes between churn events (publisher restart + a batch of short-lived viewers)"
+        default: "15"
   schedule:
     - cron: "17 6 * * 1" # Mondays 06:17 UTC
   # TEMPORARY, for PR #20 verification only: workflow_dispatch can't run
@@ -47,6 +50,13 @@ jobs:
             exit 1
           fi
           echo "MINUTES=$MINUTES" >> "$GITHUB_ENV"
+          CHURN="${{ inputs.churn_minutes }}"
+          CHURN="${CHURN:-15}"
+          if ! [[ "$CHURN" =~ ^[0-9]+$ ]] || [ "$CHURN" -lt 1 ]; then
+            echo "churn_minutes must be a positive integer, got '$CHURN'" >&2
+            exit 1
+          fi
+          echo "CHURN_MINUTES=$CHURN" >> "$GITHUB_ENV"
       - name: Tools
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg python3-matplotlib
@@ -59,8 +69,8 @@ jobs:
         run: |
           set -o pipefail
           ulimit -n 65536 || true
-          echo "run length: ${MINUTES} minutes"
-          csv="$(python3 bench/soak.py run --minutes "$MINUTES")"
+          echo "run length: ${MINUTES} minutes, churn every ${CHURN_MINUTES} min"
+          csv="$(python3 bench/soak.py run --minutes "$MINUTES" --churn-minutes "$CHURN_MINUTES")"
           echo "SOAK_CSV=$csv" >> "$GITHUB_ENV"
       - name: Verdict
         if: always() && env.SOAK_CSV != ''

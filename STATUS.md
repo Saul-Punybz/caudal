@@ -1,21 +1,26 @@
 # STATUS — Caudal
 
-**Last updated:** 21 Sep 2026 (v0.1 code complete; 120-min soak running; tag pending)
+**Last updated:** 21 Sep 2026 (v0.1 code complete; **120-min soak FAILED — memory leak; tag blocked**)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (21 Sep 2026) — v0.1 code complete, tag pending
+## RESUME HERE (21 Sep 2026) — v0.1 tag BLOCKED by a memory leak
 **Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI is green; up to 5 agents but ONE heavy local job at a time (lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); benchmarks and soak on GitHub (`bench.yml`, `soak.yml`), never on the laptop; a question is not a request.
 
-**main = `86baee1`.** All four v0.1 code items merged:
+**main = `03821c8`, CI + browser green.** All four v0.1 code items merged — but the tag is blocked:
+
+### The blocker: the 120-min soak found a leak (run 35606887553)
+`RSS slope +11.15 MB/h, growth 7.0 %` over 240 samples, final RSS 336.5 MB — fails the < 1 MB/h rule (~2 GB a week on a real server). Everything else clean: fd 117 and threads 13 flat, 3 streams / 63 viewers kept up on LL-HLS, RTSP and WHEP, config reload and clip ok, no panics. The RTSP errors (210) and WHEP timeouts (70) cluster at the scripted publisher restarts, and every viewer reconnected. The 30-min run PASSED with a *negative* slope, so this only shows over hours — which is the whole point of the soak. Agent on branch `fix/soak-rss-growth`; suspects to check against the CSV (stepped at the 15-min churn events = per-publish/per-viewer state; steady ramp = a growing buffer or cache): `caudal-health`'s `publisher_lost` map, LL-HLS packager entries after republish, recording bookkeeping, WebRTC `ufrags`/`by_source`, cluster history, per-session metric labels. **Do not tag until a >= 60-min soak on the fix branch shows slope < 1 MB/h.**
+
+Merged v0.1 items:
 - #20 soak test (`soak.yml`, `bench/soak.py`): 30-min run PASSED (RSS slope -15 MB/h, growth -0.7 %, fd 115 and threads 11 flat, 3 streams / 63 viewers, 0 errors, reload + clip ok) — run 35464718699. **120-min run dispatched on main: 35606887553.**
 - #21 memory per live stream: 90 -> 55 MB (10 s in) and 145 -> 65 MB (steady) vs MediaMTX 84/93; heap profile found RTMP slice retention, hang's 30 s MoQ cache, LL-HLS double-held segments; `[buffer] window_secs` default 50 -> 15 (user-visible).
 - #22 batched UDP sends (GSO): x300 Linux 300/300 kept up, 1,803 Mbps, CPU 179 % vs main's 30/300 and 263 %; x100 60 % vs MediaMTX 104 %.
 - #23 release pipeline (`release.yml`): tag `v*.*.*` builds static musl binaries + SHA256SUMS + multi-arch GHCR image, publishes the GitHub Release from `docs/release-notes/v0.1.0.md`. Dry run green (35464788814); a manual dispatch never publishes.
 - #19 docs: `docs/QUICKSTART.md`, `docs/OBS.md` (Saul's glass-to-glass procedure).
 
-**Before tagging v0.1.0:** (1) 120-min soak green; (2) update `docs/release-notes/v0.1.0.md` with the final RSS / batched-send / soak numbers (the "Idle-publisher RSS" line still says MediaMTX is lighter — that is now fixed); (3) main CI green. Then `git tag -a v0.1.0 && git push origin v0.1.0` (publishes binaries + `ghcr.io/saul-punybz/caudal:0.1.0`).
+**Before tagging v0.1.0:** (1) the leak fixed and a soak green (see the blocker above); (2) update `docs/release-notes/v0.1.0.md` with the final RSS / batched-send / soak numbers (the "Idle-publisher RSS" line still says MediaMTX is lighter — that is now fixed); (3) main CI green. Then `git tag -a v0.1.0 && git push origin v0.1.0` (publishes binaries + `ghcr.io/saul-punybz/caudal:0.1.0`).
 **Fixed 21 Sep (PR #24):** the Firefox-only "LL-HLS stall" was not a stall — Firefox honours `autoplay` only at HAVE_ENOUGH_DATA (Chromium/WebKit start at HAVE_FUTURE_DATA), so the `<video>` stayed paused 2.8–6.4 s while hls.js held the playhead and the live edge ran away, past hls.js's catch-up band. `play.html` now calls `play()` on canplay and seeks to `liveSyncPosition` if stranded; the spec waits for progress while unpaused; the blanket firefox CI retry is gone. Firefox ingest-to-glass 3.70 s → 1.22–1.42 s, 5 consecutive green CI runs. Details in `tests/browser/NOTES.md`.
 **Still open from that work:** (a) `moq.spec.ts` on firefox is flaky (canvas never reaches 1280, twice, then passed; untouched page, a main control rerun passed); (b) one run had firefox steady state pinned at 2.61–2.67 s, inside hls.js's band but not converging (`forwardBufferLength` gate); (c) the guard's forward seek inflates `currentTimeDelta`, so a decoded-frame counter (TEST-AUDIT gap 12) would make that assertion airtight.
 **Set aside:** MistServer bench (`bench/mistserver`), MCP server (future).

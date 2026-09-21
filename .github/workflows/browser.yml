@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual dispatch so a branch can be run repeatedly without a new commit
+  # each time (used to confirm a flake is settled: 5+ consecutive green
+  # runs on the whole matrix before calling it fixed).
+  workflow_dispatch: {}
 
 jobs:
   browser:

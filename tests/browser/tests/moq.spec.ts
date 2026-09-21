@@ -14,7 +14,7 @@
 // once the orchestrator merges P's crate.
 
 import { test, expect } from "@playwright/test";
-import { haveFfmpeg, startCaudal, startFfmpegPublisher, type CaudalServer, type FfmpegPublisher } from "./harness";
+import { haveFfmpeg, startCaudal, startFfmpegPublisher, logMachineLoad, type CaudalServer, type FfmpegPublisher } from "./harness";
 
 const STREAM = "moq";
 
@@ -75,26 +75,29 @@ test.describe("MoQ playback in a real browser", () => {
         "merges P's branch; see STATUS.md \"Batch 5\".",
     );
 
+    // Diagnostics for the firefox-only canvas-resize flake (seen twice: the
+    // canvas never reached width 1280; passed on rerun; an untouched-page
+    // control rerun also passed — so not a global runner problem by itself).
+    // Forward the page's own console (moq/watch, WebTransport, @moq/hang
+    // libraries tend to log connection/subscribe state) and any uncaught
+    // page error, prefixed so they interleave with the harness's log lines.
+    page.on("console", (msg) => console.log(`[${browserName}][page:${msg.type()}] ${msg.text()}`));
+    page.on("pageerror", (err) => console.log(`[${browserName}][pageerror] ${err.stack || err.message}`));
+    logMachineLoad();
+
     await page.goto(`${server.baseUrl}/streams/${STREAM}`);
 
     const moqRadio = page.getByRole("radio", { name: "MoQ" });
     await expect(moqRadio, "MoQ option should be enabled: this Chromium build has WebTransport").toBeEnabled();
+    const radioClickedAt = Date.now();
     await moqRadio.click();
-
-    // @moq/watch has no <video>/MediaStream in this path: WebCodecs decodes
-    // straight to VideoFrames, drawn onto a <canvas> nested in <moq-watch>.
-    const canvas = page.locator("moq-watch canvas");
-    await expect
-      .poll(async () => canvas.evaluate((c: HTMLCanvasElement) => c.width).catch(() => 0), { timeout: 20_000 })
-      .toBe(1280);
-    await expect
-      .poll(async () => canvas.evaluate((c: HTMLCanvasElement) => c.height).catch(() => 0), { timeout: 5_000 })
-      .toBe(720);
 
     // frameCount comes straight from `<moq-watch>.video.out.stats` (see
     // node_modules/@moq/watch/video/decoder.d.ts) — the same public signal
     // the library's own stats panel reads, not something invented for this
-    // test.
+    // test. Read alongside canvas size during the wait below so a stalled
+    // subscribe (frameCount stuck at 0) can be told apart from a decoded
+    // stream whose <canvas> just hasn't been resized yet (a late-resize bug).
     const frameCount = () =>
       page.evaluate(() => {
         const el = document.querySelector("moq-watch") as unknown as {
@@ -102,6 +105,29 @@ test.describe("MoQ playback in a real browser", () => {
         } | null;
         return el?.video.out.stats.peek()?.frameCount ?? 0;
       });
+
+    // @moq/watch has no <video>/MediaStream in this path: WebCodecs decodes
+    // straight to VideoFrames, drawn onto a <canvas> nested in <moq-watch>.
+    const canvas = page.locator("moq-watch canvas");
+    await expect
+      .poll(
+        async () => {
+          const [width, height, frames] = await Promise.all([
+            canvas.evaluate((c: HTMLCanvasElement) => c.width).catch(() => 0),
+            canvas.evaluate((c: HTMLCanvasElement) => c.height).catch(() => 0),
+            frameCount().catch(() => -1),
+          ]);
+          console.log(
+            `[${browserName}] moq canvas width=${width} height=${height} frameCount=${frames} @ +${Date.now() - radioClickedAt}ms`,
+          );
+          return width;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(1280);
+    await expect
+      .poll(async () => canvas.evaluate((c: HTMLCanvasElement) => c.height).catch(() => 0), { timeout: 5_000 })
+      .toBe(720);
 
     const f0 = await frameCount();
     await page.waitForTimeout(3_000);

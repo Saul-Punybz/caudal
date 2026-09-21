@@ -16,6 +16,8 @@ export interface Metrics {
   fatalHlsError: string | null;
   hlsInstanceExposed: boolean;
   engine: string | null;
+  decodedFrameDelta?: number | null;
+  decodedFrameSource?: DecodedFrames["source"];
 }
 
 /**
@@ -48,6 +50,46 @@ export async function exposeHlsInstance(page: Page): Promise<void> {
         });
       },
     });
+  });
+}
+
+export interface DecodedFrames {
+  /** Frames actually decoded and painted, or null when the browser exposes neither signal. */
+  count: number | null;
+  source: "getVideoPlaybackQuality" | "webkitDecodedFrameCount" | null;
+}
+
+/**
+ * A real decoded-frame counter, independent of `currentTime`. `currentTime`
+ * alone is not proof of decoding: `play.html`'s live-catch-up guard
+ * (`keepUpWithLive`, a forward `video.currentTime = hls.liveSyncPosition`
+ * seek fired when the player has been stranded outside hls.js' catch-up
+ * range for 2s) can advance `currentTime` by seconds in one tick, which
+ * would make a `currentTimeDelta` assertion pass on a seek rather than on
+ * real decoding (TEST-AUDIT gap 12). `getVideoPlaybackQuality().totalVideoFrames`
+ * (Chromium, Firefox) or the legacy `webkitDecodedFrameCount` (WebKit
+ * fallback) count frames the decoder actually produced, so a seek cannot
+ * inflate them — only continued playback does.
+ *
+ * Returns `{ count: null, source: null }` when the browser exposes neither
+ * API; callers must skip that assertion cleanly (log + annotate) rather
+ * than silently treating null as a pass.
+ */
+export async function readDecodedFrames(page: Page): Promise<DecodedFrames> {
+  return page.evaluate(() => {
+    const video = document.getElementById("v") as HTMLVideoElement & {
+      webkitDecodedFrameCount?: number;
+    };
+    if (typeof video.getVideoPlaybackQuality === "function") {
+      const q = video.getVideoPlaybackQuality();
+      if (q && typeof q.totalVideoFrames === "number" && isFinite(q.totalVideoFrames)) {
+        return { count: q.totalVideoFrames, source: "getVideoPlaybackQuality" as const };
+      }
+    }
+    if (typeof video.webkitDecodedFrameCount === "number" && isFinite(video.webkitDecodedFrameCount)) {
+      return { count: video.webkitDecodedFrameCount, source: "webkitDecodedFrameCount" as const };
+    }
+    return { count: null, source: null };
   });
 }
 

@@ -20,7 +20,14 @@ import {
   type CaudalServer,
   type FfmpegPublisher,
 } from "./harness";
-import { exposeHlsInstance, readMetrics, type Metrics } from "./metrics";
+import { exposeHlsInstance, readMetrics, readDecodedFrames, type Metrics } from "./metrics";
+
+// 30fps source (harness.ts, testsrc2 rate=30). A generous 10fps floor over
+// the 3s measurement window, matching moq.spec.ts's floor for the same
+// reason: tolerant of a slow CI runner while still catching a real stall
+// or a currentTime advance that came from the live-catch-up seek instead
+// of decoding (TEST-AUDIT gap 12; see metrics.ts readDecodedFrames).
+const DECODED_FRAME_FLOOR_3S = 30;
 
 const STREAM_NAME = "e2e";
 
@@ -146,9 +153,14 @@ test.describe("Caudal LL-HLS in a real browser", () => {
       )
       .toBeGreaterThan(0.2);
     const currentTimeStart = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
+    const framesStart = await readDecodedFrames(page);
     await page.waitForTimeout(3_000);
     const currentTimeEnd = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
+    const framesEnd = await readDecodedFrames(page);
     const currentTimeDelta = currentTimeEnd - currentTimeStart;
+    const decodedFrameSource = framesEnd.source;
+    const decodedFrameDelta =
+      framesStart.count !== null && framesEnd.count !== null ? framesEnd.count - framesStart.count : null;
 
     // Native HLS (WebKit) tends to start a few segments behind the live
     // edge and catches up gradually rather than jumping there, so give the
@@ -164,10 +176,13 @@ test.describe("Caudal LL-HLS in a real browser", () => {
       await page.waitForTimeout(500);
       partial = await readMetrics(page, browserName);
     }
-    const metrics: Metrics = { ...partial, currentTimeStart, currentTimeEnd, currentTimeDelta };
+    const metrics: Metrics = { ...partial, currentTimeStart, currentTimeEnd, currentTimeDelta, decodedFrameDelta, decodedFrameSource };
 
     console.log(`[${browserName}] readyState=${metrics.readyState} videoWidth=${metrics.videoWidth}x${metrics.videoHeight}`);
     console.log(`[${browserName}] currentTime delta over 3s wall time: ${(metrics.currentTimeDelta ?? 0).toFixed(2)}s`);
+    console.log(
+      `[${browserName}] decoded frames over 3s: ${decodedFrameDelta ?? "n/a"} (source: ${decodedFrameSource ?? "unavailable"})`,
+    );
     console.log(
       `[${browserName}] live-edge distance: ${metrics.liveEdgeDistanceSec !== null ? metrics.liveEdgeDistanceSec.toFixed(2) + "s" : "n/a"}`,
     );
@@ -195,6 +210,23 @@ test.describe("Caudal LL-HLS in a real browser", () => {
       `playback stalled after warm-up: currentTime advanced ${(metrics.currentTimeDelta ?? 0).toFixed(2)} s over 3 s of wall time`,
     ).toBeGreaterThanOrEqual(2.4);
     expect(metrics.fatalHlsError).toBeNull();
+
+    // Real decoded-frame signal, independent of currentTime (see
+    // readDecodedFrames in metrics.ts / TEST-AUDIT gap 12): a currentTime
+    // advance alone can be the live-catch-up guard's forward seek rather
+    // than actual decoding. Skip cleanly (not silently) when this browser
+    // exposes neither getVideoPlaybackQuality() nor webkitDecodedFrameCount.
+    if (decodedFrameDelta === null) {
+      test.info().annotations.push({
+        type: "decoded-frame-signal-unavailable",
+        description: `${browserName} exposes neither getVideoPlaybackQuality().totalVideoFrames nor webkitDecodedFrameCount; decoded-frame assertion skipped for this browser, relying on currentTime delta only`,
+      });
+    } else {
+      expect(
+        decodedFrameDelta,
+        `decoded-frame count barely moved (${decodedFrameDelta} frames via ${decodedFrameSource} in 3s) while currentTime advanced ${(currentTimeDelta ?? 0).toFixed(2)}s — that smells like the live-catch-up seek (play.html's keepUpWithLive), not real decoding`,
+      ).toBeGreaterThanOrEqual(DECODED_FRAME_FLOOR_3S);
+    }
 
     expect(metrics.liveEdgeDistanceSec, "live-edge distance was not measurable").not.toBeNull();
     expect(metrics.liveEdgeDistanceSec as number).toBeLessThan(3);

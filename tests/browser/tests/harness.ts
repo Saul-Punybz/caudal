@@ -80,7 +80,7 @@ function resolveBinary(): string {
  * times after the reconnect/failover specs were added; this shows whether
  * earlier specs left encoders or servers running. Linux only (CI).
  */
-function logMachineLoad(): void {
+export function logMachineLoad(): void {
   if (process.platform !== "linux") return;
   try {
     const load = execSync("cat /proc/loadavg").toString().trim();

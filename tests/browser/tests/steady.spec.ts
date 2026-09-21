@@ -14,7 +14,7 @@ import {
   type CaudalServer,
   type FfmpegPublisher,
 } from "./harness";
-import { exposeHlsInstance, readMetrics, readDecodedFrames, type DecodedFrames } from "./metrics";
+import { exposeHlsInstance, readMetrics, startDecodedFrameCounter, stopDecodedFrameCounter, type DecodedFrames } from "./metrics";
 
 const STREAM_NAME = "steady";
 
@@ -157,7 +157,7 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
     // readDecodedFrames, TEST-AUDIT gap 12): proves frames actually kept
     // decoding for the ~20s this test treats as "steady state", rather than
     // the playhead merely reporting low latency while stalled or seeking.
-    const framesBeforeSampling = await readDecodedFrames(page);
+    await startDecodedFrameCounter(page);
 
     // Sample ingest-to-glass once per second for 20 seconds (to get 20 samples).
     const samples: number[] = [];
@@ -179,12 +179,10 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
       }
     }
 
-    const framesAfterSampling = await readDecodedFrames(page);
-    const decodedFrameSource = framesAfterSampling.source;
-    const decodedFrameDelta =
-      framesBeforeSampling.count !== null && framesAfterSampling.count !== null
-        ? framesAfterSampling.count - framesBeforeSampling.count
-        : null;
+    const frames = await stopDecodedFrameCounter(page);
+    const decodedFrameSource = frames.source;
+    const decodedFrameDelta = frames.count;
+    const decodedFrameResets = frames.resets;
 
     // Calculate statistics from samples.
     let steadyStateMin: number | null = null;
@@ -217,7 +215,7 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
 
     console.log(`[${browserName}] steady-state samples collected: ${samples.length}`);
     console.log(`[${browserName}] steady-state ingest-to-glass: min=${steadyStateMin?.toFixed(2) ?? "n/a"}s, median=${steadyStateMedian?.toFixed(2) ?? "n/a"}s, max=${steadyStateMax?.toFixed(2) ?? "n/a"}s`);
-    console.log(`[${browserName}] decoded frames over ~20s steady window: ${decodedFrameDelta ?? "n/a"} (source: ${decodedFrameSource ?? "unavailable"})`);
+    console.log(`[${browserName}] decoded frames over ~20s steady window: ${decodedFrameDelta ?? "n/a"} (source: ${decodedFrameSource ?? "unavailable"}, counter resets: ${decodedFrameResets})`);
     console.log(`[${browserName}] hls.js instance exposed: ${metricsSnapshot.hlsInstanceExposed} (engine: ${metricsSnapshot.engine})`);
 
     // Write results to latest.json under "steady" key.
@@ -253,7 +251,7 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
     } else {
       expect(
         decodedFrameDelta,
-        `decoded-frame count barely moved (${decodedFrameDelta} frames via ${decodedFrameSource} over the ~20s steady window) while ingestToGlass samples looked fine — the playhead may be reporting latency without the decoder actually keeping up`,
+        `decoded-frame count barely moved (${decodedFrameDelta} frames via ${decodedFrameSource} over the ~20s steady window, ${decodedFrameResets} counter resets) while ingestToGlass samples looked fine — the playhead may be reporting latency without the decoder actually keeping up`,
       ).toBeGreaterThanOrEqual(DECODED_FRAME_FLOOR_20S);
     }
 

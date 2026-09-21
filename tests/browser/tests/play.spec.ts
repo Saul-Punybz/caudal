@@ -20,7 +20,7 @@ import {
   type CaudalServer,
   type FfmpegPublisher,
 } from "./harness";
-import { exposeHlsInstance, readMetrics, readDecodedFrames, type Metrics } from "./metrics";
+import { exposeHlsInstance, readMetrics, startDecodedFrameCounter, stopDecodedFrameCounter, type Metrics } from "./metrics";
 
 // 30fps source (harness.ts, testsrc2 rate=30). A generous 10fps floor over
 // the 3s measurement window, matching moq.spec.ts's floor for the same
@@ -153,14 +153,14 @@ test.describe("Caudal LL-HLS in a real browser", () => {
       )
       .toBeGreaterThan(0.2);
     const currentTimeStart = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
-    const framesStart = await readDecodedFrames(page);
+    await startDecodedFrameCounter(page);
     await page.waitForTimeout(3_000);
     const currentTimeEnd = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
-    const framesEnd = await readDecodedFrames(page);
+    const frames = await stopDecodedFrameCounter(page);
     const currentTimeDelta = currentTimeEnd - currentTimeStart;
-    const decodedFrameSource = framesEnd.source;
-    const decodedFrameDelta =
-      framesStart.count !== null && framesEnd.count !== null ? framesEnd.count - framesStart.count : null;
+    const decodedFrameSource = frames.source;
+    const decodedFrameDelta = frames.count;
+    const decodedFrameResets = frames.resets;
 
     // Native HLS (WebKit) tends to start a few segments behind the live
     // edge and catches up gradually rather than jumping there, so give the
@@ -181,7 +181,7 @@ test.describe("Caudal LL-HLS in a real browser", () => {
     console.log(`[${browserName}] readyState=${metrics.readyState} videoWidth=${metrics.videoWidth}x${metrics.videoHeight}`);
     console.log(`[${browserName}] currentTime delta over 3s wall time: ${(metrics.currentTimeDelta ?? 0).toFixed(2)}s`);
     console.log(
-      `[${browserName}] decoded frames over 3s: ${decodedFrameDelta ?? "n/a"} (source: ${decodedFrameSource ?? "unavailable"})`,
+      `[${browserName}] decoded frames over 3s: ${decodedFrameDelta ?? "n/a"} (source: ${decodedFrameSource ?? "unavailable"}, counter resets: ${decodedFrameResets})`,
     );
     console.log(
       `[${browserName}] live-edge distance: ${metrics.liveEdgeDistanceSec !== null ? metrics.liveEdgeDistanceSec.toFixed(2) + "s" : "n/a"}`,
@@ -224,7 +224,7 @@ test.describe("Caudal LL-HLS in a real browser", () => {
     } else {
       expect(
         decodedFrameDelta,
-        `decoded-frame count barely moved (${decodedFrameDelta} frames via ${decodedFrameSource} in 3s) while currentTime advanced ${(currentTimeDelta ?? 0).toFixed(2)}s — that smells like the live-catch-up seek (play.html's keepUpWithLive), not real decoding`,
+        `decoded-frame count barely moved (${decodedFrameDelta} frames via ${decodedFrameSource} in 3s, ${decodedFrameResets} counter resets) while currentTime advanced ${(currentTimeDelta ?? 0).toFixed(2)}s — that smells like the live-catch-up seek (play.html's keepUpWithLive), not real decoding`,
       ).toBeGreaterThanOrEqual(DECODED_FRAME_FLOOR_3S);
     }
 

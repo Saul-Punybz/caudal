@@ -93,6 +93,88 @@ export async function readDecodedFrames(page: Page): Promise<DecodedFrames> {
   });
 }
 
+/**
+ * The frame counter is NOT monotonic on every engine, so subtracting two
+ * endpoint samples is wrong. WebKit resets `totalVideoFrames` when the media
+ * pipeline re-initialises (hls.js removing and re-appending buffer ranges is
+ * enough), which produced negative deltas on CI: -57 frames over 3s in
+ * play.spec and -10 over the ~20s steady window, while Chromium and Firefox
+ * reported 90 and 601 on the same run. A negative delta is not a stall, it is
+ * a counter that went back to zero.
+ *
+ * So sample inside the page on a short interval and accumulate only the
+ * forward movement: each tick adds `cur - prev` when the counter advanced,
+ * and on a reset (`cur < prev`) it adds `cur` and re-baselines, losing at
+ * most one tick's frames instead of the whole measurement. `resets` is
+ * reported so a suspiciously resetting engine stays visible rather than
+ * silently passing.
+ */
+export interface DecodedFrameCount extends DecodedFrames {
+  /** How many times the counter went backwards during the window. */
+  resets: number;
+}
+
+export async function startDecodedFrameCounter(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as any;
+    if (w.__frameCounter?.timer) clearInterval(w.__frameCounter.timer);
+    const read = (): { count: number | null; source: DecodedFrames["source"] } => {
+      const video = document.getElementById("v") as HTMLVideoElement & {
+        webkitDecodedFrameCount?: number;
+      };
+      if (!video) return { count: null, source: null };
+      if (typeof video.getVideoPlaybackQuality === "function") {
+        const q = video.getVideoPlaybackQuality();
+        if (q && typeof q.totalVideoFrames === "number" && isFinite(q.totalVideoFrames)) {
+          return { count: q.totalVideoFrames, source: "getVideoPlaybackQuality" };
+        }
+      }
+      if (typeof video.webkitDecodedFrameCount === "number" && isFinite(video.webkitDecodedFrameCount)) {
+        return { count: video.webkitDecodedFrameCount, source: "webkitDecodedFrameCount" };
+      }
+      return { count: null, source: null };
+    };
+    const first = read();
+    const state = {
+      total: 0,
+      resets: 0,
+      prev: first.count,
+      source: first.source,
+      timer: 0 as unknown as ReturnType<typeof setInterval>,
+    };
+    state.timer = setInterval(() => {
+      const { count, source } = read();
+      if (count === null) return;
+      if (source) state.source = source;
+      if (state.prev === null) {
+        state.prev = count;
+        return;
+      }
+      if (count >= state.prev) {
+        state.total += count - state.prev;
+      } else {
+        state.resets += 1;
+        state.total += count;
+      }
+      state.prev = count;
+    }, 100);
+    w.__frameCounter = state;
+  });
+}
+
+export async function stopDecodedFrameCounter(page: Page): Promise<DecodedFrameCount> {
+  return page.evaluate(() => {
+    const state = (window as any).__frameCounter;
+    if (!state) return { count: null, source: null, resets: 0 };
+    clearInterval(state.timer);
+    return {
+      count: state.source === null ? null : state.total,
+      source: state.source,
+      resets: state.resets,
+    };
+  });
+}
+
 export async function readMetrics(page: Page, browserName: string): Promise<Omit<Metrics, "currentTimeStart" | "currentTimeEnd" | "currentTimeDelta">> {
   return page.evaluate((browserName) => {
     const video = document.getElementById("v") as HTMLVideoElement;

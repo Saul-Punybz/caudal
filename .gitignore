@@ -7,5 +7,9 @@ target/
 /bench/results/*.log
 /bench/results/client.out
 
+# bench/soak.py: per-run artifacts (uploaded by .github/workflows/soak.yml,
+# not meant to be committed)
+/bench/results/soak-*
+
 # Apple mediastreamvalidator output (tests pass --validation-data-path)
 validation_data.json

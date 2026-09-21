@@ -1,0 +1,79 @@
+name: Soak (Linux)
+
+# Hours of publish + viewers against Caudal alone, on GitHub's Linux
+# runners (never a developer laptop, same reasoning as bench.yml). Proves
+# the server holds steady over time: no RSS/fd/thread/CPU growth, no
+# dropped streams. See bench/soak.py for the workload and verdict rules.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Run length in minutes (max 330)"
+        default: "120"
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  # TEMPORARY, for PR #20 verification only: workflow_dispatch can't run
+  # until this file is on the default branch, so this branch also runs on
+  # push while the PR is open. PUSH_MINUTES below controls the length.
+  # Remove this trigger (and PUSH_MINUTES) before merging.
+  push:
+    branches: [test/soak]
+
+env:
+  PUSH_MINUTES: "30"
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            bench/client
+      - name: Resolve run length
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            MINUTES="$PUSH_MINUTES"   # TEMPORARY, see the `push:` trigger above
+          else
+            MINUTES="${{ inputs.minutes }}"
+            MINUTES="${MINUTES:-120}"
+          fi
+          if ! [[ "$MINUTES" =~ ^[0-9]+$ ]] || [ "$MINUTES" -lt 1 ] || [ "$MINUTES" -gt 330 ]; then
+            echo "minutes must be an integer in 1..330, got '$MINUTES'" >&2
+            exit 1
+          fi
+          echo "MINUTES=$MINUTES" >> "$GITHUB_ENV"
+      - name: Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg python3-matplotlib
+          nproc; free -g; uname -a
+      - name: Build
+        run: |
+          cargo build --release -p caudal
+          (cd bench/client && cargo build --release)
+      - name: Soak
+        run: |
+          set -o pipefail
+          ulimit -n 65536 || true
+          echo "run length: ${MINUTES} minutes"
+          csv="$(python3 bench/soak.py run --minutes "$MINUTES")"
+          echo "SOAK_CSV=$csv" >> "$GITHUB_ENV"
+      - name: Verdict
+        if: always() && env.SOAK_CSV != ''
+        run: |
+          set -o pipefail
+          python3 bench/soak.py verdict "$SOAK_CSV" | tee soak-summary.md
+          status=${PIPESTATUS[0]}
+          cat soak-summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-results
+          path: |
+            bench/results/soak-*
+            soak-summary.md

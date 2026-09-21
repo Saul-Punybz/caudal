@@ -41,6 +41,17 @@
   // The muted attribute alone did not always reach the property in WebKit
   // (browser suite, 19 Sep 2026); muted is what lets autoplay start.
   video.muted = true;
+
+  // Firefox acts on the `autoplay` attribute only once the element reaches
+  // HAVE_ENOUGH_DATA; on a live stream that was 3-6 s after the first frames
+  // were buffered (browser suite, 21 Sep 2026). The playhead stays where hls.js
+  // put it while the live edge runs away, so the viewer joins that far behind.
+  // Chromium and Safari start at HAVE_FUTURE_DATA; ask for the same.
+  function tryPlay() {
+    if (video.paused) video.play().catch(function () {});
+  }
+  video.addEventListener("loadeddata", tryPlay);
+  video.addEventListener("canplay", tryPlay);
   var $ = function (id) { return document.getElementById(id); };
   $("name").textContent = name;
   document.title = name + " · Caudal";
@@ -91,7 +102,33 @@
     return NaN;
   }
 
+  // hls.js speeds up towards the live edge only while the playhead is within
+  // one target duration of the target latency; further back it reads as DVR
+  // playback and is left alone, and the seek-back is off by default
+  // (liveMaxLatencyDurationCount = Infinity). A player that joined late — a
+  // slow first load, a tab that was not allowed to autoplay — would otherwise
+  // stay seconds behind live for the rest of the session. Jump it forward
+  // once it has been stranded there for two seconds.
+  var strandedTicks = 0;
+  function keepUpWithLive() {
+    var details = hls && hls.latestLevelDetails;
+    var target = hls && hls.targetLatency;
+    if (!details || !details.live || target === null || video.paused || video.seeking || !isFinite(hls.latency)) {
+      strandedTicks = 0;
+      return;
+    }
+    if (hls.latency - target <= target + details.targetduration) {
+      strandedTicks = 0;
+      return;
+    }
+    if (++strandedTicks < 8) return;
+    strandedTicks = 0;
+    var pos = hls.liveSyncPosition;
+    if (pos !== null && isFinite(pos) && pos > video.currentTime) video.currentTime = pos;
+  }
+
   setInterval(function () {
+    keepUpWithLive();
     var l = latency();
     var el = $("latency");
     if (isFinite(l) && !video.paused) {

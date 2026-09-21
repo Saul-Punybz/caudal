@@ -121,3 +121,60 @@ a CI bug.
   browser needed the Playwright fallback click — the test still checks for
   it and would click play + log a line if a future change to play.html
   ever required a gesture.
+
+## Firefox joined late and never caught up (21 Sep 2026)
+
+`play.spec.ts` failed on the **firefox** project only, repeatedly, two ways:
+"playback stalled after warm-up" (`currentTime` moved ~0.25 s in 3 s) and
+"ingest-to-glass" 3.6–4.7 s against a 3 s bound. Chromium and WebKit passed
+in the same runs. It was put down to runner load and given one CI retry.
+
+It was not the runner. A firefox-only debug run (`--repeat-each=5`, hls.js
+`debug` on, a 500 ms sampler) showed the same shape all five times:
+
+```
+0.8 ct=1.770 rs=3 paused=true  buf=[0.00-1.17] lat=1.00 tgt=0.60
+...                                   (nothing moves for 3-6 s)
+5.8 ct=1.770 rs=3 paused=true  buf=[0.00-3.99] lat=6.00 tgt=0.60
+6.3 ct=2.135 rs=4 paused=false buf=[0.00-7.98] lat=6.27 tgt=0.60
+```
+
+Three facts, in order:
+
+1. **Firefox honours the `autoplay` attribute only at `HAVE_ENOUGH_DATA`
+   (readyState 4)**, which took 2.8–6.4 s here; Chromium and WebKit start at
+   `HAVE_FUTURE_DATA` (3). Until then the `<video>` sits paused.
+2. **`currentTime` is already past 1 s while it is paused**, because hls.js
+   seeks the element to the live-sync position as soon as it attaches. So the
+   old warm-up gate (`currentTime > 1`) passed on a video that had never
+   played, and the 3 s window that followed measured a paused element — that
+   is the "stall". Nothing was stalling; nothing had started.
+3. **hls.js cannot recover from a late join.** Its catch-up
+   (`maxLiveSyncPlaybackRate`) only engages while
+   `latency - targetLatency < targetLatency + targetduration` — here
+   0.601 + 2 = 2.6 s — and past that it treats the playhead as DVR playback
+   and leaves it alone (`latency-controller.ts`, `inLiveRange`). Its
+   seek-back to the live edge is off by default
+   (`liveMaxLatencyDurationCount: Infinity`, so `synchronizeToLiveEdge`'s
+   `currentTime < end - maxLatency` is never true). A player that joins more
+   than ~2.6 s late stays exactly that far behind for the whole session —
+   the debug run sat at 6.3 s of latency for 19 s straight, and the CI
+   failures sat at 3.70 s.
+
+The playlist was not at fault: the dumps at the stall are ordinary LL-HLS
+(one `EXT-X-MAP`, no discontinuity, parts for the last three segments, the
+preload hint present), and Caudal's own numbers are unchanged. The server
+side of PR #6 is exonerated; the only reason the failures started around it
+is that the Firefox project and the extra specs before it moved the timing.
+
+**Fixed in `crates/caudal-hls/static/play.html`**, because both halves are
+real for a viewer, not just for CI:
+
+- the page calls `video.play()` itself on `loadeddata`/`canplay` instead of
+  waiting for Firefox's `HAVE_ENOUGH_DATA`;
+- a 250 ms guard seeks to `hls.liveSyncPosition` when the playhead has been
+  stranded outside hls.js' catch-up range for 2 s.
+
+**And in the spec**, which was measuring the wrong thing: warm-up now waits
+for `currentTime` to actually advance while the video is unpaused, and the
+stall message carries the measurement. The firefox CI retry is gone.

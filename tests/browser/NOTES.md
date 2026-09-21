@@ -187,3 +187,39 @@ riding the edge often has less than a second of forward buffer. It is under
 the 3 s bound and the guard above (which only fires past the range) leaves it
 alone on purpose. A player that rides right at the band's edge is a separate,
 smaller problem; it is not the stall this change fixed.
+
+## The decoded-frame counter is not monotonic on WebKit (21 Sep 2026)
+
+`currentTime` alone never proved decoding: `play.html`'s live-catch-up guard
+seeks forward to `hls.liveSyncPosition`, so a `currentTimeDelta` assertion can
+pass on a seek (TEST-AUDIT gap 12). The fix was to count frames the decoder
+actually produced, via `getVideoPlaybackQuality().totalVideoFrames` with the
+legacy `webkitDecodedFrameCount` as fallback.
+
+Sampling that counter at the two ends of the window and subtracting turned out
+to be wrong. Run 35623842158 failed with **negative** deltas on WebKit — -57
+frames over play.spec's 3 s window and -10 over steady.spec's ~20 s window —
+while Chromium and Firefox reported 90 and 601 on the same run. WebKit resets
+`totalVideoFrames` whenever the media pipeline re-initialises; hls.js removing
+and re-appending buffer ranges is enough to trigger it. A counter that goes
+backwards is not a stall.
+
+The counter now samples inside the page every 100 ms and accumulates only
+forward movement, treating a backwards step as a reset that re-baselines. A
+reset costs one tick's frames instead of the whole measurement, and the reset
+count is logged and carried into the failure message.
+
+How often WebKit resets, measured on run 35625365506:
+
+| Browser | Frames in 3 s | Resets | Frames in ~20 s | Resets |
+|---|---|---|---|---|
+| Chromium | 90 | 0 | 600 | 0 |
+| Firefox | 88 | 0 | 598 | 0 |
+| WebKit | 74 | 10 | 515 | 65 |
+
+That is a reset roughly every 300 ms on WebKit, which is also why its totals
+run ~15 % under the other two: each reset drops up to one sampling tick. The
+floors (30 frames over 3 s, 200 over ~20 s, both a 10 fps bar) stay far below
+even the lossy WebKit figure, so the assertion still fails loudly on a real
+stall. If WebKit's totals ever need to be exact rather than a lower bound,
+shorten the sampling interval — do not go back to subtracting endpoints.

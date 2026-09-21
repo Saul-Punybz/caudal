@@ -223,3 +223,37 @@ floors (30 frames over 3 s, 200 over ~20 s, both a 10 fps bar) stay far below
 even the lossy WebKit figure, so the assertion still fails loudly on a real
 stall. If WebKit's totals ever need to be exact rather than a lower bound,
 shorten the sampling interval — do not go back to subtracting endpoints.
+
+## Firefox MoQ flake: it is not the canvas, it is the session (21 Sep 2026)
+
+Reproduced on run 35626725779 (1 failure in 6 consecutive browser runs on
+`test/browser-decoded-frames`; the other five were green: 35625365506,
+35626734840, 35626742835, 35626750768, 35626823735).
+
+The instrumentation moved the diagnosis. The failure was recorded earlier as
+"the canvas never reaches 1280", which suggested a late resize. It is worse
+and simpler than that:
+
+```
+[chromium] moq canvas width=1280 height=720 frameCount=0 @ +358ms   (then 91 frames in 3 s)
+[firefox]  moq canvas width=0    height=0   frameCount=0 @ +20873ms  (timeout)
+```
+
+`frameCount=0` after 20.9 s means **no frame was ever decoded**, so there was
+nothing to size the canvas to. And the page's own debug log is empty for
+firefox on that run — no `announced:`, no `subscribe start:`, no catalog —
+while chromium logs all of them within 358 ms. The MoQ session never got far
+enough to announce, so this is a connection/handshake failure, not a rendering
+or timing problem in the spec.
+
+Everything else on firefox in that same run was healthy: LL-HLS failover,
+playback (134 decoded frames in 3 s), reconnect and steady state (599 frames
+over ~20 s, 1.64 s median ingest-to-glass) all passed. So the browser and the
+machine were fine; only the WebTransport/QUIC session for MoQ failed to come up.
+
+**Not yet determined** and deliberately not guessed at: whether this is
+Firefox's WebTransport client, moq-native's QUIC server accepting the session,
+or the certificate path the harness uses. A retry would hide it. The next step
+is to capture `about:networking`-level detail or server-side QUIC logs for the
+failing attempt — a server-side race in session accept would be a Caudal bug
+and must not be papered over in the spec.

@@ -127,11 +127,24 @@ test.describe("Caudal LL-HLS in a real browser", () => {
       })
       .toBe(1280);
 
-    // Warm up first: startup buffering is not a stall. Then playback must be
-    // smooth: at least 2.4 s of media over 3 s of wall time (80%).
+    // Warm up first: startup buffering is not a stall. `currentTime > 1` is
+    // NOT warm-up — hls.js seeks the element to the live-sync position while
+    // it is still paused, so that reads true before a single frame has played
+    // (Firefox sat paused there for 3-6 s; see NOTES.md, "Firefox joined late").
+    // Wait for the clock to actually move while the element is playing.
     await expect
-      .poll(async () => page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime), { timeout: 20_000 })
-      .toBeGreaterThan(1);
+      .poll(
+        async () => {
+          const before = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
+          await page.waitForTimeout(400);
+          return page.evaluate((a) => {
+            const v = document.getElementById("v") as HTMLVideoElement;
+            return v.paused ? 0 : v.currentTime - a;
+          }, before);
+        },
+        { timeout: 20_000, message: "playback never started: currentTime never advanced while the video was unpaused" },
+      )
+      .toBeGreaterThan(0.2);
     const currentTimeStart = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
     await page.waitForTimeout(3_000);
     const currentTimeEnd = await page.evaluate(() => (document.getElementById("v") as HTMLVideoElement).currentTime);
@@ -177,7 +190,10 @@ test.describe("Caudal LL-HLS in a real browser", () => {
 
     expect(metrics.readyState).toBeGreaterThanOrEqual(3);
     expect(metrics.videoWidth).toBe(1280);
-    expect(metrics.currentTimeDelta, "playback stalled after warm-up").toBeGreaterThanOrEqual(2.4);
+    expect(
+      metrics.currentTimeDelta,
+      `playback stalled after warm-up: currentTime advanced ${(metrics.currentTimeDelta ?? 0).toFixed(2)} s over 3 s of wall time`,
+    ).toBeGreaterThanOrEqual(2.4);
     expect(metrics.fatalHlsError).toBeNull();
 
     expect(metrics.liveEdgeDistanceSec, "live-edge distance was not measurable").not.toBeNull();

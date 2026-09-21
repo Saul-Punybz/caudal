@@ -10,8 +10,20 @@ Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; 
 
 **main = `03821c8`, CI + browser green.** All four v0.1 code items merged — but the tag is blocked:
 
-### The blocker: the 120-min soak found a leak (run 35606887553)
-`RSS slope +11.15 MB/h, growth 7.0 %` over 240 samples, final RSS 336.5 MB — fails the < 1 MB/h rule (~2 GB a week on a real server). Everything else clean: fd 117 and threads 13 flat, 3 streams / 63 viewers kept up on LL-HLS, RTSP and WHEP, config reload and clip ok, no panics. The RTSP errors (210) and WHEP timeouts (70) cluster at the scripted publisher restarts, and every viewer reconnected. The 30-min run PASSED with a *negative* slope, so this only shows over hours — which is the whole point of the soak. Agent on branch `fix/soak-rss-growth`; suspects to check against the CSV (stepped at the 15-min churn events = per-publish/per-viewer state; steady ramp = a growing buffer or cache): `caudal-health`'s `publisher_lost` map, LL-HLS packager entries after republish, recording bookkeeping, WebRTC `ufrags`/`by_source`, cluster history, per-session metric labels. **Do not tag until a >= 60-min soak on the fix branch shows slope < 1 MB/h.**
+### The blocker: the 120-min soak found RSS growth (run 35606887553)
+`RSS slope +11.15 MB/h, growth 7.0 %` over 240 samples, final RSS 336.5 MB — fails the < 1 MB/h rule. Everything else clean: fd 117 and threads 12-13 flat, 3 streams / 63 viewers kept up on LL-HLS, RTSP and WHEP, reload + clip ok, no panics, and the server log is balanced (110 WebRTC sessions created / 110 closed, 10 publishes / 10 ends). The 30-min run PASSED with a negative slope, so this only shows over hours.
+
+**Shape of the growth (from the CSV, 21 Sep):** not a steady ramp. Per-15-min window means climb monotonically (297, 313, 319, 324, 323, 329, 328, 331 MB) while the slope *inside* each window is noise around zero. Mean RSS 3 samples before vs 3 after each churn event: +5.5, +6.8, +7.3, +5.1, +9.0, -0.9, +2.2 MB — seven steps summing to ~+35 MB against ~+30 MB total growth. So it looks like per-event state, but a time model and an event-count model fit equally well (R² 0.613 vs 0.622) because the churn events are evenly spaced; the 120-min run alone cannot separate them.
+
+**Ruled out by code read:** live-buffer ring eviction (`caudal-core/src/stream.rs:151`), HLS packager window + `old_inits` pruning (`caudal-hls/src/packager.rs:639`), HLS reconnect-grace handoff and LINGER removal (`caudal-hls/src/lib.rs:341`), WebRTC slot/ufrag/`by_source` cleanup (`caudal-webrtc/src/engine.rs:487`), recorder map (`caudal-record/src/lib.rs:157`), RTSP per-connection state, `/metrics` (rendered per request). `caudal-health`'s `publisher_lost` map is ruled out *for this run* — the soak config has no `[health]` section, so the service never starts.
+
+**Still standing:** (a) MoQ broadcast state per republish (`caudal-moq/src/publish.rs`, ~4 MB of 5 s cache per stream — right order of magnitude for the step); (b) plain glibc arena retention / fragmentation rather than a leak. The dhat at-end run tells these apart: if live heap is flat while RSS grew, it is the allocator, and the fix is `malloc_trim`/`MALLOC_ARENA_MAX` or a different allocator, not a lifetime bug.
+
+**PR #25 (draft, tooling only, no product code):** `soak.yml` gains `churn_minutes`, `streams`, `viewers`, `heap` inputs; `bench/dhat_top.py` gains `--at-end` (the existing report is heap-at-peak, which cannot show a leak).
+
+**Three runs dispatched 21 Sep 15:55Z, results not yet read:** 35622240566 (30 min, churn every 2 min ≈ 15 events), 35622279613 (30 min, no churn — the baseline), 35622517287 (20 min, churn every 2 min, 1 stream / 3 viewers, `heap=true`). The first two answer whether the slope scales with churn count; the third names the allocation site (`bench/results/dhat-top.txt`).
+
+**Do not tag v0.1.0** until a >= 60-min soak shows slope < 1 MB/h.
 
 Merged v0.1 items:
 - #20 soak test (`soak.yml`, `bench/soak.py`): 30-min run PASSED (RSS slope -15 MB/h, growth -0.7 %, fd 115 and threads 11 flat, 3 streams / 63 viewers, 0 errors, reload + clip ok) — run 35464718699. **120-min run dispatched on main: 35606887553.**

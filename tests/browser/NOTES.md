@@ -187,3 +187,73 @@ riding the edge often has less than a second of forward buffer. It is under
 the 3 s bound and the guard above (which only fires past the range) leaves it
 alone on purpose. A player that rides right at the band's edge is a separate,
 smaller problem; it is not the stall this change fixed.
+
+## The decoded-frame counter is not monotonic on WebKit (21 Sep 2026)
+
+`currentTime` alone never proved decoding: `play.html`'s live-catch-up guard
+seeks forward to `hls.liveSyncPosition`, so a `currentTimeDelta` assertion can
+pass on a seek (TEST-AUDIT gap 12). The fix was to count frames the decoder
+actually produced, via `getVideoPlaybackQuality().totalVideoFrames` with the
+legacy `webkitDecodedFrameCount` as fallback.
+
+Sampling that counter at the two ends of the window and subtracting turned out
+to be wrong. Run 35623842158 failed with **negative** deltas on WebKit — -57
+frames over play.spec's 3 s window and -10 over steady.spec's ~20 s window —
+while Chromium and Firefox reported 90 and 601 on the same run. WebKit resets
+`totalVideoFrames` whenever the media pipeline re-initialises; hls.js removing
+and re-appending buffer ranges is enough to trigger it. A counter that goes
+backwards is not a stall.
+
+The counter now samples inside the page every 100 ms and accumulates only
+forward movement, treating a backwards step as a reset that re-baselines. A
+reset costs one tick's frames instead of the whole measurement, and the reset
+count is logged and carried into the failure message.
+
+How often WebKit resets, measured on run 35625365506:
+
+| Browser | Frames in 3 s | Resets | Frames in ~20 s | Resets |
+|---|---|---|---|---|
+| Chromium | 90 | 0 | 600 | 0 |
+| Firefox | 88 | 0 | 598 | 0 |
+| WebKit | 74 | 10 | 515 | 65 |
+
+That is a reset roughly every 300 ms on WebKit, which is also why its totals
+run ~15 % under the other two: each reset drops up to one sampling tick. The
+floors (30 frames over 3 s, 200 over ~20 s, both a 10 fps bar) stay far below
+even the lossy WebKit figure, so the assertion still fails loudly on a real
+stall. If WebKit's totals ever need to be exact rather than a lower bound,
+shorten the sampling interval — do not go back to subtracting endpoints.
+
+## Firefox MoQ flake: it is not the canvas, it is the session (21 Sep 2026)
+
+Reproduced on run 35626725779 (1 failure in 6 consecutive browser runs on
+`test/browser-decoded-frames`; the other five were green: 35625365506,
+35626734840, 35626742835, 35626750768, 35626823735).
+
+The instrumentation moved the diagnosis. The failure was recorded earlier as
+"the canvas never reaches 1280", which suggested a late resize. It is worse
+and simpler than that:
+
+```
+[chromium] moq canvas width=1280 height=720 frameCount=0 @ +358ms   (then 91 frames in 3 s)
+[firefox]  moq canvas width=0    height=0   frameCount=0 @ +20873ms  (timeout)
+```
+
+`frameCount=0` after 20.9 s means **no frame was ever decoded**, so there was
+nothing to size the canvas to. And the page's own debug log is empty for
+firefox on that run — no `announced:`, no `subscribe start:`, no catalog —
+while chromium logs all of them within 358 ms. The MoQ session never got far
+enough to announce, so this is a connection/handshake failure, not a rendering
+or timing problem in the spec.
+
+Everything else on firefox in that same run was healthy: LL-HLS failover,
+playback (134 decoded frames in 3 s), reconnect and steady state (599 frames
+over ~20 s, 1.64 s median ingest-to-glass) all passed. So the browser and the
+machine were fine; only the WebTransport/QUIC session for MoQ failed to come up.
+
+**Not yet determined** and deliberately not guessed at: whether this is
+Firefox's WebTransport client, moq-native's QUIC server accepting the session,
+or the certificate path the harness uses. A retry would hide it. The next step
+is to capture `about:networking`-level detail or server-side QUIC logs for the
+failing attempt — a server-side race in session accept would be a Caudal bug
+and must not be papered over in the spec.

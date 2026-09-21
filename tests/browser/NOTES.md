@@ -178,3 +178,12 @@ real for a viewer, not just for CI:
 **And in the spec**, which was measuring the wrong thing: warm-up now waits
 for `currentTime` to actually advance while the video is unpaused, and the
 stall message carries the measurement. The firefox CI retry is gone.
+
+**Residual, worth knowing:** firefox steady-state ingest-to-glass is usually
+1.2–1.4 s after this fix, but one run measured 2.61–2.67 s and stayed there
+for all 20 samples. That is inside hls.js' catch-up range yet it did not
+converge — `forwardBufferLength > 1` also gates the speed-up, and a player
+riding the edge often has less than a second of forward buffer. It is under
+the 3 s bound and the guard above (which only fires past the range) leaves it
+alone on purpose. A player that rides right at the band's edge is a separate,
+smaller problem; it is not the stall this change fixed.

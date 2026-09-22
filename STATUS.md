@@ -1,11 +1,24 @@
 # STATUS — Caudal
 
-**Last updated:** 21 Sep 2026 (v0.1 code complete; **120-min soak FAILED — memory leak; tag blocked**)
+**Last updated:** 22 Sep 2026 (v0.1 code complete; **tag blocked by per-churn RSS growth**; paused mid-investigation)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (21 Sep 2026) — v0.1 tag BLOCKED by a memory leak
+## RESUME HERE (22 Sep 2026) — paused; v0.1.0 tag BLOCKED
+
+**Pick up in this order:**
+1. **Finish the soak diagnosis.** The mechanism is proven (growth is per churn event, not per unit of time — table below). What is left is one pair of runs isolating the publisher restart from the viewer batch: add `--churn-kind publisher|viewers|both` to `bench/soak.py` (both fire together at `soak.py:359-380`), expose it as a `soak.yml` input on branch `fix/soak-rss-growth`, and dispatch two 30-min runs with churn every 2 min. Then fix whatever it names, and prove it with a >= 60-min soak under 1 MB/h.
+2. **Then tag v0.1.0** — `git tag -a v0.1.0 && git push origin v0.1.0` publishes binaries + `ghcr.io/saul-punybz/caudal:0.1.0`. Update the soak paragraph in `docs/release-notes/v0.1.0.md` with the final figure first.
+3. Open PRs, neither merged: **#25** (soak tooling, draft) and **#26** (decoded-frame counter + firefox MoQ diagnosis, ready).
+
+**Two decisions waiting on Saul, not on code:**
+- **The competing Rust OMT crates** — see the section at the end of this block. Nobody has run them; the "first working" claim is unverified in both directions.
+- Whether the firefox MoQ session failure is worth blocking on (it is not a v0.1 blocker today; MoQ is not in the v0.1 headline set).
+
+**Other sessions:** the OMT protocol port runs in its own terminal on `~/Downloads/_Projects/open-media-transport/` (trigger "CONTINUE OMT"; it has its own STATUS.md and has moved to a draft v0.1.0 there). Do not mix the two repos.
+
+**Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI is green; up to 5 agents but ONE heavy local job at a time (lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); benchmarks and soak on GitHub, never on the laptop; a question is not a request; say what is not verified.
 **Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI is green; up to 5 agents but ONE heavy local job at a time (lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); benchmarks and soak on GitHub (`bench.yml`, `soak.yml`), never on the laptop; a question is not a request.
 
 **main = `03821c8`, CI + browser green.** All four v0.1 code items merged — but the tag is blocked:

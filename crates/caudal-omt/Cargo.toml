@@ -18,6 +18,12 @@ tracing.workspace = true
 open-media-transport = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }
 vmx-codec = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }
 
+[features]
+# TEMPORARY (feat/m12-wiring): placeholder pull/output API so the caudal
+# binary's wiring builds before ingest.rs/output.rs land. Delete at merge
+# (see src/wiring_stubs.rs).
+wiring-stubs = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

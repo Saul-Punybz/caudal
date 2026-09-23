@@ -39,6 +39,9 @@ pub struct AppState {
     edge: std::sync::OnceLock<caudal_cluster::Edge>,
     /// Set once at startup; `/metrics` appends `caudal_multicast_*`.
     multicast: std::sync::OnceLock<caudal_multicast::MulticastHandle>,
+    /// Set once at startup: `/api/v1/omt/sources`, the `omt` fields of the
+    /// stream inventory, `caudal_omt_*`.
+    omt: std::sync::OnceLock<Arc<crate::omt::OmtRuntime>>,
 }
 
 impl AppState {
@@ -53,6 +56,7 @@ impl AppState {
             captions: std::sync::OnceLock::new(),
             edge: std::sync::OnceLock::new(),
             multicast: std::sync::OnceLock::new(),
+            omt: std::sync::OnceLock::new(),
         })
     }
 
@@ -79,6 +83,10 @@ impl AppState {
 
     pub fn set_multicast(&self, handle: caudal_multicast::MulticastHandle) {
         let _ = self.multicast.set(handle);
+    }
+
+    pub fn set_omt(&self, omt: Arc<crate::omt::OmtRuntime>) {
+        let _ = self.omt.set(omt);
     }
 
     pub fn set_edge(&self, edge: caudal_cluster::Edge) {
@@ -115,10 +123,81 @@ struct StreamJson {
     name: String,
     tracks: Vec<TrackJson>,
     stats: StatsJson,
+    /// Only on a stream an `[[omt.pull]]` publishes or an `[[omt.output]]`
+    /// sends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    omt: Option<OmtStreamJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtStreamJson {
+    /// The `[[omt.pull]]` publishing this stream.
+    pull: Option<OmtPullJson>,
+    /// Every `[[omt.output]]` sending it.
+    outputs: Vec<OmtOutputJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtPullJson {
+    source: String,
+    quality: &'static str,
+    connected: bool,
+    frames_in: u64,
+    bytes_in: u64,
+    reconnects: u64,
+    /// Frames dropped, by reason.
+    dropped: std::collections::BTreeMap<&'static str, u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtOutputJson {
+    name: String,
+    /// `MACHINE (name)`, once announced.
+    full_name: Option<String>,
+    /// `omt://MACHINE:port`, once listening.
+    url: Option<String>,
+    receivers: usize,
+    frames_sent: u64,
+    dropped: std::collections::BTreeMap<&'static str, u64>,
+    tally: OmtTallyJson,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtTallyJson {
+    preview: bool,
+    program: bool,
+}
+
+fn omt_stream_json(omt: &crate::omt::OmtRuntime, stream: &str) -> Option<OmtStreamJson> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let pull = omt.pulls().into_iter().find(|p| p.stream == stream).map(|p| OmtPullJson {
+        source: p.source.clone(),
+        quality: crate::omt::quality_str(p.quality),
+        connected: p.stats.connected.load(Relaxed),
+        frames_in: p.stats.frames_in.load(Relaxed),
+        bytes_in: p.stats.bytes_in.load(Relaxed),
+        reconnects: p.stats.reconnects.load(Relaxed),
+        dropped: p.stats.dropped().into_iter().collect(),
+    });
+    let outputs: Vec<OmtOutputJson> = omt
+        .outputs()
+        .into_iter()
+        .filter(|o| o.stream == stream)
+        .map(|o| OmtOutputJson {
+            name: o.name.clone(),
+            full_name: o.full_name.clone(),
+            url: o.url.clone(),
+            receivers: o.stats.receivers.load(Relaxed),
+            frames_sent: o.stats.frames_sent.load(Relaxed),
+            dropped: o.stats.dropped().into_iter().collect(),
+            tally: OmtTallyJson { preview: o.stats.preview.load(Relaxed), program: o.stats.program.load(Relaxed) },
+        })
+        .collect();
+    (pull.is_some() || !outputs.is_empty()).then_some(OmtStreamJson { pull, outputs })
 }
 
 impl StreamJson {
-    fn from_stream(s: &Stream) -> Self {
+    fn from_stream(s: &Stream, omt: Option<&crate::omt::OmtRuntime>) -> Self {
         let stats = s.stats();
         StreamJson {
             name: s.name().to_string(),
@@ -146,6 +225,7 @@ impl StreamJson {
                 buffered_ms: stats.buffered_micros / 1000,
                 viewers: stats.viewers,
             },
+            omt: omt.and_then(|o| omt_stream_json(o, s.name())),
         }
     }
 }
@@ -159,13 +239,73 @@ async fn readyz(State(state): State<Arc<AppState>>) -> StatusCode {
 }
 
 async fn list_streams(State(state): State<Arc<AppState>>) -> Json<Vec<StreamJson>> {
-    Json(state.registry.list().iter().map(|s| StreamJson::from_stream(s)).collect())
+    let omt = state.omt.get().map(|o| o.as_ref());
+    Json(state.registry.list().iter().map(|s| StreamJson::from_stream(s, omt)).collect())
 }
 
 async fn get_stream(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     match state.registry.get(&name) {
-        Some(s) => Json(StreamJson::from_stream(&s)).into_response(),
+        Some(s) => Json(StreamJson::from_stream(&s, state.omt.get().map(|o| o.as_ref()))).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct OmtSourceJson {
+    /// `MACHINE (Name)`: what `[[omt.pull]] source` takes.
+    name: String,
+    host: String,
+    port: u16,
+    /// Best first.
+    addresses: Vec<std::net::IpAddr>,
+    /// `omt://address:port` with the best address: what `[[omt.pull]] url`
+    /// takes.
+    url: String,
+}
+
+/// How long the first `GET /api/v1/omt/sources` (the one that starts
+/// discovery) waits for answers before listing.
+const OMT_FIRST_BROWSE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// `GET /api/v1/omt/sources`: the OMT sources discovered on the network now
+/// (mDNS and/or the discovery server), sorted by name. The first call
+/// starts discovery if no pull or output has, and waits 1.5 s for answers.
+async fn omt_sources(State(state): State<Arc<AppState>>) -> Response {
+    let Some(omt) = state.omt.get().cloned() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": "OMT is not running" })))
+            .into_response();
+    };
+    let listed = tokio::task::spawn_blocking(move || {
+        let (sources, fresh) = omt.sources()?;
+        if !fresh {
+            return Ok(sources);
+        }
+        std::thread::sleep(OMT_FIRST_BROWSE);
+        omt.sources().map(|(s, _)| s)
+    })
+    .await;
+    match listed {
+        Ok(Ok(sources)) => Json(
+            sources
+                .into_iter()
+                .map(|s| OmtSourceJson {
+                    url: match s.addresses.first() {
+                        Some(std::net::IpAddr::V6(a)) => format!("omt://[{a}]:{}", s.port),
+                        Some(a) => format!("omt://{a}:{}", s.port),
+                        None => format!("omt://{}:{}", s.host.trim_end_matches('.'), s.port),
+                    },
+                    name: s.full_name,
+                    host: s.host,
+                    port: s.port,
+                    addresses: s.addresses,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Ok(Err(e)) => (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": e }))).into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response()
+        }
     }
 }
 
@@ -270,6 +410,9 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     if let Some(multicast) = state.multicast.get() {
         multicast.render_metrics(&mut body);
     }
+    if let Some(omt) = state.omt.get() {
+        metrics::render_omt(&mut body, &omt.pulls(), &omt.outputs());
+    }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
@@ -281,6 +424,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/streams", get(list_streams))
         .route("/api/v1/streams/{name}", get(get_stream))
         .route("/api/v1/streams/{name}/cues", post(post_cue))
+        .route("/api/v1/omt/sources", get(omt_sources))
         .route("/metrics", get(metrics_endpoint))
         .with_state(state)
 }
@@ -453,6 +597,130 @@ mod tests {
         let out = caudal_scte35::build(CueKind::Out { duration_us: None }, None, 1, Default::default()).unwrap();
         let body = format!(r#"{{"kind":"in","section_hex":"{}"}}"#, caudal_scte35::to_hex(&out));
         assert_eq!(post_cue_req(&app, "live", &body).await.0, StatusCode::BAD_REQUEST);
+    }
+
+    fn omt_app() -> (Router, Arc<AppState>, Arc<crate::omt::OmtRuntime>) {
+        use open_media_transport::discovery::{Source, SourceEvent};
+        let state = AppState::new(Registry::new());
+        let directory = open_media_transport::address::Directory::manual();
+        directory.apply(SourceEvent::Resolved(Source {
+            full_name: "STUDIO (Camera 2)".into(),
+            host: "studio.local.".into(),
+            port: 6401,
+            addresses: vec!["192.168.1.20".parse().unwrap(), "fe80::1".parse().unwrap()],
+        }));
+        directory.apply(SourceEvent::Resolved(Source {
+            full_name: "BOOTH (Program)".into(),
+            host: "booth.local.".into(),
+            port: 6400,
+            addresses: vec!["fd00::5".parse().unwrap()],
+        }));
+        let omt = crate::omt::OmtRuntime::with_directory(directory, state.registry.clone());
+        state.set_omt(omt.clone());
+        (router(state.clone()), state, omt)
+    }
+
+    async fn get_json(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let res = app.clone().oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn omt_sources_lists_the_directory() {
+        let (app, _state, _omt) = omt_app();
+        let (status, json) = get_json(&app, "/api/v1/omt/sources").await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"name": "BOOTH (Program)", "host": "booth.local.", "port": 6400,
+                 "addresses": ["fd00::5"], "url": "omt://[fd00::5]:6400"},
+                {"name": "STUDIO (Camera 2)", "host": "studio.local.", "port": 6401,
+                 "addresses": ["192.168.1.20", "fe80::1"], "url": "omt://192.168.1.20:6401"},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn omt_sources_without_omt_is_503() {
+        let (app, _state) = app();
+        let (status, json) = get_json(&app, "/api/v1/omt/sources").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(json["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn streams_carry_omt_fields_only_when_omt_touches_them() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        use caudal_core::BufferConfig;
+        use open_media_transport::command::Quality;
+
+        let (app, state, omt) = omt_app();
+        let _cam = state.registry.publish("cam2", BufferConfig::default()).unwrap();
+        let _other = state.registry.publish("other", BufferConfig::default()).unwrap();
+        omt.reload_for_test(
+            vec![caudal_omt::PullConfig {
+                stream: "cam2".into(),
+                source: "STUDIO (Camera 2)".into(),
+                quality: Quality::High,
+                video_kbps: 6000,
+                audio_kbps: 128,
+                ffmpeg: "ffmpeg".into(),
+                discovery: None,
+            }],
+            vec![
+                caudal_omt::OutputConfig {
+                    stream: "cam2".into(),
+                    name: "Cam 2 relay".into(),
+                    quality: Quality::Default,
+                    encoder_threads: 0,
+                    discovery: None,
+                },
+                caudal_omt::OutputConfig {
+                    stream: "nowhere".into(),
+                    name: "Unrelated".into(),
+                    quality: Quality::Default,
+                    encoder_threads: 0,
+                    discovery: None,
+                },
+            ],
+        );
+        let pull = &omt.pulls()[0];
+        pull.stats.frames_in.store(120, Relaxed);
+        pull.stats.connected.store(true, Relaxed);
+        pull.stats.dropped_decode.store(1, Relaxed);
+        let out = &omt.outputs()[0];
+        out.stats.receivers.store(1, Relaxed);
+        out.stats.preview.store(true, Relaxed);
+
+        let (status, json) = get_json(&app, "/api/v1/streams/cam2").await;
+        assert_eq!(status, StatusCode::OK);
+        let o = &json["omt"];
+        assert_eq!(o["pull"]["source"], "STUDIO (Camera 2)");
+        assert_eq!(o["pull"]["quality"], "high");
+        assert_eq!(o["pull"]["connected"], true);
+        assert_eq!(o["pull"]["frames_in"], 120);
+        assert_eq!(o["pull"]["dropped"]["decode_error"], 1);
+        assert_eq!(o["pull"]["dropped"]["queue_full"], 0);
+        assert_eq!(o["outputs"].as_array().unwrap().len(), 1, "only this stream's outputs: {o}");
+        assert_eq!(o["outputs"][0]["name"], "Cam 2 relay");
+        assert_eq!(o["outputs"][0]["receivers"], 1);
+        assert_eq!(o["outputs"][0]["tally"], serde_json::json!({"preview": true, "program": false}));
+
+        let (_, json) = get_json(&app, "/api/v1/streams/other").await;
+        assert!(json.get("omt").is_none(), "no omt key on a non-OMT stream: {json}");
+        let (_, list) = get_json(&app, "/api/v1/streams").await;
+        let list = list.as_array().unwrap();
+        assert_eq!(list.iter().filter(|s| s.get("omt").is_some()).count(), 1);
+
+        let res = app.oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap()).await.unwrap();
+        let body =
+            String::from_utf8(axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert!(body.contains("caudal_omt_frames_in_total{stream=\"cam2\"} 120"), "{body}");
+        assert!(body.contains("caudal_omt_receivers{stream=\"cam2\",output=\"Cam 2 relay\"} 1"), "{body}");
     }
 
     #[tokio::test]

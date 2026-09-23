@@ -3,7 +3,8 @@
 //! smallest correct change per section:
 //!
 //! - **Hot, no restart:** `[[restream]]`, `[[multicast]]`, `[[channel]]`,
-//!   `[[failover]]`, `[[srt.push]]`, `[[rtsp.pull]]` are each their own subsystem with a `reload` that
+//!   `[[failover]]`, `[[srt.push]]`, `[[rtsp.pull]]`, `[[omt.pull]]`,
+//!   `[[omt.output]]` (and `[omt] ffmpeg`) are each their own subsystem with a `reload` that
 //!   diffs by identity — unchanged entries keep their task untouched, so
 //!   a reload never drops an unrelated viewer or publisher. `[auth]` and
 //!   `[hooks]` swap in place (`Registry::set_gate` is a live snapshot
@@ -29,7 +30,9 @@
 //!   `[hls]`, `[record]`, `[buffer]`, `[admin]`, `[health]`, `[captions]`, `[cluster]` are wired once at startup into the
 //!   single `axum::Router` passed to `axum::serve`; swapping them without
 //!   restarting the process is out of scope here. A reload reports these
-//!   sections changed, never silently ignoring them.
+//!   sections changed, never silently ignoring them. So is `[omt]`'s
+//!   discovery (`discovery_server`, `interfaces`, `exclude_interfaces`) once
+//!   discovery has started: every OMT pull and output shares it.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -297,6 +300,7 @@ pub struct Supervisor {
     failover: caudal_failover::FailoverHandle,
     srt_push: caudal_srt::PushHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
+    omt: Arc<crate::omt::OmtRuntime>,
     transcode: caudal_transcode::TranscodeHandle,
     hooks_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// `[[access]]` / `[access]`. Created once (even empty); reloaded in
@@ -328,10 +332,13 @@ pub struct Started {
     /// For `main::run` to hand to `api::AppState::set_access`, so
     /// `/metrics` can render `caudal_access_denied_total`.
     pub access: Arc<caudal_access::Checker>,
+    /// For `api::AppState::set_omt`: `/api/v1/omt/sources`, the `omt`
+    /// fields of `/api/v1/streams/{name}` and `caudal_omt_*`.
+    pub omt: Arc<crate::omt::OmtRuntime>,
 }
 
 impl Supervisor {
-    /// Starts every reloadable subsystem (RTMP, SRT, RTSP, restream,
+    /// Starts every reloadable subsystem (RTMP, SRT, RTSP, OMT, restream,
     /// channels, failover, transcode, auth, hooks) from `cfg`. WebRTC, MoQ, HLS,
     /// recording, TLS and the HTTP listener are started by `main::run`
     /// itself: they're wired once into the app `Router` and are not part
@@ -351,6 +358,7 @@ impl Supervisor {
         let srt_push = caudal_srt::start_pushes(registry.clone(), cfg.srt.push_targets());
         let rtsp_listen = Mutex::new(spawn_rtsp(registry.clone(), buffer, &cfg.rtsp));
         let rtsp_pull = caudal_rtsp::start_pulls(registry.clone(), buffer, cfg.rtsp.pull_targets());
+        let omt = crate::omt::OmtRuntime::start(cfg, registry.clone(), buffer);
 
         let transcode = caudal_transcode::start(registry.clone(), cfg.transcode_runtime_config(buffer))
             .expect("validated transcode config");
@@ -397,6 +405,7 @@ impl Supervisor {
             failover: failover.clone(),
             srt_push,
             rtsp_pull,
+            omt: omt.clone(),
             transcode,
             hooks_task,
             access: access.clone(),
@@ -412,6 +421,7 @@ impl Supervisor {
             failover_router,
             failover,
             access,
+            omt,
         }
     }
 
@@ -460,6 +470,9 @@ impl Supervisor {
             self.rtsp_pull.reload(&self.registry, self.buffer, new_cfg.rtsp.pull_targets());
             report.applied.push("rtsp.pull".into());
         }
+        let omt = self.omt.reload(&old, &new_cfg);
+        report.applied.extend(omt.applied.into_iter().map(String::from));
+        report.requires_restart.extend(omt.requires_restart.into_iter().map(String::from));
         if old.transcode != new_cfg.transcode {
             match self.transcode.reload(new_cfg.transcode_runtime_config(self.buffer)) {
                 Ok(()) => report.applied.push("transcode".into()),

@@ -305,3 +305,32 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # origins = ["http://origin-a:8080", "http://origin-b:8080"]  # HTTP base URLs, tried in order
 # idle_timeout_secs = 30                   # stop pulling this long after the last viewer
 # source_timeout_secs = 10                 # end the stream when no origin has it this long
+
+# Open Media Transport (docs/OMT.md). [[omt.pull]] receives an OMT source
+# (vMix, OBS with the OMT plugin, libomtnet apps) into a stream: VMX is
+# decoded here, then ffmpeg encodes H.264/AAC. [[omt.output]] sends any
+# H.264 stream (or rendition, name+label) out as an OMT source. Every pull
+# and output shares one discovery: mDNS, or a discovery server for networks
+# without multicast. Pull/output lists reload live; the discovery keys need
+# a restart once discovery has started. 8-bit sources only for now:
+# 10-bit and alpha are not supported yet.
+#
+# [omt]
+# ffmpeg = "ffmpeg"                  # default: [transcode] ffmpeg
+# discovery_server = "omt://10.0.0.2"  # omt://host[:port] (6399); absent = mDNS only
+# interfaces = ["en0"]               # mDNS only on these (name or address); empty = all
+# exclude_interfaces = ["bridge100"]
+#
+# [[omt.pull]]
+# stream = "cam1"
+# source = "STUDIO-PC (Camera 1)"    # full name as `GET /api/v1/omt/sources` lists it...
+# # url = "omt://10.0.0.7:6400"      # ...or an address (exactly one of source/url)
+# quality = "high"                   # default | low | medium | high, suggested to the sender
+# video_kbps = 6000                  # H.264 bitrate of the published stream
+# audio_kbps = 128
+#
+# [[omt.output]]
+# stream = "program"
+# name = "Caudal Program"            # announced as "MACHINE (Caudal Program)"
+# quality = "default"                # default follows the receivers' suggestions
+# encoder_threads = 0                # VMX encoder threads; 0 = from the frame size

@@ -21,3 +21,9 @@ pub use feed::{AudioFrame, Feed, FeedConfig, PixelLayout, PushError, SampleLayou
 pub use ingest::{DropReason, PullConfig, PullHandle, PullStats, PullStatsSnapshot, PullStatus, start_pulls};
 pub use open_media_transport::command::Quality;
 pub use time::TimeMap;
+
+// TEMPORARY (feat/m12-wiring): delete these two lines and the file at merge.
+#[cfg(feature = "wiring-stubs")]
+mod wiring_stubs;
+#[cfg(feature = "wiring-stubs")]
+pub use wiring_stubs::*;

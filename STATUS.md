@@ -5,6 +5,27 @@
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
+## M12 — Open Media Transport (branch `feat/m12-omt`, 23 Sep 2026)
+
+**Saul's go-ahead (23 Sep 2026) to start M12 before the real-equipment entry condition in PLAN.md**;
+he tests vMix/OBS/Pi this week. Not merged to main; v0.1.0 soak blocker above is separate and still open.
+Design: `docs/research/M12-OMT-DESIGN.md`. User guide: `docs/OMT.md`.
+
+- **Done on the branch:** `caudal_transcode::pipe` (shared ffmpeg process code, engine unchanged);
+  `crates/caudal-omt` — `feed` (raw UYVY/NV12/I420 + f32 PCM → ffmpeg over Matroska → H.264/AAC
+  published), `time` (OMT 100 ns → track clocks, fuzzed), **pull ingest** (verified: libomtnet
+  harness sender → our pull → ffprobe: H.264 640x360 181 frames + AAC with the tone, 0 drops; A/V 12 ms;
+  sender restart bridged up to 5 s), wiring (`[omt]` config with hot reload, `/api/v1/omt/sources`,
+  metrics, `caudal doctor`, `omt_vmx_decode` fuzz, `bench/omt.py` in bench.yml — never run yet).
+- **In flight:** `feat/m12-output` (H.264 → rusty_h264 → VMX → OMT sender; AAC via ffmpeg, Opus via
+  opus-decoder). It must delete the temporary `wiring_stubs.rs` / `wiring-stubs` feature on merge.
+- **To finish:** ingest must honour `follow_redirects` (hardcoded true in `ingest.rs`); security keys
+  (`allowed_sources`, `bind`, `allow`, `max_connections`) are validated but not enforced until the OMT
+  crate's next version (RedirectPolicy, connection caps, bind) — bump the git rev then; 10-bit/alpha go
+  through 8-bit today; open a PR, CI green, then merge (Saul's rule). Before tagging: OMT crates from
+  crates.io 0.2.x, not git (cargo-deny currently allows the OMT git source).
+- Rough CPU: x264 veryfast 1080p60 ≈ 0.6–0.7 core on an easy pattern (not measured on real content).
+
 ## RESUME HERE (22 Sep 2026) — paused; v0.1.0 tag BLOCKED
 
 **Pick up in this order:**

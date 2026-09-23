@@ -88,7 +88,7 @@ stream has viewers, preview while it is published.
 
 | key | default | |
 |---|---|---|
-| `stream` | required | Any stream; H.264 is sent, other codecs are refused with a log line. The same stream may go out under several names. |
+| `stream` | required | An H.264 stream (codec handling is documented when the output lands). The same stream may go out under several names. |
 | `name` | required | 1-128 characters, no parentheses or control characters, unique among outputs. |
 | `quality` | `default` | VMX encoder quality; `default` follows receivers' suggestions. |
 | `encoder_threads` | 0 | 0..=64; 0 picks from the frame size, as libomtnet does. |

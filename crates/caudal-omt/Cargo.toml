@@ -1,0 +1,19 @@
+[package]
+name = "caudal-omt"
+description = "Open Media Transport ingest and output for Caudal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+caudal-core.workspace = true
+caudal-transcode.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

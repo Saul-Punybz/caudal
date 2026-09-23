@@ -19,6 +19,7 @@ caudal-ts = { path = "../crates/caudal-ts" }
 caudal-scte35 = { path = "../crates/caudal-scte35" }
 caudal-rtsp = { path = "../crates/caudal-rtsp" }
 caudal-webrtc = { path = "../crates/caudal-webrtc" }
+caudal-omt = { path = "../crates/caudal-omt" }
 
 # This is its own Cargo workspace (excluded from the root one, see
 # ../Cargo.toml), so the root's [patch.crates-io] entries for the vendored,
@@ -73,6 +74,13 @@ bench = false
 [[bin]]
 name = "webrtc_sdp"
 path = "fuzz_targets/webrtc_sdp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "omt_time_map"
+path = "fuzz_targets/omt_time_map.rs"
 test = false
 doc = false
 bench = false

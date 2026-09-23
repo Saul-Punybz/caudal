@@ -1027,6 +1027,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "caudal-omt"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "caudal-core",
+ "caudal-transcode",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "caudal-record"
 version = "0.1.0"
 dependencies = [

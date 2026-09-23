@@ -13,6 +13,12 @@ caudal-core.workspace = true
 caudal-transcode.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# The output's decoders (pure Rust; same versions as caudal-transcode and
+# caudal-captions): H.264 Constrained Baseline, AAC-LC, Opus.
+mp4-atom = "0.15.0"
+opus-decoder = "0.1.1"
+rusty_aac = "0.5.0"
+rusty_h264 = { version = "=0.16.0", default-features = false, features = ["std"] }
 # Our own OMT crates (MIT OR Apache-2.0), pinned to a pushed commit while M12 is
 # developed; switch to crates.io 0.2.x before tagging (git deps block publishing).
 open-media-transport = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }

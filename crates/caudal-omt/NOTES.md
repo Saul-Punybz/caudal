@@ -131,6 +131,74 @@ stamped from an arbitrary OMT clock:
 - ffmpeg is gone (`pgrep -f "service_name=<stream> pipe:1"`) after `finish`
   and after dropping the `Feed`; the stream ends in both cases.
 
+## Pull ingest (`ingest.rs`, 23 Sep 2026)
+
+Design choices (details in the module docs):
+
+- One `std::thread` per pull; receiver, VMX decoder and `Feed` live and are
+  dropped there, never on the runtime. `recv_timeout(100 ms)` + stop flag.
+- Behind: each poll drains up to 64 queued events, pushes all audio and
+  decodes only the newest picture (`DropReason::Behind` for the rest). A full
+  feed queue drops (`QueueFull`). Counters in `PullStats` (atomics) via
+  `PullHandle::statuses()` for metrics.
+- Video always decoded to 8-bit UYVY; 10-bit sources go through VMX's 8-bit
+  path, alpha dropped. Audio: first 8 channels kept (`audio.rs`).
+- Outages: the RTSP pull ends its stream on every disconnect. Here the feed
+  stays up for `OUTAGE_GRACE` (5 s) without media, so a short sender restart
+  keeps the same stream (TimeMap re-anchors: the gap is squeezed to one
+  frame interval, pts stay increasing). Longer: stream ends, next media
+  republishes.
+- Tally: program = stream has viewers (`StreamStats::viewers`), preview =
+  published by this pull. `caudal-core` exposes no internal-subscriber count,
+  so "preview" does not mean "a packager/recorder reads it". Sent on change,
+  at most once a second.
+
+### Loopback tests (`tests/pull.rs`, debug build, this Mac)
+
+Our `Sender` (announce off, `omt://127.0.0.1:<port>`), 320x180 UYVY pattern +
+48 kHz stereo tone at 30 fps:
+
+- H.264 320x180 + AAC 48 kHz; video pts on the sender's 1/30 s grid; first
+  picture at 0 µs, first AAC frame at +12 000 µs (same encoder offset as
+  the feed test): A/V offset 12 ms < 1 frame. Program tally reached the
+  sender. No drops.
+- Sender dropped, back after 1.5 s on the same port with its clock reset:
+  same `Stream` (not ended, not republished), pts/dts increasing across,
+  `reconnects = 1`, `publishes = 1`.
+- Reload: unchanged pull keeps its thread (same `PullStats`), removed pull's
+  stream ends and its ffmpeg is gone, changed pull's stream ends and is
+  republished. `stop()` → stream ended in 52 ms.
+- Unreachable source: retries, `shutdown()` returns in < 500 ms (no ffmpeg
+  needed; the other three skip without ffmpeg).
+
+### External check: libomtnet sender → our pull
+
+libomtnet harness (`interop/libomtnet-harness`, built earlier today into
+`scratchpad/m12-prereqs-out/harness`, see the OMT repo's STATUS "Rebuild
+recipe"), 640x360 UYVY + 48 kHz stereo at 30 fps, then the ignored test
+writing what Caudal publishes as Annex-B H.264 and ADTS AAC:
+
+```sh
+dotnet $H/libomtnet-harness.dll send CaudalPullCheck 14 &      # prints port=6400
+CAUDAL_OMT_SOURCE=omt://127.0.0.1:6400 CAUDAL_OMT_OUT=$OUT CAUDAL_OMT_SECONDS=6 \
+  cargo test -p caudal-omt --test pull -- --ignored external --nocapture
+ffprobe -v error -count_frames -show_entries stream=codec_name,profile,width,height,pix_fmt,nb_read_frames,sample_rate,channels -of compact $OUT/pull.h264 $OUT/pull.aac
+ffmpeg -v error -i $OUT/pull.h264 -f null -; ffmpeg -i $OUT/pull.aac -af volumedetect -f null -
+```
+
+Result: `h264 High 640x360 yuv420p nb_read_frames=181` (6.0 s),
+`aac LC 48000 Hz 2 ch nb_read_frames=283`; both decode with no errors;
+the tone is there (mean −18.1 dB, max −9.4 dB). Pull stats: 184 video + 184
+audio in, all pushed, 0 dropped, 12 MB read. First picture 0 µs, first AAC
++12 ms. The harness logged `send tally preview=1 program=1` while we watched
+and `preview=0 program=0` after the pull stopped: our tally reaches
+libomtnet.
+
+Not verified: name (`MACHINE (Name)`) addressing through mDNS in the pull
+(the receiver's own addressing was verified in the OMT repo, not here);
+1080p60 through the pull; 10-bit and alpha sources end to end; a stream
+name held by another publisher (logic only); real OMT products (vMix, OBS).
+
 ## Not verified
 
 - 1080p60 through `Feed` itself (only the ffmpeg side above was timed), and

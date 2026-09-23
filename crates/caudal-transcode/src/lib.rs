@@ -28,6 +28,7 @@
 mod ffmpeg;
 mod mkv;
 mod out;
+pub mod pipe;
 mod rusty;
 mod scale;
 

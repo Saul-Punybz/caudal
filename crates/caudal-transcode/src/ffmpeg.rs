@@ -9,21 +9,17 @@
 //! `TsDemux` + `Demuxer` per rendition. That keeps a single process and a
 //! single decode, with no named pipes to clean up.
 
-use std::collections::VecDeque;
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use caudal_core::{Codec, Event, Frame, Registry, Subscriber, TrackInfo, TrackKind};
-use caudal_ts::demux::{DemuxEvent, Demuxer};
 use caudal_ts::mux::TsMux;
-use caudal_ts::ts::{EsKind, TsDemux};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdout, Command};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use crate::mkv::MkvWriter;
-use crate::out::{AUDIO_OUT, Clock, RenditionOut, VIDEO_OUT};
+use crate::out::{Clock, RenditionOut};
+use crate::pipe::{FfmpegProcess, START_PID, read_ts_outputs};
 use crate::{Source, TranscodeConfig};
 
 const MIN_BACKOFF: Duration = Duration::from_millis(500);
@@ -35,39 +31,6 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Chunks of input queued for ffmpeg's stdin; when full the feeder drops
 /// frames up to the next keyframe instead of stalling or growing.
 const STDIN_QUEUE: usize = 256;
-const START_PID: u16 = 0x100;
-const PMT_PID: u16 = 0x1000;
-const TS_PACKET: usize = 188;
-
-/// ffmpeg's process group, killed whole when dropped.
-struct ProcGuard {
-    child: Child,
-}
-
-impl ProcGuard {
-    fn kill_group(&mut self) {
-        // `id()` is `None` once the child was reaped, so a recycled pid is
-        // never signalled. A direct killpg: `/bin/kill -KILL -<pgid>` from
-        // Linux procps signals every process of the user instead (it killed
-        // the GitHub runner, and would kill everything Caudal's user runs).
-        if let Some(pid) = self.child.id().and_then(|p| rustix::process::Pid::from_raw(p as i32)) {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-        }
-        let _ = self.child.start_kill();
-    }
-
-    /// Kills the group and reaps the child.
-    async fn shutdown(mut self) {
-        self.kill_group();
-        let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await;
-    }
-}
-
-impl Drop for ProcGuard {
-    fn drop(&mut self) {
-        self.kill_group();
-    }
-}
 
 enum SessionEnd {
     /// The source ended; the renditions end with it.
@@ -313,42 +276,14 @@ async fn session(
         }
     }
     let mkv = matches!(feeder, Feeder::Mkv(_));
-    let mut cmd = Command::new(&cfg.ffmpeg);
-    cmd.args(args(src, fps_v, mkv))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .process_group(0);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
+    let (proc, mut stdin, stdout) = match FfmpegProcess::spawn(&cfg.ffmpeg, &args(src, fps_v, mkv), &src.name) {
+        Ok(p) => p,
         Err(e) => {
             tracing::error!(stream = %src.name, ffmpeg = %cfg.ffmpeg.display(), error = %e, "cannot start ffmpeg");
             return SessionEnd::Crashed;
         }
     };
-    tracing::debug!(stream = %src.name, pid = ?child.id(), "ffmpeg started");
-    let (Some(mut stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take())
-    else {
-        return SessionEnd::Crashed;
-    };
-    let guard = ProcGuard { child };
-
-    let tail: Arc<Mutex<VecDeque<String>>> = Arc::default();
-    let stderr_task = {
-        let (tail, name) = (tail.clone(), src.name.clone());
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(stream = %name, "ffmpeg: {line}");
-                let mut t = tail.lock().expect("poisoned");
-                if t.len() == 8 {
-                    t.pop_front();
-                }
-                t.push_back(line);
-            }
-        })
-    };
+    tracing::debug!(stream = %src.name, pid = ?proc.id(), "ffmpeg started");
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(STDIN_QUEUE);
     let writer = tokio::spawn(async move {
         while let Some(b) = rx.recv().await {
@@ -359,7 +294,7 @@ async fn session(
         // Dropping stdin here is ffmpeg's end of input.
     });
     let per = if audio_input(src).is_some() { 2 } else { 1 };
-    let mut reader = tokio::spawn(read_outputs(stdout, outs.clone(), *clock, per, src.renditions.len()));
+    let mut reader = tokio::spawn(read_ts_outputs(stdout, outs.clone(), *clock, per, src.renditions.len()));
     let _ = tx.try_send(first);
 
     let mut resync = false;
@@ -402,9 +337,8 @@ async fn session(
                     drop(tx);
                     let _ = tokio::time::timeout(DRAIN_TIMEOUT, &mut reader).await;
                     reader.abort();
-                    guard.shutdown().await;
+                    proc.shutdown().await;
                     writer.abort();
-                    stderr_task.abort();
                     return SessionEnd::Source;
                 }
             },
@@ -413,126 +347,9 @@ async fn session(
     };
     reader.abort();
     writer.abort();
-    guard.shutdown().await;
-    let _ = tokio::time::timeout(Duration::from_millis(500), stderr_task).await;
+    let tail = proc.shutdown().await;
     if matches!(end, SessionEnd::Crashed) {
-        let tail: Vec<String> = tail.lock().expect("poisoned").iter().cloned().collect();
         tracing::warn!(stream = %src.name, stderr = ?tail, "ffmpeg stopped while the source is live");
     }
     end
-}
-
-/// Per-rendition demux state.
-struct OutDemux {
-    ts: TsDemux,
-    demux: Demuxer,
-    /// The raw 90 kHz timestamp the `Demuxer` rebased to zero (its first
-    /// unit's), needed to undo that rebase.
-    zero: Option<i64>,
-}
-
-/// Reads ffmpeg's single MPEG-TS, splits it by PID and publishes each
-/// rendition's frames on the source clock. Returns at end of output.
-async fn read_outputs(
-    mut stdout: ChildStdout,
-    outs: Arc<Mutex<Vec<RenditionOut>>>,
-    clock: Clock,
-    per: usize,
-    n: usize,
-) {
-    let mut demux: Vec<OutDemux> =
-        (0..n).map(|_| OutDemux { ts: TsDemux::new(), demux: Demuxer::new(), zero: None }).collect();
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut carry: Vec<u8> = Vec::new();
-    let mut units = Vec::new();
-    let mut events = Vec::new();
-    let video_off = clock.back_offset(90_000);
-    loop {
-        let n_read = match stdout.read(&mut buf).await {
-            Ok(0) | Err(_) => return,
-            Ok(k) => k,
-        };
-        carry.extend_from_slice(&buf[..n_read]);
-        let mut pos = 0;
-        while carry.len() - pos >= TS_PACKET {
-            if carry[pos] != 0x47 {
-                pos += 1; // resync on the sync byte
-                continue;
-            }
-            let pkt = &carry[pos..pos + TS_PACKET];
-            let pid = (u16::from(pkt[1] & 0x1F) << 8) | u16::from(pkt[2]);
-            if pid == 0 || pid == PMT_PID {
-                for d in demux.iter_mut() {
-                    d.ts.feed(pkt);
-                }
-            } else if pid >= START_PID {
-                let idx = usize::from(pid - START_PID) / per;
-                if let Some(d) = demux.get_mut(idx) {
-                    d.ts.feed(pkt);
-                }
-            }
-            pos += TS_PACKET;
-        }
-        carry.drain(..pos);
-
-        let mut outs = outs.lock().expect("poisoned");
-        for (d, out) in demux.iter_mut().zip(outs.iter_mut()) {
-            d.ts.drain(&mut units);
-            for unit in units.drain(..) {
-                if d.zero.is_none() {
-                    let raw = match unit.kind {
-                        EsKind::Aac => unit.pts.or(unit.dts),
-                        _ => unit.dts.or(unit.pts),
-                    };
-                    d.zero = Some(raw.unwrap_or(0) as i64);
-                }
-                d.demux.consume(unit, &mut events);
-            }
-            let zero = d.zero.unwrap_or(0);
-            for ev in events.drain(..) {
-                match ev {
-                    DemuxEvent::VideoInit(info) | DemuxEvent::AudioInit(info) => out.set_track(info),
-                    DemuxEvent::VideoFrame(mut f) => {
-                        f.track = VIDEO_OUT;
-                        f.dts += zero + video_off;
-                        f.pts += zero + video_off;
-                        out.push(f);
-                    }
-                    DemuxEvent::AudioFrame(mut f) => {
-                        let rate = out.audio_rate().unwrap_or(48_000);
-                        let off = (i128::from(zero) * i128::from(rate) / 90_000) as i64 + clock.back_offset(rate);
-                        f.track = AUDIO_OUT;
-                        f.dts += off;
-                        f.pts += off;
-                        out.push(f);
-                    }
-                    DemuxEvent::Cue(_) => {}
-                }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod kill_tests {
-    use super::ProcGuard;
-    use std::time::Duration;
-    use tokio::process::Command;
-
-    /// Dropping a guard kills its own process group and nothing else. On
-    /// Linux, the old `/bin/kill -KILL -<pgid>` killed every process of the
-    /// user, the bystander below included (and the GitHub runner with it).
-    #[tokio::test]
-    async fn kills_its_group_and_spares_everyone_else() {
-        let spawn = || Command::new("sleep").arg("30").process_group(0).kill_on_drop(true).spawn().unwrap();
-        let mut bystander = spawn();
-        let mut guard = ProcGuard { child: spawn() };
-        let pid = guard.child.id().unwrap();
-        guard.kill_group();
-        let status = tokio::time::timeout(Duration::from_secs(5), guard.child.wait()).await.unwrap().unwrap();
-        assert!(!status.success(), "sleep {pid} was not killed");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(bystander.try_wait().unwrap().is_none(), "a process outside the group was killed");
-        let _ = bystander.start_kill();
-    }
 }

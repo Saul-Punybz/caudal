@@ -119,6 +119,7 @@ pub fn run(config_path: Option<&Path>, opts: &Options) -> Report {
     check_acme(&cfg, &mut checks);
     check_clock(opts.online, &mut checks);
     check_ffmpeg(&cfg, &mut checks);
+    check_omt_ffmpeg(&cfg, &mut checks);
     check_ulimit(&cfg, &mut checks);
     check_captions(&mut checks);
     if let Some(url) = &opts.url {
@@ -606,6 +607,32 @@ fn check_ffmpeg(cfg: &Config, checks: &mut Vec<Check>) {
     }
 }
 
+/// `[[omt.pull]]` always encodes with ffmpeg (`[omt] ffmpeg`, else
+/// `[transcode] ffmpeg`), whatever `[transcode] engine` says.
+fn check_omt_ffmpeg(cfg: &Config, checks: &mut Vec<Check>) {
+    if cfg.omt.pull.is_empty() {
+        return;
+    }
+    let ffmpeg = cfg.omt.ffmpeg(&cfg.transcode);
+    let name = "ffmpeg (omt)";
+    match std::process::Command::new(ffmpeg).arg("-version").output() {
+        Ok(out) if out.status.success() => {
+            let first_line = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string();
+            checks.push(Check::ok(name, first_line));
+        }
+        Ok(out) => checks.push(Check::fail(
+            name,
+            format!("{} -version exited with {}", ffmpeg.display(), out.status),
+            "check the [omt] ffmpeg (or [transcode] ffmpeg) path",
+        )),
+        Err(e) => checks.push(Check::fail(
+            name,
+            format!("{} not runnable: {e}", ffmpeg.display()),
+            "[[omt.pull]] needs ffmpeg to encode H.264/AAC: install it or set [omt] ffmpeg",
+        )),
+    }
+}
+
 // ------------------------------------------------------------------ ulimit ---
 
 /// A conservative floor: one fd per HTTP/RTMP/SRT connection plus files
@@ -1007,6 +1034,19 @@ mod tests {
         let mut checks = Vec::new();
         check_ffmpeg(&cfg, &mut checks);
         assert_eq!(find(&checks, "ffmpeg").status, Status::Fail);
+    }
+
+    #[test]
+    fn omt_ffmpeg_check_only_with_pulls() {
+        let mut checks = Vec::new();
+        check_omt_ffmpeg(&Config::default(), &mut checks);
+        assert!(checks.is_empty());
+        let cfg: Config = toml::from_str(
+            "[omt]\nffmpeg = \"/nonexistent/ffmpeg-binary\"\n[[omt.pull]]\nstream = \"a\"\nurl = \"omt://h:1\"\n",
+        )
+        .unwrap();
+        check_omt_ffmpeg(&cfg, &mut checks);
+        assert_eq!(find(&checks, "ffmpeg (omt)").status, Status::Fail);
     }
 
     // ---- ulimit ----

@@ -312,8 +312,13 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # H.264 stream (or rendition, name+label) out as an OMT source. Every pull
 # and output shares one discovery: mDNS, or a discovery server for networks
 # without multicast. Pull/output lists reload live; the discovery keys need
-# a restart once discovery has started. 8-bit sources only for now:
-# 10-bit and alpha are not supported yet.
+# a restart once discovery has started. Pulls decode to 8-bit: a 10-bit
+# source arrives as 8-bit and alpha is dropped (a 10-bit path is future work).
+#
+# OMT has no authentication or encryption: keep it on a trusted LAN/VLAN,
+# never expose TCP 6400-6600 or the discovery server's 6399 to the internet
+# (docs/OMT.md, Security). Keys marked (*) are validated but NOT ENFORCED
+# by the pinned OMT library yet; the server logs a warning for each.
 #
 # [omt]
 # ffmpeg = "ffmpeg"                  # default: [transcode] ffmpeg
@@ -328,9 +333,14 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # quality = "high"                   # default | low | medium | high, suggested to the sender
 # video_kbps = 6000                  # H.264 bitrate of the published stream
 # audio_kbps = 128
+# follow_redirects = false           # (*) a redirect could swap in someone else's picture
+# allowed_sources = ["10.10.0.0/24"] # connect only inside these CIDRs; (*) for names
 #
 # [[omt.output]]
 # stream = "program"
 # name = "Caudal Program"            # announced as "MACHINE (Caudal Program)"
 # quality = "default"                # default follows the receivers' suggestions
 # encoder_threads = 0                # VMX encoder threads; 0 = from the frame size
+# bind = "10.10.0.5"                 # (*) listen on this address only; absent = all
+# allow = ["10.10.0.0/24"]           # (*) receivers only from these CIDRs; empty = any
+# max_connections = 8                # (*) receiver connections at once; absent = no cap

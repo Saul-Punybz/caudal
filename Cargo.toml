@@ -50,9 +50,10 @@ caudal-multicast = { path = "crates/caudal-multicast", version = "0.1.0" }
 caudal-omt = { path = "crates/caudal-omt", version = "0.1.0" }
 # Our own OMT crates (MIT OR Apache-2.0), pinned to a pushed commit while M12
 # is developed; switch to crates.io 0.2.x before tagging (git dependencies
-# block publishing). Same rev as crates/caudal-omt/Cargo.toml.
-open-media-transport = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }
-vmx-codec = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }
+# block publishing). caudal-omt and caudal both take them from here.
+# `version` too: cargo-deny's `wildcards = "deny"` counts a bare git dep.
+open-media-transport = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff", version = "0.1" }
+vmx-codec = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff", version = "0.1" }
 
 # argon2 unoptimized takes seconds per hash, which makes debug tests crawl.
 [profile.dev.package.argon2]

@@ -542,6 +542,18 @@ pub struct OmtPullEntry {
     /// AAC bitrate of the published stream.
     #[serde(default = "default_audio_kbps")]
     pub audio_kbps: u32,
+    /// Follow a redirect the source sends (OMT §9: "use this other source
+    /// instead"). Off by default: anyone who can reach the sender's port
+    /// could point it elsewhere and put their picture on Caudal's public
+    /// outputs. NOT ENFORCED YET (see `docs/OMT.md`, Security).
+    #[serde(default)]
+    pub follow_redirects: bool,
+    /// Connect only to addresses inside these CIDRs (bare address = one
+    /// host), whatever a name resolves to. Empty (the default): any. A `url`
+    /// with a literal IP outside them is a config error; names are checked
+    /// when resolved — NOT ENFORCED YET (see `docs/OMT.md`, Security).
+    #[serde(default)]
+    pub allowed_sources: Vec<String>,
 }
 
 fn default_omt_video_kbps() -> u32 {
@@ -561,9 +573,61 @@ pub struct OmtOutputEntry {
     /// libomtnet does.
     #[serde(default)]
     pub encoder_threads: usize,
+    /// Listen only on this local address. Absent: every interface.
+    /// NOT ENFORCED YET (see `docs/OMT.md`, Security).
+    #[serde(default)]
+    pub bind: Option<std::net::IpAddr>,
+    /// Accept receivers only from these CIDRs (bare address = one host).
+    /// Empty (the default): any. NOT ENFORCED YET.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Most receiver connections at once (each video receiver costs one
+    /// VMX send; audio and metadata ride on their own connections).
+    /// Absent: no cap. NOT ENFORCED YET.
+    #[serde(default)]
+    pub max_connections: Option<usize>,
+}
+
+/// Security settings the config accepts and validates but the pinned OMT
+/// library (rev 8c275ff) cannot apply yet: redirect policy and name
+/// resolution filtering on the receiver, bind/allow-list/connection caps on
+/// the sender. Named here so the startup log can say exactly which are
+/// inert. TODO(omt-security): wire each into `caudal_omt::PullConfig` /
+/// `OutputConfig` once the library has `RedirectPolicy` and sender
+/// bind/allow/max-connection settings, then delete this.
+pub fn omt_unenforced(section: &OmtSection) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in &section.pull {
+        // The ingest always follows redirects today (its ReceiverConfig
+        // sets `follow_redirects: true`), so the safe default is the one
+        // not honoured.
+        if !p.follow_redirects {
+            out.push(format!("[[omt.pull]] `{}`: follow_redirects = false (redirects ARE followed)", p.stream));
+        }
+        if !p.allowed_sources.is_empty() && p.source.is_some() {
+            out.push(format!("[[omt.pull]] `{}`: allowed_sources for a name (not checked when resolved)", p.stream));
+        }
+    }
+    for o in &section.output {
+        if o.bind.is_some() {
+            out.push(format!("[[omt.output]] `{}`: bind (listens on every interface)", o.name));
+        }
+        if !o.allow.is_empty() {
+            out.push(format!("[[omt.output]] `{}`: allow (any receiver may connect)", o.name));
+        }
+        if o.max_connections.is_some() {
+            out.push(format!("[[omt.output]] `{}`: max_connections (no cap)", o.name));
+        }
+    }
+    out
 }
 
 const OMT_MAX_ENCODER_THREADS: usize = 64;
+const OMT_MAX_CONNECTIONS: usize = 1000;
+
+fn parse_cidrs(list: &[String]) -> Result<Vec<caudal_core::Cidr>, String> {
+    list.iter().map(|s| caudal_core::Cidr::parse(s)).collect()
+}
 
 impl OmtSection {
     /// The ffmpeg the pulls run: `[omt] ffmpeg`, else `[transcode] ffmpeg`.
@@ -644,6 +708,15 @@ impl OmtSection {
             if !(16..=1024).contains(&p.audio_kbps) {
                 return Err(ctx(format!("audio_kbps {} is outside 16..=1024", p.audio_kbps)));
             }
+            let allowed = parse_cidrs(&p.allowed_sources).map_err(|e| ctx(format!("allowed_sources: {e}")))?;
+            if let (Some(u), false) = (&p.url, allowed.is_empty())
+                && let Ok(open_media_transport::address::Address::Url { host, .. }) =
+                    open_media_transport::address::Address::parse(u)
+                && let Ok(ip) = host.parse::<std::net::IpAddr>()
+                && !allowed.iter().any(|c| c.contains(ip))
+            {
+                return Err(ctx(format!("url {u:?} is outside allowed_sources")));
+            }
         }
         let mut names = std::collections::HashSet::new();
         for o in &self.output {
@@ -666,6 +739,12 @@ impl OmtSection {
             if o.encoder_threads > OMT_MAX_ENCODER_THREADS {
                 return Err(ctx(format!("encoder_threads {} is over {OMT_MAX_ENCODER_THREADS}", o.encoder_threads)));
             }
+            parse_cidrs(&o.allow).map_err(|e| ctx(format!("allow: {e}")))?;
+            if let Some(n) = o.max_connections
+                && !(1..=OMT_MAX_CONNECTIONS).contains(&n)
+            {
+                return Err(ctx(format!("max_connections {n} is outside 1..={OMT_MAX_CONNECTIONS}")));
+            }
         }
         Ok(())
     }
@@ -685,7 +764,7 @@ impl OmtSection {
                 video_kbps: p.video_kbps,
                 audio_kbps: p.audio_kbps,
                 ffmpeg: self.ffmpeg(transcode).to_path_buf(),
-                discovery: directory.clone(),
+                directory: directory.clone(),
             })
             .collect()
     }
@@ -1496,6 +1575,23 @@ encoder_threads = 4
 
         let url_only: Config = toml::from_str("[[omt.pull]]\nstream = \"a\"\nurl = \"omt://h:1\"\n").unwrap();
         assert!(!url_only.omt.needs_discovery(), "a pull by URL needs no discovery");
+
+        // Security keys: safe defaults, and the ones the library cannot
+        // apply yet are named (never silently accepted).
+        assert!(!cfg.omt.pull[0].follow_redirects, "redirects off by default");
+        assert!(cfg.omt.pull[0].allowed_sources.is_empty());
+        assert_eq!((cfg.omt.output[0].bind, cfg.omt.output[0].max_connections), (None, None));
+        let secure: Config = toml::from_str(
+            "[[omt.pull]]\nstream = \"a\"\nsource = \"M (N)\"\nfollow_redirects = true\nallowed_sources = [\"10.0.0.0/8\"]\n\
+             [[omt.output]]\nstream = \"b\"\nname = \"B\"\nbind = \"10.0.0.1\"\nallow = [\"10.0.0.0/8\"]\nmax_connections = 4\n",
+        )
+        .unwrap();
+        secure.validate().unwrap();
+        let inert = omt_unenforced(&secure.omt);
+        assert_eq!(inert.len(), 4, "{inert:?}");
+        assert!(inert.iter().all(|s| !s.contains("follow_redirects")), "follow_redirects = true is what happens");
+        let defaults = omt_unenforced(&cfg.omt);
+        assert_eq!(defaults.len(), 2, "each pull's default follow_redirects = false is not honoured yet: {defaults:?}");
     }
 
     #[test]
@@ -1533,6 +1629,19 @@ encoder_threads = 4
         // The same stream under two names is fine.
         let two = "[[omt.output]]\nstream = \"a\"\nname = \"One\"\n[[omt.output]]\nstream = \"a\"\nname = \"Two\"\n";
         toml::from_str::<Config>(two).unwrap().validate().unwrap();
+
+        assert!(
+            bad(&pull("url = \"omt://10.0.0.7:6400\"\nallowed_sources = [\"192.168.1.0/24\"]\n"))
+                .contains("outside allowed_sources")
+        );
+        assert!(bad(&pull("url = \"omt://h:1\"\nallowed_sources = [\"nope\"]\n")).contains("allowed_sources"));
+        toml::from_str::<Config>(&pull("url = \"omt://10.0.0.7:6400\"\nallowed_sources = [\"10.0.0.0/8\"]\n"))
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert!(bad(&out("name = \"S\"\nallow = [\"300.1.1.1\"]\n")).contains("allow"));
+        assert!(bad(&out("name = \"S\"\nmax_connections = 0\n")).contains("max_connections"));
+        assert!(toml::from_str::<Config>(&out("name = \"S\"\nbind = \"eth0\"\n")).is_err(), "bind is an address");
 
         assert!(bad("[omt]\ndiscovery_server = \"http://x\"\n").contains("discovery_server"));
         assert!(bad("[omt]\ninterfaces = [\" \"]\n").contains("empty interface"));

@@ -13,10 +13,9 @@ caudal-core.workspace = true
 caudal-transcode.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-# Our own OMT crates (MIT OR Apache-2.0), pinned to a pushed commit while M12 is
-# developed; switch to crates.io 0.2.x before tagging (git deps block publishing).
-open-media-transport = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }
-vmx-codec = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }
+# Our own OMT crates, pinned in the root Cargo.toml.
+open-media-transport.workspace = true
+vmx-codec.workspace = true
 
 [features]
 # TEMPORARY (feat/m12-wiring): placeholder pull/output API so the caudal

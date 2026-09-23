@@ -140,13 +140,18 @@ struct OmtStreamJson {
 #[derive(Debug, Serialize)]
 struct OmtPullJson {
     source: String,
-    quality: &'static str,
+    /// Every connection to the source is up.
     connected: bool,
-    frames_in: u64,
+    video_in: u64,
+    audio_in: u64,
     bytes_in: u64,
     reconnects: u64,
+    /// Times the stream was (re)published.
+    publishes: u64,
     /// Frames dropped, by reason.
     dropped: std::collections::BTreeMap<&'static str, u64>,
+    /// What Caudal tells the source (program while the stream has viewers).
+    tally: OmtTallyJson,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,14 +175,19 @@ struct OmtTallyJson {
 
 fn omt_stream_json(omt: &crate::omt::OmtRuntime, stream: &str) -> Option<OmtStreamJson> {
     use std::sync::atomic::Ordering::Relaxed;
-    let pull = omt.pulls().into_iter().find(|p| p.stream == stream).map(|p| OmtPullJson {
-        source: p.source.clone(),
-        quality: crate::omt::quality_str(p.quality),
-        connected: p.stats.connected.load(Relaxed),
-        frames_in: p.stats.frames_in.load(Relaxed),
-        bytes_in: p.stats.bytes_in.load(Relaxed),
-        reconnects: p.stats.reconnects.load(Relaxed),
-        dropped: p.stats.dropped().into_iter().collect(),
+    let pull = omt.pulls().into_iter().find(|p| p.stream == stream).map(|p| {
+        let st = p.stats.snapshot();
+        OmtPullJson {
+            source: p.source.clone(),
+            connected: st.connected,
+            video_in: st.video_in,
+            audio_in: st.audio_in,
+            bytes_in: st.bytes_in,
+            reconnects: st.reconnects,
+            publishes: st.publishes,
+            dropped: caudal_omt::DropReason::ALL.iter().map(|r| r.as_str()).zip(st.dropped).collect(),
+            tally: OmtTallyJson { preview: st.tally.preview, program: st.tally.program },
+        }
     });
     let outputs: Vec<OmtOutputJson> = omt
         .outputs()
@@ -656,20 +666,21 @@ mod tests {
         use std::sync::atomic::Ordering::Relaxed;
 
         use caudal_core::BufferConfig;
-        use open_media_transport::command::Quality;
+        use caudal_omt::Quality;
 
         let (app, state, omt) = omt_app();
         let _cam = state.registry.publish("cam2", BufferConfig::default()).unwrap();
         let _other = state.registry.publish("other", BufferConfig::default()).unwrap();
         omt.reload_for_test(
+            // A real pull at a closed loopback port: it never connects.
             vec![caudal_omt::PullConfig {
                 stream: "cam2".into(),
-                source: "STUDIO (Camera 2)".into(),
+                source: "omt://127.0.0.1:1".into(),
                 quality: Quality::High,
                 video_kbps: 6000,
                 audio_kbps: 128,
                 ffmpeg: "ffmpeg".into(),
-                discovery: None,
+                directory: None,
             }],
             vec![
                 caudal_omt::OutputConfig {
@@ -689,9 +700,9 @@ mod tests {
             ],
         );
         let pull = &omt.pulls()[0];
-        pull.stats.frames_in.store(120, Relaxed);
-        pull.stats.connected.store(true, Relaxed);
-        pull.stats.dropped_decode.store(1, Relaxed);
+        pull.stats.video_in.store(120, Relaxed);
+        pull.stats.dropped[caudal_omt::DropReason::ALL.iter().position(|r| r.as_str() == "decode").unwrap()]
+            .store(1, Relaxed);
         let out = &omt.outputs()[0];
         out.stats.receivers.store(1, Relaxed);
         out.stats.preview.store(true, Relaxed);
@@ -699,12 +710,12 @@ mod tests {
         let (status, json) = get_json(&app, "/api/v1/streams/cam2").await;
         assert_eq!(status, StatusCode::OK);
         let o = &json["omt"];
-        assert_eq!(o["pull"]["source"], "STUDIO (Camera 2)");
-        assert_eq!(o["pull"]["quality"], "high");
-        assert_eq!(o["pull"]["connected"], true);
-        assert_eq!(o["pull"]["frames_in"], 120);
-        assert_eq!(o["pull"]["dropped"]["decode_error"], 1);
+        assert_eq!(o["pull"]["source"], "omt://127.0.0.1:1");
+        assert_eq!(o["pull"]["connected"], false);
+        assert_eq!(o["pull"]["video_in"], 120);
+        assert_eq!(o["pull"]["dropped"]["decode"], 1);
         assert_eq!(o["pull"]["dropped"]["queue_full"], 0);
+        assert_eq!(o["pull"]["tally"], serde_json::json!({"preview": false, "program": false}));
         assert_eq!(o["outputs"].as_array().unwrap().len(), 1, "only this stream's outputs: {o}");
         assert_eq!(o["outputs"][0]["name"], "Cam 2 relay");
         assert_eq!(o["outputs"][0]["receivers"], 1);
@@ -719,7 +730,7 @@ mod tests {
         let res = app.oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap()).await.unwrap();
         let body =
             String::from_utf8(axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
-        assert!(body.contains("caudal_omt_frames_in_total{stream=\"cam2\"} 120"), "{body}");
+        assert!(body.contains("caudal_omt_frames_in_total{stream=\"cam2\",kind=\"video\"} 120"), "{body}");
         assert!(body.contains("caudal_omt_receivers{stream=\"cam2\",output=\"Cam 2 relay\"} 1"), "{body}");
     }
 

@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use caudal_core::Registry;
 use open_media_transport::address::Directory;
-use open_media_transport::command::Quality;
 use open_media_transport::discovery::{Discovery, DiscoveryConfig, Source};
 use parking_lot::Mutex;
 
@@ -27,6 +26,8 @@ struct Shared {
 }
 
 pub struct OmtRuntime {
+    registry: Arc<Registry>,
+    buffer: caudal_core::BufferConfig,
     /// Used while discovery has not started; fixed once it has.
     discovery_config: Mutex<DiscoveryConfig>,
     shared: Mutex<Option<Shared>>,
@@ -44,10 +45,15 @@ pub struct OmtReload {
 impl OmtRuntime {
     /// Starts every pull and output in `cfg`, and discovery if they need it.
     pub fn start(cfg: &Config, registry: Arc<Registry>, buffer: caudal_core::BufferConfig) -> Arc<Self> {
+        warn_unenforced(&cfg.omt);
         let rt = Self::empty(cfg.omt.discovery_config(), registry.clone(), buffer);
         let shared = if cfg.omt.needs_discovery() { rt.shared() } else { None };
         if !cfg.omt.pull.is_empty() {
-            rt.pulls.reload(cfg.omt.pull_configs(&cfg.transcode, shared.as_ref().map(|s| s.directory.clone())));
+            rt.pulls.reload(
+                &rt.registry,
+                rt.buffer,
+                cfg.omt.pull_configs(&cfg.transcode, shared.as_ref().map(|s| s.directory.clone())),
+            );
             tracing::info!(pulls = cfg.omt.pull.len(), "omt pulls started");
         }
         if !cfg.omt.output.is_empty() {
@@ -59,6 +65,8 @@ impl OmtRuntime {
 
     fn empty(discovery_config: DiscoveryConfig, registry: Arc<Registry>, buffer: caudal_core::BufferConfig) -> Self {
         OmtRuntime {
+            registry: registry.clone(),
+            buffer,
             discovery_config: Mutex::new(discovery_config),
             shared: Mutex::new(None),
             pulls: caudal_omt::start_pulls(registry.clone(), buffer, Vec::new()),
@@ -130,7 +138,11 @@ impl OmtRuntime {
         }
         let shared = if new.omt.needs_discovery() { self.shared() } else { self.shared.lock().clone() };
         if pulls_changed {
-            self.pulls.reload(new.omt.pull_configs(&new.transcode, shared.as_ref().map(|s| s.directory.clone())));
+            self.pulls.reload(
+                &self.registry,
+                self.buffer,
+                new.omt.pull_configs(&new.transcode, shared.as_ref().map(|s| s.directory.clone())),
+            );
             report.applied.push("omt.pull");
         }
         if outputs_changed {
@@ -150,7 +162,7 @@ impl OmtRuntime {
     }
 
     pub fn pulls(&self) -> Vec<caudal_omt::PullStatus> {
-        self.pulls.status()
+        self.pulls.statuses()
     }
 
     pub fn outputs(&self) -> Vec<caudal_omt::OutputStatus> {
@@ -160,17 +172,16 @@ impl OmtRuntime {
     /// For tests that need a running pull/output entry without a sender.
     #[cfg(test)]
     pub fn reload_for_test(&self, pulls: Vec<caudal_omt::PullConfig>, outputs: Vec<caudal_omt::OutputConfig>) {
-        self.pulls.reload(pulls);
+        self.pulls.reload(&self.registry, self.buffer, pulls);
         self.outputs.reload(outputs);
     }
 }
 
-pub fn quality_str(q: Quality) -> &'static str {
-    match q {
-        Quality::Default => "default",
-        Quality::Low => "low",
-        Quality::Medium => "medium",
-        Quality::High => "high",
+/// Logs every OMT security setting the pinned library cannot apply yet
+/// (see `config::omt_unenforced`).
+fn warn_unenforced(section: &crate::config::OmtSection) {
+    for s in crate::config::omt_unenforced(section) {
+        tracing::warn!("OMT security setting not enforced yet by the OMT library: {s}; see docs/OMT.md, Security");
     }
 }
 
@@ -185,19 +196,20 @@ mod tests {
     }
 
     /// Reloads that need no discovery (pulls by URL only), so no mDNS socket
-    /// opens in the test.
+    /// opens in the test. The pulls are real and point at closed loopback
+    /// ports (1-3): they only ever fail to connect.
     #[tokio::test]
     async fn reload_applies_pull_changes_and_discovery_settings_before_start() {
         let registry = Registry::new();
-        let a = cfg("[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://127.0.0.1:6400\"\n");
+        let a = cfg("[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://127.0.0.1:1\"\n");
         let rt = OmtRuntime::start(&a, registry, caudal_core::BufferConfig::default());
         assert_eq!(rt.pulls().len(), 1);
         assert!(rt.shared.lock().is_none(), "no discovery for URL pulls");
 
         assert_eq!(rt.reload(&a, &a), OmtReload::default(), "nothing changed");
 
-        let b = cfg("[omt]\ninterfaces = [\"en0\"]\n[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://127.0.0.1:6401\"\n\
-                     [[omt.pull]]\nstream = \"cam2\"\nurl = \"omt://127.0.0.1:6402\"\n");
+        let b = cfg("[omt]\ninterfaces = [\"en0\"]\n[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://127.0.0.1:2\"\n\
+                     [[omt.pull]]\nstream = \"cam2\"\nurl = \"omt://127.0.0.1:3\"\n");
         let r = rt.reload(&a, &b);
         assert_eq!(r.applied, vec!["omt.discovery", "omt.pull"]);
         assert!(r.requires_restart.is_empty(), "discovery not started yet: its settings apply live");
@@ -205,14 +217,14 @@ mod tests {
         let pulls = rt.pulls();
         assert_eq!(
             pulls.iter().map(|p| p.source.as_str()).collect::<Vec<_>>(),
-            ["omt://127.0.0.1:6401", "omt://127.0.0.1:6402"]
+            ["omt://127.0.0.1:2", "omt://127.0.0.1:3"]
         );
 
         // [transcode] ffmpeg changes what the pulls run when [omt] has none.
         let c = cfg(&format!(
             "[transcode]\nffmpeg = \"/x/ffmpeg\"\n{}",
-            "[omt]\ninterfaces = [\"en0\"]\n[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://127.0.0.1:6401\"\n\
-             [[omt.pull]]\nstream = \"cam2\"\nurl = \"omt://127.0.0.1:6402\"\n"
+            "[omt]\ninterfaces = [\"en0\"]\n[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://127.0.0.1:2\"\n\
+             [[omt.pull]]\nstream = \"cam2\"\nurl = \"omt://127.0.0.1:3\"\n"
         ));
         assert_eq!(rt.reload(&b, &c).applied, vec!["omt.pull"]);
     }

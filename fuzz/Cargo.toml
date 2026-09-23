@@ -22,7 +22,7 @@ caudal-webrtc = { path = "../crates/caudal-webrtc" }
 caudal-omt = { path = "../crates/caudal-omt" }
 # The VMX decoder Caudal's OMT pull runs on network input; same rev as
 # crates/caudal-omt/Cargo.toml.
-vmx-codec = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff" }
+vmx-codec = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "8c275ff", version = "0.1" }
 
 # This is its own Cargo workspace (excluded from the root one, see
 # ../Cargo.toml), so the root's [patch.crates-io] entries for the vendored,

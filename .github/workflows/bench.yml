@@ -31,6 +31,9 @@ on:
       settle:
         description: "Seconds a publisher runs before the publish RSS window (10 = the M4 report; 60 = a full 50 s buffer)"
         default: "10"
+      omt:
+        description: "OMT CPU scenarios instead of the benchmark (bench/omt.py): ingest,output; empty = off"
+        default: ""
 
 jobs:
   bench:
@@ -60,13 +63,30 @@ jobs:
           echo "CARGO_PROFILE_RELEASE_DEBUG=line-tables-only" >> "$GITHUB_ENV"
           echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
           echo "BENCH_PROFILE=${{ inputs.profile }}" >> "$GITHUB_ENV"
+      # OMT (M12): omt send -> [[omt.pull]] -> ffmpeg, and an H.264 stream
+      # -> [[omt.output]] -> omt recv, at 1080p60. The same ffmpeg 8 the CI
+      # tests use (the feed's Matroska raw-video input is untested on
+      # Ubuntu's ffmpeg 6), and the `omt` tool at the rev Caudal pins.
+      - name: OMT scenarios
+        if: inputs.omt != ''
+        run: |
+          set -o pipefail
+          curl -fsSL -o /tmp/ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+          sudo tar -xJf /tmp/ffmpeg.tar.xz -C /opt
+          export PATH="/opt/ffmpeg-n8.1-latest-linux64-gpl-8.1/bin:$PATH"
+          ffmpeg -hide_banner -version | head -1
+          rev=$(sed -n 's/^open-media-transport = .*rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml)
+          cargo install --locked --git https://github.com/Saul-Punybz/open-media-transport --rev "$rev" omt-cli --root "$HOME/.omt"
+          cargo build --release -p caudal
+          OMT_CLI="$HOME/.omt/bin/omt" python3 bench/omt.py --only "${{ inputs.omt }}" | tee bench-out.md
+          cat bench-out.md >> "$GITHUB_STEP_SUMMARY"
       - name: Heap profile
-        if: inputs.heap != ''
+        if: inputs.heap != '' && inputs.omt == ''
         run: |
           bench/heap.sh "${{ inputs.heap }}"
           { echo '```'; cat bench/results/dhat-top.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Run
-        if: inputs.heap == ''
+        if: inputs.heap == '' && inputs.omt == ''
         env:
           BENCH_SETTLE_S: ${{ inputs.settle }}
         run: |

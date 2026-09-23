@@ -55,6 +55,9 @@ opt-level = 3
 opt-level = 3
 # The in-process H.264 engine encodes in real time; unoptimized it could not
 # keep up on a 4-core CI runner even alone (112 of 240 frames).
+# The VMX codec runs per frame at full HD in the OMT tests.
+[profile.dev.package.vmx-codec]
+opt-level = 3
 [profile.dev.package.rusty_h264]
 opt-level = 3
 [profile.dev.package.rusty_h264-common]

@@ -253,6 +253,9 @@ impl Drop for FfmpegAudio {
     }
 }
 
+// One per output, held for its whole life: the size gap between variants
+// costs nothing, and boxing the ffmpeg state would only add an indirection.
+#[allow(clippy::large_enum_variant)]
 enum Engine {
     Aac(Box<rusty_aac::AacDecoder>),
     Opus {

@@ -679,7 +679,7 @@ mod tests {
         let token = jsonwebtoken::encode(
             &jsonwebtoken::Header::default(),
             &serde_json::json!({"sub": "cam", "act": "publish", "exp": exp}),
-            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()).unwrap(),
         )
         .unwrap();
         assert!(matches!(gate.check(Access::Publish, "cam", Some(&token), ip).await, Err(Denied::Refused(_))));

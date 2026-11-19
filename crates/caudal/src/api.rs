@@ -31,6 +31,8 @@ pub struct AppState {
     /// `caudal_access_denied_total`. Always present: `subsystems::Supervisor`
     /// creates a `caudal_access::Checker` even with no `[[access.rules]]`.
     access: std::sync::OnceLock<Arc<caudal_access::Checker>>,
+    /// `[auth.hook]` counters for `/metrics`.
+    hook_stats: std::sync::OnceLock<Arc<caudal_auth::GateHookStats>>,
     /// Set once, if `[captions]` captions any stream; read by `/metrics`
     /// for `caudal_captions_*`.
     #[cfg(feature = "captions")]
@@ -49,6 +51,7 @@ impl AppState {
             cue_seq: AtomicU32::new(1),
             health: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
+            hook_stats: std::sync::OnceLock::new(),
             #[cfg(feature = "captions")]
             captions: std::sync::OnceLock::new(),
             edge: std::sync::OnceLock::new(),
@@ -66,6 +69,10 @@ impl AppState {
 
     pub fn set_health(&self, service: Arc<caudal_health::HealthService>) {
         let _ = self.health.set(service);
+    }
+
+    pub fn set_hook_stats(&self, stats: Arc<caudal_auth::GateHookStats>) {
+        let _ = self.hook_stats.set(stats);
     }
 
     pub fn set_access(&self, checker: Arc<caudal_access::Checker>) {
@@ -266,6 +273,9 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     }
     if let Some(edge) = state.edge.get() {
         edge.render_metrics(&mut body);
+    }
+    if let Some(stats) = state.hook_stats.get() {
+        metrics::render_auth_hook(&mut body, stats);
     }
     if let Some(multicast) = state.multicast.get() {
         multicast.render_metrics(&mut body);

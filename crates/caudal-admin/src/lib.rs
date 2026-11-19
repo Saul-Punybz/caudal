@@ -33,6 +33,9 @@ pub use password::{hash_password, verify_password};
 /// address per window.
 const LOGIN_ATTEMPTS: u32 = 10;
 const LOGIN_WINDOW: Duration = Duration::from_secs(60);
+/// Failed password logins per account name, from all addresses together.
+const ACCOUNT_FAILURES: u32 = 20;
+const ACCOUNT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 /// The admin gate, built from a validated `[admin]` section. Cheap to
 /// clone.
@@ -44,6 +47,7 @@ struct Inner {
     tokens: Vec<(String, [u8; 32])>,
     sessions: session::Sessions,
     limiter: ratelimit::RateLimiter,
+    account_failures: ratelimit::FailureLimiter,
     oidc: Option<oidc::Oidc>,
     public_metrics: bool,
     secure_cookies: bool,
@@ -81,6 +85,7 @@ impl Admin {
             tokens,
             sessions: session::Sessions::new(Duration::from_secs(section.session_ttl_secs)),
             limiter: ratelimit::RateLimiter::new(LOGIN_ATTEMPTS, LOGIN_WINDOW),
+            account_failures: ratelimit::FailureLimiter::new(ACCOUNT_FAILURES, ACCOUNT_WINDOW),
             oidc: section.oidc.clone().map(oidc::Oidc::new).transpose()?,
             public_metrics: section.public_metrics,
             secure_cookies: section.secure_cookies,

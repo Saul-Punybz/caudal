@@ -72,7 +72,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
 rcgen = "0.14"
 time = "0.3"
 serde_json.workspace = true

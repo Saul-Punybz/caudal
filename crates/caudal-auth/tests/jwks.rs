@@ -176,7 +176,7 @@ async fn wrong_algorithm_for_jwks_is_invalid() {
     header.kid = Some("rsa-1".to_string());
     let exp = jsonwebtoken::get_current_timestamp() as i64 + 60;
     let claims = serde_json::json!({ "sub": "live-main", "act": "publish", "exp": exp });
-    let token = encode(&header, &claims, &EncodingKey::from_secret(b"whatever")).unwrap();
+    let token = encode(&header, &claims, &EncodingKey::from_secret(b"whatever").unwrap()).unwrap();
 
     assert_eq!(auth.check(Action::Publish, "live-main", Some(&token)).await, Err(AuthError::Invalid));
 }

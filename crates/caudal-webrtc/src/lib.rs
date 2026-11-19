@@ -341,7 +341,7 @@ fn is_sdp(headers: &HeaderMap) -> bool {
 }
 
 fn build_rtc(candidates: &[SocketAddr]) -> Rtc {
-    let mut cfg = RtcConfig::new().set_ice_lite(true).clear_codecs().enable_opus(true);
+    let mut cfg = RtcConfig::new().set_ice_lite(true).clear_codecs().enable_opus(true, false);
     // H.264 packetization-mode 1 only, the profiles browsers and ffmpeg offer.
     for (pt, rtx, profile_level_id) in
         [(127u8, 121u8, 0x42001f), (108, 109, 0x42e01f), (123, 119, 0x4d001f), (114, 115, 0x64001f)]

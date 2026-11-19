@@ -13,6 +13,7 @@ caudal-scte35.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 mpeg2ts = "0.6"
 mp4-atom = "0.15"
 scuffle-h264 = "0.2.2"

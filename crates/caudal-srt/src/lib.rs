@@ -22,8 +22,9 @@ use parking_lot::Mutex;
 use rsrt::{SrtListener, SrtOptions};
 
 mod connection;
-use caudal_ts::{demux, mux, ts};
+use caudal_ts::mux;
 mod play;
+mod pull;
 mod push;
 
 #[derive(Debug, Clone)]
@@ -85,6 +86,58 @@ impl PushHandle {
                 next.push(remaining.remove(pos));
             } else {
                 next.push(spawn_push(registry.clone(), p));
+            }
+        }
+        for gone in remaining {
+            gone.task.abort();
+        }
+        *entries = next;
+    }
+}
+
+/// Pull `stream` from a remote SRT listener at `url` and publish it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SrtPull {
+    pub stream: String,
+    pub url: String,
+}
+
+struct PullEntry {
+    pull: SrtPull,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// A handle to the running `[[srt.pull]]` tasks. Cheap to clone.
+#[derive(Clone)]
+pub struct PullHandle {
+    entries: Arc<Mutex<Vec<PullEntry>>>,
+    buffer: BufferConfig,
+}
+
+fn spawn_pull(registry: Arc<Registry>, buffer: BufferConfig, pull: SrtPull) -> PullEntry {
+    let task_pull = pull.clone();
+    let task = tokio::spawn(async move { pull::run(task_pull, registry, buffer).await });
+    PullEntry { pull, task }
+}
+
+/// Starts every configured pull. Must be called inside a tokio runtime.
+pub fn start_pulls(registry: Arc<Registry>, buffer: BufferConfig, pulls: Vec<SrtPull>) -> PullHandle {
+    let entries = pulls.into_iter().map(|p| spawn_pull(registry.clone(), buffer, p)).collect();
+    PullHandle { entries: Arc::new(Mutex::new(entries)), buffer }
+}
+
+impl PullHandle {
+    /// Unchanged pulls keep their connection; removed ones stop (ending
+    /// their stream), new or changed ones start.
+    pub fn reload(&self, registry: &Arc<Registry>, pulls: Vec<SrtPull>) {
+        let mut entries = self.entries.lock();
+        let mut remaining = std::mem::take(&mut *entries);
+        let mut next = Vec::with_capacity(pulls.len());
+        for p in pulls {
+            if let Some(pos) = remaining.iter().position(|e| e.pull == p) {
+                next.push(remaining.remove(pos));
+            } else {
+                next.push(spawn_pull(registry.clone(), self.buffer, p));
             }
         }
         for gone in remaining {

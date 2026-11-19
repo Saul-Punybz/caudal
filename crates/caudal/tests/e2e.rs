@@ -337,7 +337,7 @@ fn token(sub: &str, act: &[&str]) -> String {
     jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &claims,
-        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()).unwrap(),
     )
     .unwrap()
 }

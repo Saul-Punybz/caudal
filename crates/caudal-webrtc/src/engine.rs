@@ -347,10 +347,10 @@ pub(crate) async fn run(
                     next_id += 1;
                     let mut peer = *peer;
                     if let Role::Whep(e) = &mut peer.role
-                        && let Some(sub) = e.sub.take() {
+                        && let (Some(sub), Some(session)) = (e.sub.take(), e.session.take()) {
                             let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
                             e.ctl = Some(ctl_tx);
-                            let task = tokio::spawn(egress::forward(id, sub, media_tx.clone(), ctl_rx));
+                            let task = tokio::spawn(egress::forward(id, sub, session, media_tx.clone(), ctl_rx));
                             e.task = Some(task.abort_handle());
                         }
                     tracing::info!(stream = %peer.name, session = %peer.session, kind = kind(&peer), "webrtc: session created");

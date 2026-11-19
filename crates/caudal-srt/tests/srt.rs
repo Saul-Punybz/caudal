@@ -555,3 +555,49 @@ fn kill_group(pgid: u32) {
         let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
     }
 }
+
+/// A real SRT viewer is listed as a session with TS bytes counting; a kick
+/// stops the bytes, and the block refuses its next connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kicked_srt_viewer_stops_receiving_and_is_blocked() {
+    if !have("ffmpeg") || !have("srt-live-transmit") {
+        eprintln!("SKIP: ffmpeg/srt-live-transmit not installed");
+        return;
+    }
+    let server = TestServer::start(None).await;
+    let publish_url = format!("srt://127.0.0.1:{}?streamid=publish/kicked", server.port);
+    let publish_pipeline = Pipeline::start("320x240", 20, &publish_url);
+    wait_for(Duration::from_secs(10), || server.registry.get("kicked")).await.expect("publish never appeared");
+
+    let out_path = ts_output_path("kicked");
+    let play_url = format!("srt://127.0.0.1:{}?streamid=play/kicked", server.port);
+    let receiver = Guarded::spawn(&format!("srt-live-transmit -q \"{play_url}\" file://con > {}", out_path.display()));
+    let reg = server.registry.clone();
+    let session = wait_for(Duration::from_secs(10), || {
+        reg.sessions().list(Some("kicked")).into_iter().find(|s| s.protocol == "srt" && s.bytes_out > 0)
+    })
+    .await
+    .expect("the SRT viewer is listed with bytes going out");
+
+    assert_eq!(
+        reg.sessions().kick(session.id, Some(Duration::from_secs(60))),
+        caudal_core::KickResult::Kicked { blocked: true }
+    );
+    // The send loop ended (srt-live-transmit buffers its stdout, so the
+    // file size mid-run says nothing; the server's own view does).
+    wait_for(Duration::from_secs(5), || reg.sessions().list(Some("kicked")).is_empty().then_some(()))
+        .await
+        .expect("the session closes after the kick");
+    drop(receiver);
+
+    // Coming back from the same address: refused, no bytes.
+    let again_path = ts_output_path("kicked-again");
+    let again = Guarded::spawn(&format!("srt-live-transmit -q \"{play_url}\" file://con > {}", again_path.display()));
+    let reopened = wait_for(Duration::from_secs(3), || reg.sessions().list(Some("kicked")).into_iter().next()).await;
+    assert!(reopened.is_none(), "a blocked address never gets a session: {reopened:?}");
+    drop(again);
+    assert_eq!(std::fs::metadata(&again_path).map(|m| m.len()).unwrap_or(0), 0, "blocked after the kick");
+    drop(publish_pipeline);
+    let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(&again_path);
+}

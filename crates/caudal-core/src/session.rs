@@ -31,11 +31,18 @@ struct Entry {
     started_unix: u64,
     started: Instant,
     bytes_out: AtomicU64,
+    /// Round-trip time in µs; `u64::MAX` while unknown.
+    rtt_us: AtomicU64,
+    /// Packets lost (or retransmitted) toward the viewer, parts per million;
+    /// `u64::MAX` while unknown.
+    loss_ppm: AtomicU64,
+    /// Labels an operator attached, for kicking a group at once.
+    tags: Mutex<Vec<String>>,
     kick: watch::Sender<bool>,
 }
 
 /// One session as the API reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionInfo {
     pub id: u64,
     pub stream: String,
@@ -45,7 +52,24 @@ pub struct SessionInfo {
     pub started: u64,
     pub duration_secs: u64,
     pub bytes_out: u64,
+    /// When the protocol reports it (SRT, WHEP).
+    pub rtt_ms: Option<f64>,
+    /// Fraction of packets lost or retransmitted toward the viewer, 0..1,
+    /// when the protocol reports it (SRT, WHEP).
+    pub loss: Option<f64>,
+    pub tags: Vec<String>,
 }
+
+/// Which sessions a bulk kick ends.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selector {
+    pub stream: Option<String>,
+    pub tag: Option<String>,
+}
+
+/// Longest tag, and most tags per session.
+pub const MAX_TAG_LEN: usize = 64;
+pub const MAX_TAGS: usize = 16;
 
 /// What [`Sessions::kick`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +103,9 @@ impl Sessions {
             started_unix,
             started: Instant::now(),
             bytes_out: AtomicU64::new(0),
+            rtt_us: AtomicU64::new(u64::MAX),
+            loss_ppm: AtomicU64::new(u64::MAX),
+            tags: Mutex::new(Vec::new()),
             kick,
         });
         self.open.lock().insert(id, entry.clone());
@@ -92,18 +119,48 @@ impl Sessions {
             .lock()
             .values()
             .filter(|e| stream.is_none_or(|s| &*e.stream == s))
-            .map(|e| SessionInfo {
-                id: e.id,
-                stream: e.stream.to_string(),
-                protocol: e.protocol,
-                ip: e.ip,
-                started: e.started_unix,
-                duration_secs: e.started.elapsed().as_secs(),
-                bytes_out: e.bytes_out.load(Ordering::Relaxed),
-            })
+            .map(|e| info(e))
             .collect();
         v.sort_by_key(|s| s.id);
         v
+    }
+
+    /// Adds `tag` to session `id`. `Err` for an unknown session, a tag
+    /// that is empty, too long or not `[A-Za-z0-9._:-]`, or too many tags.
+    pub fn tag(&self, id: u64, tag: &str) -> Result<(), &'static str> {
+        if tag.is_empty()
+            || tag.len() > MAX_TAG_LEN
+            || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+        {
+            return Err("a tag is 1-64 characters of A-Z a-z 0-9 . _ : -");
+        }
+        let Some(e) = self.open.lock().get(&id).cloned() else { return Err("no such session") };
+        let mut tags = e.tags.lock();
+        if !tags.iter().any(|t| t == tag) {
+            if tags.len() >= MAX_TAGS {
+                return Err("at most 16 tags per session");
+            }
+            tags.push(tag.to_owned());
+        }
+        Ok(())
+    }
+
+    /// Ends every session matching `sel` (all of a stream, all with a tag,
+    /// or both conditions together); returns the ids ended. An empty
+    /// selector matches nothing.
+    pub fn kick_matching(&self, sel: &Selector, block: Option<Duration>) -> Vec<u64> {
+        if sel.stream.is_none() && sel.tag.is_none() {
+            return Vec::new();
+        }
+        let ids: Vec<u64> = self
+            .open
+            .lock()
+            .values()
+            .filter(|e| sel.stream.as_deref().is_none_or(|s| &*e.stream == s))
+            .filter(|e| sel.tag.as_deref().is_none_or(|t| e.tags.lock().iter().any(|x| x == t)))
+            .map(|e| e.id)
+            .collect();
+        ids.into_iter().filter(|&id| matches!(self.kick(id, block), KickResult::Kicked { .. })).collect()
     }
 
     /// Ends session `id`. With `block`, its address may not play that
@@ -150,6 +207,40 @@ impl Sessions {
     }
 }
 
+fn info(e: &Entry) -> SessionInfo {
+    let rtt = e.rtt_us.load(Ordering::Relaxed);
+    let loss = e.loss_ppm.load(Ordering::Relaxed);
+    SessionInfo {
+        id: e.id,
+        stream: e.stream.to_string(),
+        protocol: e.protocol,
+        ip: e.ip,
+        started: e.started_unix,
+        duration_secs: e.started.elapsed().as_secs(),
+        bytes_out: e.bytes_out.load(Ordering::Relaxed),
+        rtt_ms: (rtt != u64::MAX).then(|| rtt as f64 / 1000.0),
+        loss: (loss != u64::MAX).then(|| loss as f64 / 1e6),
+        tags: e.tags.lock().clone(),
+    }
+}
+
+/// Writes a session's link quality from another task than the one holding
+/// the [`Session`] (a WebRTC engine, say). Does not keep the session open.
+#[derive(Clone)]
+pub struct Quality(Arc<Entry>);
+
+impl Quality {
+    pub fn set_rtt(&self, rtt: Duration) {
+        self.0.rtt_us.store(rtt.as_micros().min(u64::MAX as u128 - 1) as u64, Ordering::Relaxed);
+    }
+
+    /// `fraction` of packets lost toward the viewer, clamped to 0..=1.
+    pub fn set_loss(&self, fraction: f64) {
+        let f = if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 0.0 };
+        self.0.loss_ppm.store((f * 1e6).round() as u64, Ordering::Relaxed);
+    }
+}
+
 /// One open viewer session. Dropping it closes the session.
 pub struct Session {
     entry: Arc<Entry>,
@@ -160,6 +251,11 @@ pub struct Session {
 impl Session {
     pub fn id(&self) -> u64 {
         self.entry.id
+    }
+
+    /// A handle to report RTT and loss for this session.
+    pub fn quality(&self) -> Quality {
+        Quality(self.entry.clone())
     }
 
     /// Counts `n` bytes sent to the viewer.
@@ -214,6 +310,35 @@ mod tests {
         drop(a);
         drop(b);
         assert!(s.list(None).is_empty(), "dropping closes");
+    }
+
+    #[tokio::test]
+    async fn quality_tags_and_bulk_kicks() {
+        let s = Arc::new(Sessions::default());
+        let a = s.open("cam".into(), "srt", None);
+        let b = s.open("cam".into(), "whep", None);
+        let c = s.open("other".into(), "srt", None);
+        assert_eq!((s.list(None)[0].rtt_ms, s.list(None)[0].loss), (None, None), "unknown until reported");
+        a.quality().set_rtt(Duration::from_micros(12_500));
+        a.quality().set_loss(0.02);
+        let la = &s.list(Some("cam"))[0];
+        assert_eq!((la.rtt_ms, la.loss), (Some(12.5), Some(0.02)));
+
+        assert!(s.tag(a.id(), "vip").is_ok());
+        assert!(s.tag(a.id(), "vip").is_ok(), "idempotent");
+        assert!(s.tag(c.id(), "vip").is_ok());
+        assert!(s.tag(b.id(), "bad tag").is_err());
+        assert!(s.tag(999, "x").is_err());
+        assert_eq!(s.list(Some("cam"))[0].tags, vec!["vip".to_string()]);
+
+        assert!(s.kick_matching(&Selector::default(), None).is_empty(), "empty selector kicks nothing");
+        let sel = Selector { stream: Some("cam".into()), tag: Some("vip".into()) };
+        assert_eq!(s.kick_matching(&sel, None), vec![a.id()], "both conditions");
+        let mut ids = s.kick_matching(&Selector { stream: None, tag: Some("vip".into()) }, None);
+        ids.sort();
+        assert_eq!(ids, vec![a.id(), c.id()]);
+        assert_eq!(s.kick_matching(&Selector { stream: Some("cam".into()), tag: None }, None).len(), 2);
+        assert!(b.is_kicked());
     }
 
     #[test]

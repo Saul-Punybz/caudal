@@ -195,9 +195,11 @@ fn publish(registry: &Arc<Registry>, name: &str, clip: Arc<Clip>) -> tokio::task
     publisher.set_tracks(clip.tracks.clone()).unwrap();
     tokio::spawn(async move {
         let start = tokio::time::Instant::now();
-        let loop_us = clip.len.iter().find(|(id, _)| *id == clip.frames[0].track).map_or(0, |&(id, l)| {
-            clip.tracks.iter().find(|t| t.id == id).unwrap().to_micros(l)
-        });
+        let loop_us = clip
+            .len
+            .iter()
+            .find(|(id, _)| *id == clip.frames[0].track)
+            .map_or(0, |&(id, l)| clip.tracks.iter().find(|t| t.id == id).unwrap().to_micros(l));
         // Loops the clip until the task is aborted.
         let mut n: i64 = 0;
         loop {
@@ -298,7 +300,9 @@ async fn baseline_h264_and_aac_reach_an_omt_receiver() {
     let feeder = publish(&registry, "synth", clip);
 
     // No receivers: frames arrive, nothing is decoded or encoded.
-    wait_for(Duration::from_secs(3), || (stats.video_skipped.load(Ordering::Relaxed) >= 20).then_some(())).await.unwrap();
+    wait_for(Duration::from_secs(3), || (stats.video_skipped.load(Ordering::Relaxed) >= 20).then_some(()))
+        .await
+        .unwrap();
     assert_eq!(stats.video_sent.load(Ordering::Relaxed), 0, "encoded with no receivers");
     assert_eq!(stats.audio_sent.load(Ordering::Relaxed), 0, "decoded audio with no receivers");
     assert_eq!(registry.get("synth").unwrap().stats().viewers, 0);
@@ -309,10 +313,8 @@ async fn baseline_h264_and_aac_reach_an_omt_receiver() {
         })
     });
     // While connected, the receiver counts as a viewer of the stream.
-    let viewers = wait_for(Duration::from_secs(3), || {
-        Some(registry.get("synth")?.stats().viewers).filter(|&v| v >= 1)
-    })
-    .await;
+    let viewers =
+        wait_for(Duration::from_secs(3), || Some(registry.get("synth")?.stats().viewers).filter(|&v| v >= 1)).await;
     assert_eq!(viewers, Some(1), "OMT receiver not counted as a viewer");
     let got = got.await.unwrap();
 
@@ -551,7 +553,11 @@ async fn libomtnet_receives_the_output() {
     assert!(count("audio=") >= 100, "{done}");
     assert!(done.contains("info=Caudal/Caudal/"), "{done}");
     assert!(text.contains(&format!("{W}x{H} codec=")), "no {W}x{H} pictures");
-    println!("sent={} skipped={}", stats.video_sent.load(Ordering::Relaxed), stats.video_skipped.load(Ordering::Relaxed));
+    println!(
+        "sent={} skipped={}",
+        stats.video_sent.load(Ordering::Relaxed),
+        stats.video_skipped.load(Ordering::Relaxed)
+    );
     handle.shutdown().await;
     feeder.abort();
 }

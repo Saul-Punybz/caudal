@@ -323,9 +323,7 @@ impl VideoOut {
                 tracing::warn!(output = %ctx.name, "H.264 track without a usable avcC; this output carries audio only");
                 Engine::Unsupported
             }
-            (Some(c), _)
-                if RUSTY_PROFILES.contains(&c.profile) && c.yuv420_8bit && !ctx.options.decode_with_ffmpeg =>
-            {
+            (Some(c), _) if RUSTY_PROFILES.contains(&c.profile) && c.yuv420_8bit && !ctx.options.decode_with_ffmpeg => {
                 Engine::Rusty { dec: Box::new(Decoder::new()), reorder: BTreeMap::new(), bframes: false }
             }
             (Some(c), _) if ctx.options.ffmpeg.is_some() => {
@@ -490,17 +488,18 @@ mod tests {
 
     #[test]
     fn avcc_to_annexb_prepends_parameter_sets_on_keyframes() {
-        let cfg = AvcConfig { profile: 66, yuv420_8bit: true, sps: vec![vec![0x67, 1]], pps: vec![vec![0x68, 2]], nal_len: 4 };
+        let cfg = AvcConfig {
+            profile: 66,
+            yuv420_8bit: true,
+            sps: vec![vec![0x67, 1]],
+            pps: vec![vec![0x68, 2]],
+            nal_len: 4,
+        };
         let mut data = Vec::new();
         data.extend_from_slice(&[0, 0, 0, 2, 0x65, 9]);
         data.extend_from_slice(&[0, 0, 0, 9]); // truncated NAL: ignored
-        let f = Frame {
-            track: caudal_core::TrackId(0),
-            dts: 0,
-            pts: 0,
-            keyframe: true,
-            data: bytes::Bytes::from(data),
-        };
+        let f =
+            Frame { track: caudal_core::TrackId(0), dts: 0, pts: 0, keyframe: true, data: bytes::Bytes::from(data) };
         let mut out = Vec::new();
         to_annexb(&cfg, &f, &mut out);
         assert_eq!(out, [0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 9]);

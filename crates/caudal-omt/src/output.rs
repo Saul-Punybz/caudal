@@ -338,13 +338,8 @@ pub struct OutputHandle {
 /// inside a tokio runtime. Each output is independent: its own task,
 /// thread and sender.
 pub fn start_outputs(registry: Arc<Registry>, options: OutputOptions, outputs: Vec<OutputConfig>) -> OutputHandle {
-    let mut inner = Inner {
-        options,
-        entries: Vec::new(),
-        book: Arc::default(),
-        next_id: 0,
-        rt: tokio::runtime::Handle::current(),
-    };
+    let mut inner =
+        Inner { options, entries: Vec::new(), book: Arc::default(), next_id: 0, rt: tokio::runtime::Handle::current() };
     inner.entries = outputs.into_iter().map(|o| inner.spawn(&registry, o)).collect();
     OutputHandle { inner: Arc::new(Mutex::new(inner)) }
 }
@@ -385,7 +380,11 @@ impl OutputHandle {
         inner
             .entries
             .iter()
-            .map(|e| OutputStatus { stream: e.config.stream.clone(), name: e.config.name.clone(), stats: e.stats.clone() })
+            .map(|e| OutputStatus {
+                stream: e.config.stream.clone(),
+                name: e.config.name.clone(),
+                stats: e.stats.clone(),
+            })
             .collect()
     }
 
@@ -421,7 +420,10 @@ enum Item {
     /// The stream (re)appeared.
     Attach(Arc<Stream>),
     /// The selected tracks (initially, and whenever they change).
-    Tracks { video: Option<TrackInfo>, audio: Option<TrackInfo> },
+    Tracks {
+        video: Option<TrackInfo>,
+        audio: Option<TrackInfo>,
+    },
     Video(Arc<Frame>),
     Audio(Arc<Frame>),
     /// The stream ended.

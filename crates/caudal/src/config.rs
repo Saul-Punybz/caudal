@@ -1590,11 +1590,18 @@ encoder_threads = 4
         secure.validate().unwrap();
         let inert = omt_unenforced(&secure.omt);
         assert_eq!(inert.len(), 2, "only name filtering and the output allow-list are inert: {inert:?}");
-        assert!(inert.iter().all(|s| !s.contains("follow_redirects") && !s.contains("bind") && !s.contains("max_connections")));
+        assert!(
+            inert
+                .iter()
+                .all(|s| !s.contains("follow_redirects") && !s.contains("bind") && !s.contains("max_connections"))
+        );
         assert!(omt_unenforced(&cfg.omt).is_empty(), "the defaults are all enforced");
         let pulls = secure.omt.pull_configs(&secure.transcode, None);
         assert_eq!(pulls[0].redirects, open_media_transport::receiver::RedirectPolicy::Any);
-        assert_eq!(cfg.omt.pull_configs(&cfg.transcode, None)[0].redirects, open_media_transport::receiver::RedirectPolicy::Never);
+        assert_eq!(
+            cfg.omt.pull_configs(&cfg.transcode, None)[0].redirects,
+            open_media_transport::receiver::RedirectPolicy::Never
+        );
         let outs = secure.omt.output_configs(None);
         assert_eq!((outs[0].bind, outs[0].max_connections), (Some("10.0.0.1".parse().unwrap()), Some(4)));
     }

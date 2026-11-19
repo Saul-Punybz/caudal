@@ -255,7 +255,11 @@ impl Drop for FfmpegAudio {
 
 enum Engine {
     Aac(Box<rusty_aac::AacDecoder>),
-    Opus { dec: Box<opus_decoder::OpusDecoder>, channels: usize, buf: Vec<f32> },
+    Opus {
+        dec: Box<opus_decoder::OpusDecoder>,
+        channels: usize,
+        buf: Vec<f32>,
+    },
     Ffmpeg {
         adts: Adts,
         run: Option<FfmpegAudio>,
@@ -426,7 +430,8 @@ impl AudioOut {
                 *next_in_us = Some(pts_us + *frame_us);
                 let Some(header) = adts.header(f.data.len()) else { return };
                 let Some(r) = run.as_mut() else { return };
-                let ok = r.stdin.as_mut().is_some_and(|s| s.write_all(&header).and_then(|()| s.write_all(&f.data)).is_ok());
+                let ok =
+                    r.stdin.as_mut().is_some_and(|s| s.write_all(&header).and_then(|()| s.write_all(&f.data)).is_ok());
                 if !ok {
                     tracing::warn!(output = %ctx.name, "ffmpeg (AAC) stopped; restarting");
                     OutputStats::add(&stats.errors, 1);

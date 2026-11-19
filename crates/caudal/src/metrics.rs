@@ -245,7 +245,10 @@ mod tests {
         let outputs = caudal_omt::start_outputs(
             registry,
             caudal_omt::OutputOptions::default(),
-            vec![caudal_omt::OutputConfig { announce: false, ..caudal_omt::OutputConfig::new("show", "Program \"A\"") }],
+            vec![caudal_omt::OutputConfig {
+                announce: false,
+                ..caudal_omt::OutputConfig::new("show", "Program \"A\"")
+            }],
         );
         let (p, o) = (pulls.statuses(), outputs.outputs());
         p[0].stats.video_in.store(600, Relaxed);

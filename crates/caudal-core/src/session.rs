@@ -114,13 +114,8 @@ impl Sessions {
 
     /// Open sessions, oldest first; only `stream`'s when given.
     pub fn list(&self, stream: Option<&str>) -> Vec<SessionInfo> {
-        let mut v: Vec<SessionInfo> = self
-            .open
-            .lock()
-            .values()
-            .filter(|e| stream.is_none_or(|s| &*e.stream == s))
-            .map(|e| info(e))
-            .collect();
+        let mut v: Vec<SessionInfo> =
+            self.open.lock().values().filter(|e| stream.is_none_or(|s| &*e.stream == s)).map(|e| info(e)).collect();
         v.sort_by_key(|s| s.id);
         v
     }

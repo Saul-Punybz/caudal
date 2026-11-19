@@ -231,8 +231,9 @@ impl Entry {
     /// goes quiet for [`VIEWER_IDLE`].
     fn seen(&self, registry: &Registry, name: &str, key: u64, ip: Option<std::net::IpAddr>) -> Result<(), ()> {
         let mut v = self.viewers.lock().unwrap_or_else(|e| e.into_inner());
-        let viewer =
-            v.entry(key).or_insert_with(|| Viewer { last: Instant::now(), session: registry.open_session(name, "hls", ip) });
+        let viewer = v
+            .entry(key)
+            .or_insert_with(|| Viewer { last: Instant::now(), session: registry.open_session(name, "hls", ip) });
         viewer.last = Instant::now();
         if viewer.session.is_kicked() { Err(()) } else { Ok(()) }
     }
@@ -533,7 +534,8 @@ async fn hls_file(
         Err(caudal_core::Denied::Refused(_)) => return error(StatusCode::FORBIDDEN),
     }
     let key = viewer_key(&req, ip);
-    let refused = if file.ends_with(".m3u8") { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
+    let refused =
+        if file.ends_with(".m3u8") { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
     if refused {
         return error(StatusCode::FORBIDDEN);
     }
@@ -554,16 +556,16 @@ async fn serve_file(
     token: Option<&str>,
     apple: bool,
 ) -> Response {
-    let (hls, entry) = (hls, entry.as_ref());
+    let entry = entry.as_ref();
     match file {
-        "index.m3u8" => playlist(&hls, &name, &entry, query, token).await,
-        "master.m3u8" => master(&hls, &entry, &name, token).await,
-        "subs.m3u8" if hls.text_track(&name).is_some() => {
+        "index.m3u8" => playlist(hls, name, entry, query, token).await,
+        "master.m3u8" => master(hls, entry, name, token).await,
+        "subs.m3u8" if hls.text_track(name).is_some() => {
             let flavor = Flavor::Subtitles { parts: apple };
-            playlist_of(&hls, &name, &entry, query, token, flavor).await
+            playlist_of(hls, name, entry, query, token, flavor).await
         }
-        other if hls.text_track(&name).is_some() && parse_vtt_name(other).is_some() => match parse_vtt_name(other) {
-            Some((msn, part)) => subtitle(&entry, msn, part).await,
+        other if hls.text_track(name).is_some() && parse_vtt_name(other).is_some() => match parse_vtt_name(other) {
+            Some((msn, part)) => subtitle(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
         "init.mp4" => {
@@ -582,7 +584,7 @@ async fn serve_file(
             }
         }
         other => match parse_media_name(other) {
-            Some((msn, part)) => media(&entry, msn, part).await,
+            Some((msn, part)) => media(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
     }

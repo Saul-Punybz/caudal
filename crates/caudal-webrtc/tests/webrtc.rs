@@ -240,7 +240,7 @@ impl Client {
     async fn new() -> Self {
         let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let local = sock.local_addr().unwrap();
-        let mut rtc = Rtc::builder().clear_codecs().enable_h264(true).enable_opus(true).build(Instant::now());
+        let mut rtc = Rtc::builder().clear_codecs().enable_h264(true).enable_opus(true, false).build(Instant::now());
         rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
         Self { rtc, sock, local }
     }

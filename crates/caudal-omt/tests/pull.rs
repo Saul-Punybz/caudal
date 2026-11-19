@@ -155,6 +155,7 @@ fn pull(stream: &str, port: u16) -> PullConfig {
         audio_kbps: 64,
         ffmpeg: "ffmpeg".into(),
         directory: None,
+        redirects: Default::default(),
     }
 }
 

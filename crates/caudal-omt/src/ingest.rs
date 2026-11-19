@@ -63,7 +63,7 @@ use open_media_transport::address::{Address, Directory};
 use open_media_transport::command::{Command, Quality, Tally};
 use open_media_transport::frame::ExtendedHeader;
 use open_media_transport::media::{self, MediaDecoder, PreferredVideoFormat};
-use open_media_transport::receiver::{Event, Receiver, ReceiverConfig};
+use open_media_transport::receiver::{Event, Receiver, ReceiverConfig, RedirectPolicy};
 
 use crate::feed::{Feed, FeedConfig, PixelLayout, PushError, VideoFormat, VideoFrame};
 use crate::time::{OMT_HZ, TimeMap};
@@ -101,6 +101,8 @@ pub struct PullConfig {
     /// Shared source directory (mDNS / discovery server) for resolving full
     /// names; `None` lets each receiver start its own when it needs one.
     pub directory: Option<Arc<Directory>>,
+    /// Which redirects the source may send this pull to (OMT §9).
+    pub redirects: RedirectPolicy,
 }
 
 impl PartialEq for PullConfig {
@@ -112,6 +114,7 @@ impl PartialEq for PullConfig {
             && self.video_kbps == o.video_kbps
             && self.audio_kbps == o.audio_kbps
             && self.ffmpeg == o.ffmpeg
+            && self.redirects == o.redirects
             && match (&self.directory, &o.directory) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -444,7 +447,7 @@ fn run(ctx: Ctx) {
         quality: p.quality,
         tally: Tally::default(),
         reconnect: true,
-        follow_redirects: true,
+        redirects: p.redirects,
     };
     let mut backoff = MIN_BACKOFF;
     let rx = loop {
@@ -723,6 +726,7 @@ mod tests {
             audio_kbps: 128,
             ffmpeg: "ffmpeg".into(),
             directory: None,
+            redirects: Default::default(),
         }
     }
 

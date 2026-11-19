@@ -195,10 +195,10 @@ fn omt_stream_json(omt: &crate::omt::OmtRuntime, stream: &str) -> Option<OmtStre
         .filter(|o| o.stream == stream)
         .map(|o| OmtOutputJson {
             name: o.name.clone(),
-            full_name: o.full_name.clone(),
-            url: o.url.clone(),
+            full_name: o.stats.full_name(),
+            url: o.stats.url(),
             receivers: o.stats.receivers.load(Relaxed),
-            frames_sent: o.stats.frames_sent.load(Relaxed),
+            frames_sent: o.stats.video_sent.load(Relaxed),
             dropped: o.stats.dropped().into_iter().collect(),
             tally: OmtTallyJson { preview: o.stats.preview.load(Relaxed), program: o.stats.program.load(Relaxed) },
         })
@@ -681,22 +681,11 @@ mod tests {
                 audio_kbps: 128,
                 ffmpeg: "ffmpeg".into(),
                 directory: None,
+                redirects: Default::default(),
             }],
             vec![
-                caudal_omt::OutputConfig {
-                    stream: "cam2".into(),
-                    name: "Cam 2 relay".into(),
-                    quality: Quality::Default,
-                    encoder_threads: 0,
-                    discovery: None,
-                },
-                caudal_omt::OutputConfig {
-                    stream: "nowhere".into(),
-                    name: "Unrelated".into(),
-                    quality: Quality::Default,
-                    encoder_threads: 0,
-                    discovery: None,
-                },
+                caudal_omt::OutputConfig { announce: false, ..caudal_omt::OutputConfig::new("cam2", "Cam 2 relay") },
+                caudal_omt::OutputConfig { announce: false, ..caudal_omt::OutputConfig::new("nowhere", "Unrelated") },
             ],
         );
         let pull = &omt.pulls()[0];

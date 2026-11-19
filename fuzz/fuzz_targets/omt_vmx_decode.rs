@@ -4,7 +4,7 @@
 //! panic, hang or allocate without bound; errors are fine.
 //!
 //! The OMT repository fuzzes the codec on its own (`vmx_decode` there, rev
-//! 8c275ff); this target is Caudal's copy of the rule "every parser gets a
+//! ec11ec2); this target is Caudal's copy of the rule "every parser gets a
 //! fuzz target", run in Caudal's fuzz-smoke CI against the exact rev Caudal
 //! pins, and it follows Caudal's call pattern: one `Decoder` reused across
 //! many frames of one size (a pull decodes a whole session with one), the

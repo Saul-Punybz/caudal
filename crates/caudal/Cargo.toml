@@ -45,8 +45,7 @@ caudal-cluster.workspace = true
 url = "2"
 caudal-failover.workspace = true
 caudal-multicast.workspace = true
-# TEMPORARY `wiring-stubs` (feat/m12-wiring): drop the feature at merge.
-caudal-omt = { workspace = true, features = ["wiring-stubs"] }
+caudal-omt.workspace = true
 open-media-transport.workspace = true
 axum.workspace = true
 parking_lot.workspace = true

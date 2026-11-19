@@ -1035,7 +1035,11 @@ dependencies = [
  "bytes",
  "caudal-core",
  "caudal-transcode",
+ "mp4-atom",
  "open-media-transport",
+ "opus-decoder",
+ "rusty_aac",
+ "rusty_h264",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4478,7 +4482,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 [[package]]
 name = "open-media-transport"
 version = "0.1.0"
-source = "git+https://github.com/Saul-Punybz/open-media-transport?rev=8c275ff#8c275ff7a58ce1af3b8ac82929bd27f80b9d947c"
+source = "git+https://github.com/Saul-Punybz/open-media-transport?rev=ec11ec2#ec11ec21f8611857b294cd0f5c843f75b4350e92"
 dependencies = [
  "flume",
  "hostname",
@@ -7158,7 +7162,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vmx-codec"
 version = "0.1.0"
-source = "git+https://github.com/Saul-Punybz/open-media-transport?rev=8c275ff#8c275ff7a58ce1af3b8ac82929bd27f80b9d947c"
+source = "git+https://github.com/Saul-Punybz/open-media-transport?rev=ec11ec2#ec11ec21f8611857b294cd0f5c843f75b4350e92"
 
 [[package]]
 name = "walkdir"

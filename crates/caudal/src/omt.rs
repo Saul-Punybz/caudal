@@ -57,7 +57,11 @@ impl OmtRuntime {
             tracing::info!(pulls = cfg.omt.pull.len(), "omt pulls started");
         }
         if !cfg.omt.output.is_empty() {
-            rt.outputs.reload(cfg.omt.output_configs(shared.and_then(|s| s.discovery)));
+            rt.outputs.reload(
+                &rt.registry,
+                cfg.omt.output_options(&cfg.transcode),
+                cfg.omt.output_configs(shared.and_then(|s| s.discovery)),
+            );
             tracing::info!(outputs = cfg.omt.output.len(), "omt outputs started");
         }
         Arc::new(rt)
@@ -70,7 +74,7 @@ impl OmtRuntime {
             discovery_config: Mutex::new(discovery_config),
             shared: Mutex::new(None),
             pulls: caudal_omt::start_pulls(registry.clone(), buffer, Vec::new()),
-            outputs: caudal_omt::start_outputs(registry, Vec::new()),
+            outputs: caudal_omt::start_outputs(registry, caudal_omt::OutputOptions::default(), Vec::new()),
         }
     }
 
@@ -132,7 +136,9 @@ impl OmtRuntime {
         }
         let pulls_changed =
             old.omt.pull != new.omt.pull || old.omt.ffmpeg(&old.transcode) != new.omt.ffmpeg(&new.transcode);
-        let outputs_changed = old.omt.output != new.omt.output;
+        let outputs_changed = old.omt.output != new.omt.output
+            || (!new.omt.output.is_empty()
+                && old.omt.output_options(&old.transcode) != new.omt.output_options(&new.transcode));
         if !pulls_changed && !outputs_changed {
             return report;
         }
@@ -146,7 +152,11 @@ impl OmtRuntime {
             report.applied.push("omt.pull");
         }
         if outputs_changed {
-            self.outputs.reload(new.omt.output_configs(shared.and_then(|s| s.discovery)));
+            self.outputs.reload(
+                &self.registry,
+                new.omt.output_options(&new.transcode),
+                new.omt.output_configs(shared.and_then(|s| s.discovery)),
+            );
             report.applied.push("omt.output");
         }
         report
@@ -166,14 +176,14 @@ impl OmtRuntime {
     }
 
     pub fn outputs(&self) -> Vec<caudal_omt::OutputStatus> {
-        self.outputs.status()
+        self.outputs.outputs()
     }
 
     /// For tests that need a running pull/output entry without a sender.
     #[cfg(test)]
     pub fn reload_for_test(&self, pulls: Vec<caudal_omt::PullConfig>, outputs: Vec<caudal_omt::OutputConfig>) {
         self.pulls.reload(&self.registry, self.buffer, pulls);
-        self.outputs.reload(outputs);
+        self.outputs.reload(&self.registry, caudal_omt::OutputOptions::default(), outputs);
     }
 }
 

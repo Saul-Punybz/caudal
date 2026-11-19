@@ -123,7 +123,7 @@ pub fn render_omt(out: &mut String, pulls: &[caudal_omt::PullStatus], outputs: &
             "caudal_omt_frames_out_total{{stream=\"{}\",output=\"{}\"}} {}",
             escape(&o.stream),
             escape(&o.name),
-            o.stats.frames_sent.load(Relaxed)
+            o.stats.video_sent.load(Relaxed)
         );
     }
     header(out, "caudal_omt_receivers", "gauge", "OMT receivers of an output's video now.");
@@ -239,19 +239,15 @@ mod tests {
                 audio_kbps: 128,
                 ffmpeg: "ffmpeg".into(),
                 directory: None,
+                redirects: Default::default(),
             }],
         );
         let outputs = caudal_omt::start_outputs(
             registry,
-            vec![caudal_omt::OutputConfig {
-                stream: "show".into(),
-                name: "Program \"A\"".into(),
-                quality: caudal_omt::Quality::Default,
-                encoder_threads: 0,
-                discovery: None,
-            }],
+            caudal_omt::OutputOptions::default(),
+            vec![caudal_omt::OutputConfig { announce: false, ..caudal_omt::OutputConfig::new("show", "Program \"A\"") }],
         );
-        let (p, o) = (pulls.statuses(), outputs.status());
+        let (p, o) = (pulls.statuses(), outputs.outputs());
         p[0].stats.video_in.store(600, Relaxed);
         p[0].stats.audio_in.store(1000, Relaxed);
         p[0].stats.dropped[caudal_omt::DropReason::ALL.iter().position(|r| r.as_str() == "queue_full").unwrap()]
@@ -259,9 +255,10 @@ mod tests {
         p[0].stats.tally.store(2, Relaxed);
         o[0].stats.receivers.store(2, Relaxed);
         o[0].stats.program.store(true, Relaxed);
-        o[0].stats.dropped_decode.store(1, Relaxed);
+        o[0].stats.errors.store(1, Relaxed);
         render_omt(&mut out, &p, &o);
         pulls.stop();
+        outputs.stop();
         for line in [
             "caudal_omt_frames_in_total{stream=\"cam1\",kind=\"video\"} 600",
             "caudal_omt_frames_in_total{stream=\"cam1\",kind=\"audio\"} 1000",
@@ -271,7 +268,7 @@ mod tests {
             "caudal_omt_tally{direction=\"pull\",stream=\"cam1\",state=\"preview\"} 0",
             "caudal_omt_receivers{stream=\"show\",output=\"Program \\\"A\\\"\"} 2",
             "caudal_omt_tally{direction=\"output\",stream=\"show\",output=\"Program \\\"A\\\"\",state=\"program\"} 1",
-            "caudal_omt_frames_dropped_total{direction=\"output\",stream=\"show\",output=\"Program \\\"A\\\"\",reason=\"decode_error\"} 1",
+            "caudal_omt_frames_dropped_total{direction=\"output\",stream=\"show\",output=\"Program \\\"A\\\"\",reason=\"error\"} 1",
         ] {
             assert!(out.lines().any(|l| l == line), "missing {line:?} in:\n{out}");
         }

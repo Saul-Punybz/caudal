@@ -545,7 +545,8 @@ pub struct OmtPullEntry {
     /// Follow a redirect the source sends (OMT §9: "use this other source
     /// instead"). Off by default: anyone who can reach the sender's port
     /// could point it elsewhere and put their picture on Caudal's public
-    /// outputs. NOT ENFORCED YET (see `docs/OMT.md`, Security).
+    /// outputs. Off: no redirect is followed; on: every one is (libomtnet's
+    /// behaviour).
     #[serde(default)]
     pub follow_redirects: bool,
     /// Connect only to addresses inside these CIDRs (bare address = one
@@ -574,7 +575,6 @@ pub struct OmtOutputEntry {
     #[serde(default)]
     pub encoder_threads: usize,
     /// Listen only on this local address. Absent: every interface.
-    /// NOT ENFORCED YET (see `docs/OMT.md`, Security).
     #[serde(default)]
     pub bind: Option<std::net::IpAddr>,
     /// Accept receivers only from these CIDRs (bare address = one host).
@@ -583,40 +583,26 @@ pub struct OmtOutputEntry {
     pub allow: Vec<String>,
     /// Most receiver connections at once (each video receiver costs one
     /// VMX send; audio and metadata ride on their own connections).
-    /// Absent: no cap. NOT ENFORCED YET.
+    /// Absent: the OMT library's default cap (128).
     #[serde(default)]
     pub max_connections: Option<usize>,
 }
 
 /// Security settings the config accepts and validates but the pinned OMT
-/// library (rev 8c275ff) cannot apply yet: redirect policy and name
-/// resolution filtering on the receiver, bind/allow-list/connection caps on
-/// the sender. Named here so the startup log can say exactly which are
-/// inert. TODO(omt-security): wire each into `caudal_omt::PullConfig` /
-/// `OutputConfig` once the library has `RedirectPolicy` and sender
-/// bind/allow/max-connection settings, then delete this.
+/// library (rev ec11ec2) cannot apply yet: filtering what a name resolves
+/// to on the receiver, and a peer allow-list on the sender. (Redirect
+/// policy, bind and the connection cap are applied since ec11ec2.) Named
+/// here so the startup log can say exactly which are inert.
 pub fn omt_unenforced(section: &OmtSection) -> Vec<String> {
     let mut out = Vec::new();
     for p in &section.pull {
-        // The ingest always follows redirects today (its ReceiverConfig
-        // sets `follow_redirects: true`), so the safe default is the one
-        // not honoured.
-        if !p.follow_redirects {
-            out.push(format!("[[omt.pull]] `{}`: follow_redirects = false (redirects ARE followed)", p.stream));
-        }
         if !p.allowed_sources.is_empty() && p.source.is_some() {
             out.push(format!("[[omt.pull]] `{}`: allowed_sources for a name (not checked when resolved)", p.stream));
         }
     }
     for o in &section.output {
-        if o.bind.is_some() {
-            out.push(format!("[[omt.output]] `{}`: bind (listens on every interface)", o.name));
-        }
         if !o.allow.is_empty() {
             out.push(format!("[[omt.output]] `{}`: allow (any receiver may connect)", o.name));
-        }
-        if o.max_connections.is_some() {
-            out.push(format!("[[omt.output]] `{}`: max_connections (no cap)", o.name));
         }
     }
     out
@@ -765,8 +751,19 @@ impl OmtSection {
                 audio_kbps: p.audio_kbps,
                 ffmpeg: self.ffmpeg(transcode).to_path_buf(),
                 directory: directory.clone(),
+                redirects: if p.follow_redirects {
+                    open_media_transport::receiver::RedirectPolicy::Any
+                } else {
+                    open_media_transport::receiver::RedirectPolicy::Never
+                },
             })
             .collect()
+    }
+
+    /// What every output shares: the ffmpeg used for what the in-process
+    /// decoders cannot do (H.264 other than 8-bit 4:2:0, AAC other than LC).
+    pub fn output_options(&self, transcode: &TranscodeSection) -> caudal_omt::OutputOptions {
+        caudal_omt::OutputOptions { ffmpeg: Some(self.ffmpeg(transcode).to_path_buf()), decode_with_ffmpeg: false }
     }
 
     /// `[[omt.output]]` as the runtime type `caudal-omt` takes.
@@ -780,8 +777,12 @@ impl OmtSection {
                 stream: o.stream.clone(),
                 name: o.name.clone(),
                 quality: o.quality.to_omt(),
+                max_quality: None,
                 encoder_threads: o.encoder_threads,
+                announce: true,
                 discovery: discovery.clone(),
+                bind: o.bind,
+                max_connections: o.max_connections,
             })
             .collect()
     }
@@ -1588,10 +1589,14 @@ encoder_threads = 4
         .unwrap();
         secure.validate().unwrap();
         let inert = omt_unenforced(&secure.omt);
-        assert_eq!(inert.len(), 4, "{inert:?}");
-        assert!(inert.iter().all(|s| !s.contains("follow_redirects")), "follow_redirects = true is what happens");
-        let defaults = omt_unenforced(&cfg.omt);
-        assert_eq!(defaults.len(), 2, "each pull's default follow_redirects = false is not honoured yet: {defaults:?}");
+        assert_eq!(inert.len(), 2, "only name filtering and the output allow-list are inert: {inert:?}");
+        assert!(inert.iter().all(|s| !s.contains("follow_redirects") && !s.contains("bind") && !s.contains("max_connections")));
+        assert!(omt_unenforced(&cfg.omt).is_empty(), "the defaults are all enforced");
+        let pulls = secure.omt.pull_configs(&secure.transcode, None);
+        assert_eq!(pulls[0].redirects, open_media_transport::receiver::RedirectPolicy::Any);
+        assert_eq!(cfg.omt.pull_configs(&cfg.transcode, None)[0].redirects, open_media_transport::receiver::RedirectPolicy::Never);
+        let outs = secure.omt.output_configs(None);
+        assert_eq!((outs[0].bind, outs[0].max_connections), (Some("10.0.0.1".parse().unwrap()), Some(4)));
     }
 
     #[test]

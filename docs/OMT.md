@@ -73,7 +73,7 @@ tries again.
 | `quality` | `default` | Suggested to the sender with the video subscription. |
 | `video_kbps` | 6000 | 100..=200000. |
 | `audio_kbps` | 128 | 16..=1024. |
-| `follow_redirects` | `false` | Follow a redirect the source sends (OMT §9). See Security: **not enforced yet**. |
+| `follow_redirects` | `false` | Follow a redirect the source sends (OMT §9). `false`: none is followed; `true`: every one is (libomtnet's behaviour). |
 | `allowed_sources` | any | CIDRs (a bare address is one host) the pull may connect to. A `url` with a literal IP outside them is a config error; for names, see Security: **not enforced yet**. |
 
 What a pull does, briefly (details in `crates/caudal-omt/src/ingest.rs`):
@@ -88,13 +88,13 @@ stream has viewers, preview while it is published.
 
 | key | default | |
 |---|---|---|
-| `stream` | required | An H.264 stream (codec handling is documented when the output lands). The same stream may go out under several names. |
+| `stream` | required | Any stream, renditions included. H.264 8-bit 4:2:0 and AAC-LC/Opus decode in-process; other H.264 and AAC go through ffmpeg (`[omt] ffmpeg`, else `[transcode] ffmpeg`). The same stream may go out under several names. |
 | `name` | required | 1-128 characters, no parentheses or control characters, unique among outputs. |
 | `quality` | `default` | VMX encoder quality; `default` follows receivers' suggestions. |
 | `encoder_threads` | 0 | 0..=64; 0 picks from the frame size, as libomtnet does. |
-| `bind` | all interfaces | Listen on this address only. **Not enforced yet.** |
+| `bind` | all interfaces | Listen on this address only. |
 | `allow` | any | CIDRs receivers may connect from. **Not enforced yet.** |
-| `max_connections` | no cap | 1..=1000 receiver connections at once. **Not enforced yet.** |
+| `max_connections` | 128 (the OMT library's cap) | 1..=1000 receiver connections at once; more are closed as they arrive. |
 
 ### Reload
 
@@ -173,19 +173,18 @@ like NDI.
   CI on every push) and its errors drop the frame, never the server.
 
 **What is not enforced yet.** The config accepts, validates and documents
-these, but the pinned OMT library (rev `8c275ff`) cannot apply them; the
-server logs a warning for each at startup and on reload:
+these, but the pinned OMT library (rev `ec11ec2`, the version verified against
+OBS Studio and libomtnet) cannot apply them; the server logs a warning for
+each at startup and on reload. Redirect policy, `bind` and the connection cap
+are enforced since that rev.
 
 | setting | what happens today | needs |
 |---|---|---|
-| pull `follow_redirects = false` (the default) | Redirects **are** followed: a source (or anyone who can talk to its port) can send Caudal to another source, which then plays on Caudal's public outputs. | A redirect policy in the library, then `caudal_omt::PullConfig` passing it. |
 | pull `allowed_sources` with a `source` name | A name resolves to whatever mDNS or the discovery server says. (A `url` with an IP outside the list is refused at config check.) | A resolution hook / address filter in the library. |
-| output `bind` | Listens on every interface. | Sender bind address in the library. |
 | output `allow` | Any receiver may connect. | Sender allow-list in the library. |
-| output `max_connections` | No cap. | Sender connection cap in the library. |
 
-Until then, the firewall/VLAN is the control. The code is marked
-`TODO(omt-security)` (`crates/caudal/src/config.rs`, `omt_unenforced`).
+Until then, the firewall/VLAN is the control. The list lives in
+`omt_unenforced` (`crates/caudal/src/config.rs`).
 
 ## Formats and limits
 

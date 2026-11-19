@@ -5,25 +5,27 @@
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## M12 — Open Media Transport (branch `feat/m12-omt`, 23 Sep 2026)
+## M12 — Open Media Transport (branch `feat/m12-omt-verified`, 19 Nov 2026)
 
-**Saul's go-ahead (23 Sep 2026) to start M12 before the real-equipment entry condition in PLAN.md**;
-he tests vMix/OBS/Pi this week. Not merged to main; v0.1.0 soak blocker above is separate and still open.
-Design: `docs/research/M12-OMT-DESIGN.md`. User guide: `docs/OMT.md`.
+**One branch now.** `feat/m12-omt` (crate, pull ingest, wiring) and `feat/m12-output` (output) are
+merged here, the temporary `wiring_stubs.rs` / `wiring-stubs` feature is gone, and the binary is wired
+to the real output API (`OutputOptions`, `reload(&registry, options, outputs)`, `outputs()`).
 
-- **Done on the branch:** `caudal_transcode::pipe` (shared ffmpeg process code, engine unchanged);
-  `crates/caudal-omt` — `feed` (raw UYVY/NV12/I420 + f32 PCM → ffmpeg over Matroska → H.264/AAC
-  published), `time` (OMT 100 ns → track clocks, fuzzed), **pull ingest** (verified: libomtnet
-  harness sender → our pull → ffprobe: H.264 640x360 181 frames + AAC with the tone, 0 drops; A/V 12 ms;
-  sender restart bridged up to 5 s), wiring (`[omt]` config with hot reload, `/api/v1/omt/sources`,
-  metrics, `caudal doctor`, `omt_vmx_decode` fuzz, `bench/omt.py` in bench.yml — never run yet).
-- **In flight:** `feat/m12-output` (H.264 → rusty_h264 → VMX → OMT sender; AAC via ffmpeg, Opus via
-  opus-decoder). It must delete the temporary `wiring_stubs.rs` / `wiring-stubs` feature on merge.
-- **To finish:** ingest must honour `follow_redirects` (hardcoded true in `ingest.rs`); security keys
-  (`allowed_sources`, `bind`, `allow`, `max_connections`) are validated but not enforced until the OMT
-  crate's next version (RedirectPolicy, connection caps, bind) — bump the git rev then; 10-bit/alpha go
-  through 8-bit today; open a PR, CI green, then merge (Saul's rule). Before tagging: OMT crates from
-  crates.io 0.2.x, not git (cargo-deny currently allows the OMT git source).
+**OMT pinned to `ec11ec2`, the last verified version** of `Saul-Punybz/open-media-transport`:
+byte-identical VMX vs libvmx; protocol vs libomtnet 1.0.0.19; Mac <-> Linux NUC over a real LAN
+(28 Sep); **OBS Studio 33.0.1 + omtplugin 1.0.0.19 both directions on one Mac (5 Nov)**. Not tested:
+vMix, Windows, wired/cross-subnet networks. The Pi was dropped from scope by Saul (5 Nov).
+(OMT `main` is now `fbde53c`: the OBS evidence plus a clippy-only loop rewrite; same code.)
+
+- **Security keys now enforced** (the library has them since that rev): pull `follow_redirects`
+  (false = `RedirectPolicy::Never`, true = `Any`), output `bind`, output `max_connections`
+  (absent = library cap 128). Still inert and warned at startup: pull `allowed_sources` for a name,
+  output `allow` (no peer allow-list in the library).
+- Verified locally 19 Nov: `cargo clippy --workspace --all-targets -D warnings` clean;
+  `cargo test -p caudal-omt` 45 passed (2 ignored: need the libomtnet harness / an external source);
+  `cargo test -p caudal --bins` 96 passed. Full CI runs on the PR.
+- **Still open:** 10-bit/alpha go through 8-bit; `bench/omt.py` never run; before tagging, OMT crates
+  from crates.io 0.2.x instead of git (cargo-deny allows the OMT git source meanwhile).
 - Rough CPU: x264 veryfast 1080p60 ≈ 0.6–0.7 core on an easy pattern (not measured on real content).
 
 ## RESUME HERE (22 Sep 2026) — paused; v0.1.0 tag BLOCKED

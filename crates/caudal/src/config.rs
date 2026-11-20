@@ -1142,6 +1142,8 @@ pub struct AuthSection {
     pub publish: bool,
     /// Require a token to play (default false).
     pub play: bool,
+    /// Blocking authorization webhook, asked after the token check.
+    pub hook: Option<AuthHookSection>,
 }
 
 impl Default for AuthSection {
@@ -1152,8 +1154,91 @@ impl Default for AuthSection {
             jwks_refresh_secs: default_jwks_refresh_secs(),
             publish: true,
             play: false,
+            hook: None,
         }
     }
+}
+
+/// `[auth.hook]`: before a publish or a play goes ahead, POST it (signed,
+/// Standard Webhooks) to `url` and wait for the answer. 2xx allows,
+/// 401/403 deny; a timeout or any other answer is decided by `on_error`.
+/// See `caudal_auth::GateHook` and `docs/AUTH-HOOK.md`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthHookSection {
+    pub url: String,
+    /// `whsec_...`, as in `[hooks]`.
+    pub secret: String,
+    /// One attempt, no retries. 100..=10000.
+    #[serde(default = "default_auth_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// `"deny"` (default) or `"allow"` when the service fails.
+    #[serde(default = "default_auth_hook_on_error")]
+    pub on_error: String,
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// How long an allow is remembered for the same stream, IP and token.
+    #[serde(default = "default_auth_hook_allow_cache_secs")]
+    pub allow_cache_secs: u64,
+    /// How long a denial or a failure is remembered.
+    #[serde(default = "default_auth_hook_deny_cache_secs")]
+    pub deny_cache_secs: u64,
+}
+
+fn default_auth_hook_timeout_ms() -> u64 {
+    2000
+}
+fn default_auth_hook_on_error() -> String {
+    "deny".into()
+}
+fn default_auth_hook_allow_cache_secs() -> u64 {
+    30
+}
+fn default_auth_hook_deny_cache_secs() -> u64 {
+    5
+}
+
+impl AuthHookSection {
+    pub fn to_config(&self) -> Result<caudal_auth::GateHookConfig, String> {
+        let url =
+            reqwest_url_ok(&self.url).ok_or_else(|| format!("[auth.hook] url {:?}: expected http(s)://", self.url))?;
+        if !self.secret.starts_with("whsec_") {
+            return Err("[auth.hook] `secret` must be a Standard Webhooks secret (whsec_...)".into());
+        }
+        if !(100..=10_000).contains(&self.timeout_ms) {
+            return Err(format!("[auth.hook] timeout_ms {} is outside 100..=10000", self.timeout_ms));
+        }
+        let on_error = match self.on_error.as_str() {
+            "deny" => caudal_auth::OnError::Deny,
+            "allow" => caudal_auth::OnError::Allow,
+            other => return Err(format!("[auth.hook] on_error {other:?}: expected \"deny\" or \"allow\"")),
+        };
+        if !self.publish && !self.play {
+            return Err("[auth.hook] `publish` and `play` are both false; remove the section instead".into());
+        }
+        if self.allow_cache_secs > 3600 || self.deny_cache_secs > 3600 {
+            return Err("[auth.hook] cache times are at most 3600 s".into());
+        }
+        Ok(caudal_auth::GateHookConfig {
+            url,
+            secret: self.secret.clone(),
+            timeout: Duration::from_millis(self.timeout_ms),
+            on_error,
+            publish: self.publish,
+            play: self.play,
+            allow_cache: Duration::from_secs(self.allow_cache_secs),
+            deny_cache: Duration::from_secs(self.deny_cache_secs),
+        })
+    }
+}
+
+/// `Some(url)` for an absolute http(s) URL with a host.
+fn reqwest_url_ok(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://"))?;
+    let host = rest.split(['/', '?', '#']).next()?;
+    (!host.is_empty() && !host.contains(char::is_whitespace)).then(|| s.to_owned())
 }
 
 impl AuthSection {
@@ -1169,6 +1254,11 @@ impl AuthSection {
             (None, None) => None,
         };
         Ok(caudal_auth::AuthConfig { keys, publish: self.publish, play: self.play })
+    }
+
+    /// `[auth.hook]` as the runtime config, `None` when absent.
+    pub fn hook_config(&self) -> Result<Option<caudal_auth::GateHookConfig>, String> {
+        self.hook.as_ref().map(AuthHookSection::to_config).transpose()
     }
 }
 
@@ -1394,6 +1484,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         self.tls.to_tls_config()?;
         self.auth.to_auth_config()?;
+        self.auth.hook_config()?;
         self.access.to_access_config()?;
         self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
@@ -1881,6 +1972,36 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let twice =
             "[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n[[srt.pull]]\nstream = \"a\"\nurl = \"srt://h:1\"\n";
         assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
+    }
+
+    #[test]
+    fn auth_hook_section() {
+        let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+        let ok: Config =
+            toml::from_str(&format!("[auth.hook]\nurl = \"https://auth.example/gate\"\nsecret = \"{secret}\"\n"))
+                .unwrap();
+        ok.validate().unwrap();
+        let h = ok.auth.hook_config().unwrap().unwrap();
+        assert_eq!(h.timeout, Duration::from_millis(2000), "short default timeout");
+        assert_eq!(h.on_error, caudal_auth::OnError::Deny, "fails closed by default");
+        assert!(h.publish && h.play);
+        assert_eq!((h.allow_cache, h.deny_cache), (Duration::from_secs(30), Duration::from_secs(5)));
+        assert!(Config::default().auth.hook_config().unwrap().is_none());
+
+        let bad = |extra: &str| {
+            toml::from_str::<Config>(&format!("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"{secret}\"\n{extra}"))
+                .unwrap()
+                .validate()
+                .unwrap_err()
+        };
+        assert!(bad("timeout_ms = 50\n").contains("timeout_ms"));
+        assert!(bad("timeout_ms = 30000\n").contains("timeout_ms"));
+        assert!(bad("on_error = \"maybe\"\n").contains("on_error"));
+        assert!(bad("publish = false\nplay = false\n").contains("both false"));
+        assert!(bad("allow_cache_secs = 86400\n").contains("3600"));
+        let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(err("[auth.hook]\nurl = \"auth.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
+        assert!(err("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"hunter2\"\n").contains("whsec_"));
     }
 
     #[test]

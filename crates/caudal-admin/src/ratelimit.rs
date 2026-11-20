@@ -41,6 +41,56 @@ impl RateLimiter {
     }
 }
 
+/// Failed password logins per account name, across every client address:
+/// the per-IP limit alone does not stop many addresses guessing one
+/// account. Only failures count, and any name is tracked (known or not), so
+/// being refused does not reveal which accounts exist. A success clears the
+/// name's count.
+pub(crate) struct FailureLimiter {
+    max: u32,
+    window: Duration,
+    map: Mutex<HashMap<String, (Instant, u32)>>,
+}
+
+impl FailureLimiter {
+    pub fn new(max: u32, window: Duration) -> Self {
+        Self { max, window, map: Mutex::new(HashMap::new()) }
+    }
+
+    /// `Err(retry_after)` while `name` has `max` failures inside the window.
+    pub fn check(&self, name: &str, now: Instant) -> Result<(), Duration> {
+        let map = self.map.lock();
+        match map.get(name) {
+            Some((start, n)) if *n >= self.max && now.duration_since(*start) < self.window => {
+                Err(self.window.saturating_sub(now.duration_since(*start)))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub fn failed(&self, name: &str, now: Instant) {
+        let mut map = self.map.lock();
+        if map.len() >= SWEEP_AT {
+            let window = self.window;
+            map.retain(|_, (start, _)| now.duration_since(*start) < window);
+            if map.len() >= SWEEP_AT {
+                map.clear();
+            }
+        }
+        // Names are bounded by the login body limit; keep at most 256 bytes.
+        let key: String = name.chars().take(256).collect();
+        let e = map.entry(key).or_insert((now, 0));
+        if now.duration_since(e.0) >= self.window {
+            *e = (now, 0);
+        }
+        e.1 += 1;
+    }
+
+    pub fn succeeded(&self, name: &str) {
+        self.map.lock().remove(name);
+    }
+}
+
 fn bucket(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V4(_) => ip,
@@ -71,6 +121,25 @@ mod tests {
         assert_eq!(retry, Duration::from_secs(50));
         rl.hit(b, t0).expect("another address has its own budget");
         rl.hit(a, t0 + Duration::from_secs(60)).expect("new window");
+    }
+
+    #[test]
+    fn failures_per_name_lock_it_across_addresses_and_success_clears() {
+        let f = FailureLimiter::new(3, Duration::from_secs(900));
+        let t0 = Instant::now();
+        for _ in 0..3 {
+            f.check("admin", t0).unwrap();
+            f.failed("admin", t0);
+        }
+        assert_eq!(f.check("admin", t0 + Duration::from_secs(100)).unwrap_err(), Duration::from_secs(800));
+        f.check("ops", t0).expect("other names keep their budget");
+        f.check("admin", t0 + Duration::from_secs(900)).expect("the window ends");
+        f.failed("ops", t0);
+        f.failed("ops", t0);
+        f.succeeded("ops");
+        f.failed("ops", t0);
+        f.failed("ops", t0);
+        f.check("ops", t0).expect("a success reset the count");
     }
 
     #[test]

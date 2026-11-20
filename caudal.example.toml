@@ -73,6 +73,14 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # stream = "tv"
 # url = "udp://239.1.1.1:5000"
 
+# Ask your own service before every publish/play (blocking, cached).
+# See docs/AUTH-HOOK.md.
+# [auth.hook]
+# url = "https://auth.example.com/caudal"
+# secret = "whsec_..."
+# timeout_ms = 2000
+# on_error = "deny"
+
 # Signed webhooks (standardwebhooks.com) on stream.started / stream.ended.
 # [hooks]
 # urls = ["https://example.com/caudal-events"]

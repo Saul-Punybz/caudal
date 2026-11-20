@@ -58,6 +58,8 @@ pub struct CombinedGate {
     /// before `[[access.rules]]` and `[auth]` (an edge enforces those for
     /// its own viewers). `None` outside a cluster.
     cluster: Option<caudal_cluster::Secret>,
+    /// `[auth.hook]`: asked last, after the network rules and the token.
+    hook: Option<Arc<caudal_auth::GateHook>>,
 }
 
 impl caudal_core::Gate for CombinedGate {
@@ -89,7 +91,11 @@ impl caudal_core::Gate for CombinedGate {
             self.auth.check(action, stream, token).await.map_err(|e| match e {
                 caudal_auth::AuthError::Missing => caudal_core::Denied::Missing,
                 other => caudal_core::Denied::Refused(other.to_string()),
-            })
+            })?;
+            if let Some(hook) = &self.hook {
+                hook.check(action, stream, token, ip).await.map_err(caudal_core::Denied::Refused)?;
+            }
+            Ok(())
         })
     }
 }
@@ -102,6 +108,7 @@ fn apply_auth(
     registry: &Arc<Registry>,
     access: &Arc<caudal_access::Checker>,
     cluster: &Option<caudal_cluster::Secret>,
+    hook_stats: &Arc<caudal_auth::GateHookStats>,
     section: &config::AuthSection,
 ) {
     let auth = section.to_auth_config().expect("validated");
@@ -110,10 +117,27 @@ fn apply_auth(
     } else {
         tracing::info!(publish = auth.publish, play = auth.play, "token auth enabled");
     }
+    let hook = section.hook_config().expect("validated").map(|cfg| {
+        let url = cfg.url.clone();
+        match caudal_auth::GateHook::new(cfg, hook_stats.clone()) {
+            Ok(h) => {
+                tracing::info!(%url, "auth hook enabled");
+                Arc::new(h)
+            }
+            // Validated already; a failure here is an HTTP client that would
+            // not build. Fail closed: refuse everything the hook guards
+            // rather than silently skipping it.
+            Err(e) => {
+                tracing::error!(error = %e, "auth hook could not start; refusing what it guards");
+                Arc::new(caudal_auth::GateHook::refusing(hook_stats.clone()))
+            }
+        }
+    });
     registry.set_gate(Arc::new(CombinedGate {
         auth: caudal_auth::Authorizer::new(auth),
         access: access.clone(),
         cluster: cluster.clone(),
+        hook,
     }));
 }
 
@@ -311,6 +335,9 @@ pub struct Supervisor {
     access: Arc<caudal_access::Checker>,
     /// `[cluster]`'s secret, fixed at startup (`[cluster]` needs a restart).
     cluster: Option<caudal_cluster::Secret>,
+    /// `[auth.hook]` counters; one for the process, so `/metrics` survives
+    /// reloads of `[auth]`.
+    hook_stats: Arc<caudal_auth::GateHookStats>,
 
     /// The last config a reload was applied against (or the startup
     /// config); also the mutex that serializes concurrent reloads (SIGHUP
@@ -334,6 +361,8 @@ pub struct Started {
     /// For `main::run` to hand to `api::AppState::set_access`, so
     /// `/metrics` can render `caudal_access_denied_total`.
     pub access: Arc<caudal_access::Checker>,
+    /// For `/metrics` (`caudal_auth_hook_*`).
+    pub hook_stats: Arc<caudal_auth::GateHookStats>,
     /// For `api::AppState::set_omt`: `/api/v1/omt/sources`, the `omt`
     /// fields of `/api/v1/streams/{name}` and `caudal_omt_*`.
     pub omt: Arc<crate::omt::OmtRuntime>,
@@ -351,7 +380,8 @@ impl Supervisor {
 
         let access = cfg.access.to_access_config().expect("validated").checker().expect("validated");
         let cluster = cfg.cluster.as_ref().map(|c| c.secret().expect("validated"));
-        apply_auth(&registry, &access, &cluster, &cfg.auth);
+        let hook_stats = Arc::new(caudal_auth::GateHookStats::default());
+        apply_auth(&registry, &access, &cluster, &hook_stats, &cfg.auth);
         let hooks_task = Mutex::new(None);
         apply_hooks(&registry, &hooks_task, &cfg.hooks);
 
@@ -416,6 +446,7 @@ impl Supervisor {
             hooks_task,
             access: access.clone(),
             cluster,
+            hook_stats: hook_stats.clone(),
             current: Mutex::new(cfg.clone()),
         });
         Started {
@@ -427,6 +458,7 @@ impl Supervisor {
             failover_router,
             failover,
             access,
+            hook_stats,
             omt,
         }
     }
@@ -505,7 +537,7 @@ impl Supervisor {
             }
         }
         if old.auth != new_cfg.auth {
-            apply_auth(&self.registry, &self.access, &self.cluster, &new_cfg.auth);
+            apply_auth(&self.registry, &self.access, &self.cluster, &self.hook_stats, &new_cfg.auth);
             report.applied.push("auth".into());
         }
         if old.access != new_cfg.access {
@@ -612,6 +644,81 @@ mod tests {
     use super::*;
     use caudal_core::{Access, Denied, Gate};
 
+    /// `[auth.hook]` runs last: a network-rule denial never reaches it, a
+    /// bad token never reaches it, and it can still refuse a valid token.
+    #[tokio::test]
+    async fn auth_hook_runs_after_access_rules_and_tokens() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = {
+            let calls = calls.clone();
+            axum::Router::new().route(
+                "/gate",
+                axum::routing::post(move || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async { axum::http::StatusCode::FORBIDDEN }
+                }),
+            )
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/gate", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let secret = "0123456789abcdef0123456789abcdef";
+        let auth = caudal_auth::AuthConfig {
+            keys: Some(caudal_auth::KeySource::Secret(secret.into())),
+            publish: true,
+            play: false,
+        };
+        let access = caudal_access::AccessConfig {
+            rules: vec![caudal_access::Rule {
+                streams: vec!["blocked".into()],
+                play_allow: vec![],
+                play_deny: vec![],
+                publish_allow: vec![],
+                publish_deny: vec![caudal_access::Entry::parse("0.0.0.0/0").unwrap()],
+            }],
+            geoip_db: None,
+        }
+        .checker()
+        .unwrap();
+        let hook = caudal_auth::GateHook::new(
+            caudal_auth::GateHookConfig {
+                url,
+                secret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw".into(),
+                timeout: std::time::Duration::from_millis(500),
+                on_error: caudal_auth::OnError::Deny,
+                publish: true,
+                play: false,
+                allow_cache: std::time::Duration::from_secs(30),
+                deny_cache: std::time::Duration::from_secs(5),
+            },
+            Arc::default(),
+        )
+        .unwrap();
+        let gate = CombinedGate {
+            auth: caudal_auth::Authorizer::new(auth),
+            access,
+            cluster: None,
+            hook: Some(Arc::new(hook)),
+        };
+        let ip = Some("198.51.100.4".parse().unwrap());
+        assert!(gate.check(Access::Publish, "blocked", None, ip).await.is_err());
+        assert_eq!(gate.check(Access::Publish, "cam", None, ip).await, Err(Denied::Missing));
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "access rules and the token check come first");
+
+        let exp = jsonwebtoken::get_current_timestamp() + 60;
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &serde_json::json!({"sub": "cam", "act": "publish", "exp": exp}),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(gate.check(Access::Publish, "cam", Some(&token), ip).await, Err(Denied::Refused(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a valid token still goes to the hook");
+        assert_eq!(gate.check(Access::Play, "cam", None, ip).await, Ok(()), "play is not guarded here");
+    }
+
     #[tokio::test]
     async fn cluster_tokens_may_play_past_auth() {
         let cluster = caudal_cluster::Secret::new("the-cluster-secret").unwrap();
@@ -621,7 +728,12 @@ mod tests {
             play: true,
         };
         let access = caudal_access::AccessConfig { rules: Vec::new(), geoip_db: None }.checker().unwrap();
-        let gate = CombinedGate { auth: caudal_auth::Authorizer::new(auth), access, cluster: Some(cluster.clone()) };
+        let gate = CombinedGate {
+            auth: caudal_auth::Authorizer::new(auth),
+            access,
+            cluster: Some(cluster.clone()),
+            hook: None,
+        };
 
         let node = cluster.mint("edge-1");
         assert_eq!(gate.check(Access::Play, "cam", Some(&node), None).await, Ok(()));

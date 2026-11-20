@@ -100,6 +100,8 @@ pub struct SrtSection {
     pub passphrase: Option<String>,
     /// Push streams out to remote SRT listeners.
     pub push: Vec<SrtPushEntry>,
+    /// Pull streams in from remote SRT listeners (Caudal calls them).
+    pub pull: Vec<SrtPushEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -111,7 +113,13 @@ pub struct SrtPushEntry {
 
 impl Default for SrtSection {
     fn default() -> Self {
-        Self { bind: default_srt_bind(), latency_ms: default_srt_latency_ms(), passphrase: None, push: Vec::new() }
+        Self {
+            bind: default_srt_bind(),
+            latency_ms: default_srt_latency_ms(),
+            passphrase: None,
+            push: Vec::new(),
+            pull: Vec::new(),
+        }
     }
 }
 
@@ -193,6 +201,8 @@ pub struct Config {
     /// Multistreaming: `[[restream]]` entries, each pushing one stream to an
     /// RTMP/RTMPS ingest (YouTube, Twitch, Facebook, another server).
     pub restream: Vec<RestreamEntry>,
+    /// MPEG-TS over UDP in (`[[udp.pull]]`): unicast or multicast, plain or RTP.
+    pub udp: UdpSection,
     /// IP multicast output: `[[multicast]]` entries, each sending one
     /// stream to a multicast group as MPEG-TS over UDP or RTP.
     pub multicast: Vec<MulticastEntry>,
@@ -294,6 +304,35 @@ impl ClusterSection {
 /// One restream target: push `stream` to `url` (`rtmp://` or `rtmps://`,
 /// `host[:port]/app/key`) while it is live. The key never reaches logs or
 /// the API.
+/// `[udp]`: only `[[udp.pull]]` today.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct UdpSection {
+    pub pull: Vec<UdpPullEntry>,
+}
+
+/// One `[[udp.pull]]`: listen on `url` (`udp://239.1.1.1:5000`,
+/// `udp://:5000`, `rtp://...`) and publish the transport stream as
+/// `stream`. `interface`: the local IPv4 address to join a multicast group
+/// on, when the machine has several.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UdpPullEntry {
+    pub stream: String,
+    pub url: String,
+    #[serde(default)]
+    pub interface: Option<std::net::Ipv4Addr>,
+}
+
+impl UdpSection {
+    pub fn pull_targets(&self) -> Vec<caudal_udp::UdpPull> {
+        self.pull
+            .iter()
+            .map(|p| caudal_udp::UdpPull { stream: p.stream.clone(), url: p.url.clone(), interface: p.interface })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RestreamEntry {
@@ -470,6 +509,11 @@ impl RtspSection {
 }
 
 impl SrtSection {
+    /// `[[srt.pull]]` as the runtime type `caudal-srt` takes.
+    pub fn pull_targets(&self) -> Vec<caudal_srt::SrtPull> {
+        self.pull.iter().map(|p| caudal_srt::SrtPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
+
     /// `[[srt.push]]` as the runtime type `caudal-srt` takes.
     pub fn push_targets(&self) -> Vec<caudal_srt::SrtPush> {
         self.push.iter().map(|p| caudal_srt::SrtPush { stream: p.stream.clone(), url: p.url.clone() }).collect()
@@ -1574,11 +1618,29 @@ impl Config {
             if ok { Ok(()) } else { Err(format!("{section} url {url:?}: expected {}", schemes.join("://, ") + "://")) }
         };
         let mut pulled = std::collections::HashSet::new();
-        for p in &self.rtsp.pull {
-            name_ok("[[rtsp.pull]]", &p.stream)?;
-            scheme_ok("[[rtsp.pull]]", &p.url, &["rtsp", "rtsps"])?;
-            if !pulled.insert(p.stream.as_str()) {
-                return Err(format!("[[rtsp.pull]] stream {:?} is pulled twice", p.stream));
+        let pulls = self
+            .rtsp
+            .pull
+            .iter()
+            .map(|p| ("[[rtsp.pull]]", &p.stream, &p.url, &["rtsp", "rtsps"][..]))
+            .chain(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &p.stream, &p.url, &["srt"][..])))
+            .chain(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &p.stream, &p.url, &["udp", "rtp"][..])));
+        for (section, stream, url, schemes) in pulls {
+            name_ok(section, stream)?;
+            scheme_ok(section, url, schemes)?;
+            if !pulled.insert(stream.as_str()) {
+                return Err(format!("{section} stream {stream:?} is pulled twice"));
+            }
+        }
+        let mut listening = std::collections::HashSet::new();
+        for p in &self.udp.pull {
+            let t = caudal_udp::parse_url(&p.url).map_err(|e| format!("[[udp.pull]] url {e}"))?;
+            if p.interface.is_some() && !t.is_multicast() {
+                return Err(format!("[[udp.pull]] {:?}: `interface` only applies to a multicast group", p.url));
+            }
+            // Two pulls on one unicast port would split its datagrams.
+            if !t.is_multicast() && !listening.insert(t.addr.port()) {
+                return Err(format!("[[udp.pull]] port {} is used by two unicast pulls", t.addr.port()));
             }
         }
         for p in &self.srt.push {
@@ -1888,6 +1950,28 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let bc = cfg.buffer.to_buffer_config();
         assert_eq!(bc.window, Duration::from_secs(10));
         assert_eq!(bc.max_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn udp_pulls_are_validated() {
+        let ok: Config = toml::from_str(
+            "[[udp.pull]]\nstream = \"tv\"\nurl = \"udp://239.1.1.1:5000\"\ninterface = \"10.0.0.2\"\n\
+             [[udp.pull]]\nstream = \"cam\"\nurl = \"rtp://:5004\"\n",
+        )
+        .unwrap();
+        ok.validate().unwrap();
+        assert_eq!(ok.udp.pull_targets()[0].interface, Some("10.0.0.2".parse().unwrap()));
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[udp.pull]]\nstream = \"a\"\nurl = \"udp://239.1.1.1\"\n").contains("port"));
+        assert!(
+            bad("[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\ninterface = \"10.0.0.2\"\n")
+                .contains("multicast")
+        );
+        let same_port = "[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n[[udp.pull]]\nstream = \"b\"\nurl = \"udp://127.0.0.1:5000\"\n";
+        assert!(bad(same_port).contains("two unicast pulls"));
+        let twice =
+            "[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n[[srt.pull]]\nstream = \"a\"\nurl = \"srt://h:1\"\n";
+        assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
     }
 
     #[test]

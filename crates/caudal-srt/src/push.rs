@@ -122,7 +122,7 @@ async fn run_push_session(socket: SrtSocket, stream: &Arc<Stream>) -> bool {
 
 /// Parses `srt://host:port[?streamid=&passphrase=&latency=]` and connects
 /// as a caller.
-async fn connect(url: &str) -> Result<SrtSocket, String> {
+pub(crate) async fn connect(url: &str) -> Result<SrtSocket, String> {
     let (addr, opts) = parse_url(url).ok_or_else(|| format!("invalid SRT URL: {url}"))?;
     SrtSocket::connect(addr, opts).await.map_err(|err| err.to_string())
 }

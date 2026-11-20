@@ -323,6 +323,8 @@ pub struct Supervisor {
     channel: caudal_channel::ChannelHandle,
     failover: caudal_failover::FailoverHandle,
     srt_push: caudal_srt::PushHandle,
+    srt_pull: caudal_srt::PullHandle,
+    udp_pull: caudal_udp::UdpPullHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
     omt: Arc<crate::omt::OmtRuntime>,
     transcode: caudal_transcode::TranscodeHandle,
@@ -386,6 +388,8 @@ impl Supervisor {
         let rtmp = Mutex::new(spawn_rtmp(registry.clone(), buffer, &cfg.rtmp));
         let srt_listen = Mutex::new(spawn_srt(registry.clone(), buffer, &cfg.srt));
         let srt_push = caudal_srt::start_pushes(registry.clone(), cfg.srt.push_targets());
+        let srt_pull = caudal_srt::start_pulls(registry.clone(), buffer, cfg.srt.pull_targets());
+        let udp_pull = caudal_udp::start_pulls(registry.clone(), buffer, cfg.udp.pull_targets());
         let rtsp_listen = Mutex::new(spawn_rtsp(registry.clone(), buffer, &cfg.rtsp));
         let rtsp_pull = caudal_rtsp::start_pulls(registry.clone(), buffer, cfg.rtsp.pull_targets());
         let omt = crate::omt::OmtRuntime::start(cfg, registry.clone(), buffer);
@@ -434,6 +438,8 @@ impl Supervisor {
             channel,
             failover: failover.clone(),
             srt_push,
+            srt_pull,
+            udp_pull,
             rtsp_pull,
             omt: omt.clone(),
             transcode,
@@ -502,6 +508,14 @@ impl Supervisor {
         if old.srt.push != new_cfg.srt.push {
             self.srt_push.reload(&self.registry, new_cfg.srt.push_targets());
             report.applied.push("srt.push".into());
+        }
+        if old.udp != new_cfg.udp {
+            self.udp_pull.reload(&self.registry, new_cfg.udp.pull_targets());
+            report.applied.push("udp.pull".into());
+        }
+        if old.srt.pull != new_cfg.srt.pull {
+            self.srt_pull.reload(&self.registry, new_cfg.srt.pull_targets());
+            report.applied.push("srt.pull".into());
         }
         if old.rtsp.pull != new_cfg.rtsp.pull {
             self.rtsp_pull.reload(&self.registry, self.buffer, new_cfg.rtsp.pull_targets());

@@ -804,6 +804,7 @@ dependencies = [
  "caudal-srt",
  "caudal-tls",
  "caudal-transcode",
+ "caudal-udp",
  "caudal-ui",
  "caudal-webrtc",
  "clap",
@@ -1264,6 +1265,20 @@ dependencies = [
  "parking_lot",
  "scuffle-h264",
  "scuffle-h265",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "caudal-udp"
+version = "0.1.0"
+dependencies = [
+ "caudal-core",
+ "caudal-ts",
+ "parking_lot",
+ "rustix",
+ "socket2 0.6.5",
+ "tokio",
  "tracing",
 ]
 

@@ -9,10 +9,10 @@ use caudal_core::{BufferConfig, Frame, Publisher, Registry, TrackId, TrackInfo, 
 /// Encoder input starts this far after zero, so a frame slightly older than
 /// the first one (audio queued just before the join keyframe) never goes
 /// negative on the 33-bit TS clock.
-pub(crate) const HEADROOM_US: i64 = 10_000_000;
+pub const HEADROOM_US: i64 = 10_000_000;
 
-pub(crate) const VIDEO_OUT: TrackId = TrackId(0);
-pub(crate) const AUDIO_OUT: TrackId = TrackId(1);
+pub const VIDEO_OUT: TrackId = TrackId(0);
+pub const AUDIO_OUT: TrackId = TrackId(1);
 
 fn rescale(v: i64, from: i64, to: i64) -> i64 {
     (i128::from(v) * i128::from(to) / i128::from(from.max(1))) as i64
@@ -22,11 +22,24 @@ fn rescale(v: i64, from: i64, to: i64) -> i64 {
 /// the first source frame ever fed and never changes for the life of the
 /// source, so an encoder restart continues on the same timeline.
 #[derive(Default, Clone, Copy)]
-pub(crate) struct Clock {
+pub struct Clock {
     origin_us: Option<i64>,
 }
 
 impl Clock {
+    /// A clock whose origin is already fixed at `origin_us` on the source
+    /// clock (for sources that are timestamped from zero by the caller).
+    pub fn fixed(origin_us: i64) -> Self {
+        Self { origin_us: Some(origin_us) }
+    }
+
+    /// Source microseconds onto the encoder clock (fixes the origin at
+    /// `us` if it is not set yet).
+    pub fn onto_encoder_us(&mut self, us: i64) -> i64 {
+        let origin = *self.origin_us.get_or_insert(us);
+        us - origin + HEADROOM_US
+    }
+
     /// `frame` with its timestamps moved onto the encoder clock.
     pub fn onto_encoder(&mut self, info: &TrackInfo, frame: &Frame) -> Frame {
         let origin = *self.origin_us.get_or_insert_with(|| info.to_micros(frame.dts));
@@ -44,7 +57,7 @@ impl Clock {
 /// One rendition stream `<source>+<label>`, published once its tracks are
 /// known (so outputs never see a half-described stream), kept across
 /// encoder restarts, ended when dropped.
-pub(crate) struct RenditionOut {
+pub struct RenditionOut {
     pub name: String,
     registry: Arc<Registry>,
     buffer: BufferConfig,

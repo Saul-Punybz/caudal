@@ -45,3 +45,6 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# Our own OMT crates while M12 is developed (pinned rev in the root
+# Cargo.toml); remove once they come from crates.io.
+allow-git = ["https://github.com/Saul-Punybz/open-media-transport"]

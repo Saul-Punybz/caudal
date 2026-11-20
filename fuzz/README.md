@@ -25,6 +25,7 @@ cargo install cargo-fuzz   # or: cargo binstall cargo-fuzz
 | `rtmp_flv_amf` | `caudal-rtmp` | FLV tag / AMF0 parsing (`demux::demux_video`, `demux_audio`, `parse_cue_point`, `parse_metadata_fps`): legacy and Enhanced RTMP video/audio tags (H.264/H.265/AV1/AAC), `onCuePoint`/`onAdCue`/`onMetaData` AMF0 messages. Reached through `caudal_rtmp::fuzz`, a `#[doc(hidden)]` module added only for this (the real functions are `pub(crate)`). |
 | `ts_demux` | `caudal-ts` | The MPEG-TS ingest pipeline end to end: `ts::TsDemux` (raw TS packets -> PES/PSI-section elementary-stream units, including SCTE-35 section reassembly on a PMT-declared PID) feeding straight into `demux::Demuxer` (Annex B -> AVCC/hvcC, ADTS -> raw AAC, `caudal-scte35` cue placement). What an SRT publisher's bytes go through. |
 | `scte35_parse` | `caudal-scte35` | `parse` (a raw `splice_info_section`, CRC checked), `decode_text` (hex/base64 text form), `retime` (rewrites `pts_adjustment`). Reachable from an MPEG-TS SCTE-35 PID, an RTMP `onCuePoint`, or any HTTP API that accepts a cue by text. |
+| `omt_time_map` | `caudal-omt` | `time::TimeMap`: OMT 100 ns timestamps from any sender (backwards, repeated, huge jumps, bad sample rates) onto 90 kHz video / sample-rate audio. Asserts video pts strictly increase and audio chunks never overlap, which the ffmpeg feed relies on. |
 | `rtsp_request` | `caudal-rtsp` | RTSP server-side request parsing: `rtsp-types`'s wire parser plus `caudal-rtsp`'s own URI/query parsing (`server::parse_uri`) and `Transport` header selection (`server::choose_transport`). Reached through `caudal_rtsp::fuzz` (`server` is a private module). |
 | `webrtc_sdp` | `caudal-webrtc` | WHIP/WHEP SDP offer handling: `str0m`'s offer parse + ICE-lite answer (via `caudal-webrtc::negotiate`), plus the answer-side `answer_codecs` line scan. Never touches `engine.rs` (the UDP peer loop, owned by other work) — no socket, no peer, just offer parsing and answer generation. Reached through `caudal_webrtc::fuzz`. |
 
@@ -94,6 +95,9 @@ guided mutation starts from something structurally valid instead of noise:
 - `rtsp_request/`: real RTSP/1.0 request text for every method the server
   handles (OPTIONS, DESCRIBE with `?token=`, SETUP over UDP and TCP
   interleaved, PLAY with a Range header, TEARDOWN, GET_PARAMETER).
+- `omt_time_map/`: `[op][ts][a][b]` records shaped like a 30 fps source
+  with 48 kHz audio chunks, a sender restart (clock back to 0) and a 1 h
+  jump; and 59.94 fps with 44.1 kHz odd-sized chunks and a rate change.
 - `webrtc_sdp/`: a realistic WHIP-shaped SDP offer (H.264 packetization-mode
   1 + Opus, ICE ufrag/pwd, DTLS fingerprint) and a small answer-shaped text
   sample for the `answer_codecs` path.

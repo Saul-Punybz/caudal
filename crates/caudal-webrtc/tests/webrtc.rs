@@ -545,12 +545,38 @@ async fn whep_sends_h264_that_reassembles_into_a_keyframe() {
     let types = got.unwrap();
     assert!(types.contains(&7) && types.contains(&8), "SPS/PPS sent before the IDR: {types:?}");
 
+    // The viewer is a session with bytes going out; a kick stops its media.
+    let sessions = registry.sessions().list(Some("live"));
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0].protocol, "whep");
+    assert!(sessions[0].bytes_out > 0);
+    assert_eq!(registry.sessions().kick(sessions[0].id, None), caudal_core::KickResult::Kicked { blocked: false });
+    // Let what was already in flight arrive, then count what still comes.
+    c.run_until(Duration::from_millis(500), |_| false).await;
+    let mut after = 0;
+    c.run_until(Duration::from_secs(2), |e| {
+        if matches!(e, str0m::Event::MediaData(_)) {
+            after += 1;
+        }
+        false
+    })
+    .await;
+    assert_eq!(after, 0, "no media after the kick");
+    assert!(registry.sessions().list(Some("live")).is_empty(), "the session closed");
+
     // Unknown stream: 404. DELETE ends the session.
     let mut c2 = Client::new().await;
     let (offer2, _) = c2.offer(&[(MediaKind::Video, Direction::RecvOnly)]);
     assert_eq!(http("POST", format!("{}/whep/nope", srv.http), Some(offer2), None).await.status, 404);
-    assert_eq!(http("DELETE", format!("{}{loc}", srv.http), None, None).await.status, 200);
+    // The kick already ended the first session.
     assert_eq!(http("DELETE", format!("{}{loc}", srv.http), None, None).await.status, 404);
+    let mut c3 = Client::new().await;
+    let (offer3, _) = c3.offer(&[(MediaKind::Video, Direction::RecvOnly)]);
+    let r3 = http("POST", format!("{}/whep/live", srv.http), Some(offer3), None).await;
+    assert_eq!(r3.status, 201, "{}", r3.body);
+    let loc3 = r3.location.expect("Location");
+    assert_eq!(http("DELETE", format!("{}{loc3}", srv.http), None, None).await.status, 200);
+    assert_eq!(http("DELETE", format!("{}{loc3}", srv.http), None, None).await.status, 404);
     feeder.abort();
 }
 

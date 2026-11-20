@@ -506,7 +506,7 @@ async fn whep_post(
         session: session.clone(),
         name: name.clone(),
         rtc,
-        role: Role::Whep(Box::new(egress::Egress::new(name.clone(), sub))),
+        role: Role::Whep(Box::new(egress::Egress::new(name.clone(), sub, st.registry.open_session(&name, "whep", ip)))),
     };
     if !engines.add(peer).await {
         return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running");

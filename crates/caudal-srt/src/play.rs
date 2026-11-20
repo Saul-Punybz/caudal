@@ -36,13 +36,21 @@ pub(crate) async fn handle(
     // A real viewer: counted in the stream's viewer stats, same as any
     // other output's audience.
     let mut sub = stream.subscribe(StartAt::LiveEdge);
+    let mut session = registry.open_session(name, "srt", Some(std::net::IpAddr::V4(*peer.ip())));
     let mut tracks = sub.tracks();
     let mut mux = TsMux::new();
     mux.set_tracks(&tracks);
     tracing::info!(%peer, stream = %name, "srt play started");
 
     loop {
-        match sub.recv().await {
+        let ev = tokio::select! {
+            ev = sub.recv() => ev,
+            () = session.kicked() => {
+                tracing::info!(%peer, stream = %name, "srt play kicked");
+                break;
+            }
+        };
+        match ev {
             Event::TracksChanged => {
                 tracks = sub.tracks();
                 mux.set_tracks(&tracks);
@@ -69,6 +77,7 @@ pub(crate) async fn handle(
         if !send_chunks(&socket, &out).await {
             break;
         }
+        session.add_bytes(out.len());
     }
     tracing::debug!(%peer, stream = %name, "srt play ended");
 }

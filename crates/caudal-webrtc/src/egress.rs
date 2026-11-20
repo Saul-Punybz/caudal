@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use caudal_core::{Codec, Event, Frame, StartAt, Subscriber, TrackId, TrackInfo, TrackKind};
+use caudal_core::{Codec, Event, Frame, Session, StartAt, Subscriber, TrackId, TrackInfo, TrackKind};
 use str0m::Rtc;
 use str0m::format::Codec as RtcCodec;
 use str0m::media::{Frequency, MediaKind, MediaTime, Mid, Pt};
@@ -37,9 +37,12 @@ pub(crate) enum Ctl {
 /// (each one sends that viewer back to the next keyframe).
 pub(crate) static QUEUE_FULL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// `bytes_out` of a WHEP session counts media payload handed to the engine
+/// (before RTP/SRTP framing), not datagrams on the wire.
 pub(crate) async fn forward(
     id: u64,
     mut sub: Subscriber,
+    mut session: Session,
     tx: mpsc::Sender<(u64, Out)>,
     mut ctl: mpsc::UnboundedReceiver<Ctl>,
 ) {
@@ -48,6 +51,11 @@ pub(crate) async fn forward(
     loop {
         tokio::select! {
             biased;
+            () = session.kicked() => {
+                tracing::info!(stream = %sub.stream().name(), "whep play kicked");
+                let _ = tx.send((id, Out::End)).await;
+                return;
+            }
             c = ctl.recv() => match c {
                 None => return,
                 Some(Ctl::SkipToLive) => { sub.skip_to_live(); }
@@ -72,8 +80,9 @@ pub(crate) async fn forward(
                         }
                         need_key = false;
                     }
+                    let len = f.data.len();
                     match tx.try_send((id, Out::Frame(f))) {
-                        Ok(()) => {}
+                        Ok(()) => session.add_bytes(len),
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             QUEUE_FULL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             need_key = true;
@@ -103,6 +112,8 @@ struct VideoOut {
 pub(crate) struct Egress {
     pub(crate) name: Arc<str>,
     pub(crate) sub: Option<Subscriber>,
+    /// Moves to the forwarder with `sub`.
+    pub(crate) session: Option<Session>,
     pub(crate) ctl: Option<mpsc::UnboundedSender<Ctl>>,
     pub(crate) task: Option<tokio::task::AbortHandle>,
     video_mid: Option<Mid>,
@@ -124,10 +135,11 @@ impl Drop for Egress {
 }
 
 impl Egress {
-    pub(crate) fn new(name: Arc<str>, sub: Subscriber) -> Self {
+    pub(crate) fn new(name: Arc<str>, sub: Subscriber, session: Session) -> Self {
         Self {
             name,
             sub: Some(sub),
+            session: Some(session),
             ctl: None,
             task: None,
             video_mid: None,

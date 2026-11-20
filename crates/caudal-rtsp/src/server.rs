@@ -605,14 +605,16 @@ async fn handle_play(
     }
 
     let sub = stream.subscribe(StartAt::LiveEdge);
+    let session = registry.open_session(&stream_name, "rtsp", Some(state.peer_ip));
     let tracks = state.tracks.clone();
     let setups: HashMap<TrackId, PlayTransport> = state.setups.iter().map(|(k, v)| (*k, v.play.clone())).collect();
-    state.play_handle = Some(tokio::spawn(play_task(sub, tracks, setups, writer)));
+    state.play_handle = Some(tokio::spawn(play_task(sub, session, tracks, setups, writer)));
     simple(StatusCode::Ok)
 }
 
 async fn play_task(
     mut sub: caudal_core::Subscriber,
+    mut session: caudal_core::Session,
     tracks: Vec<TrackInfo>,
     setups: HashMap<TrackId, PlayTransport>,
     writer: Arc<Mutex<DynWriter>>,
@@ -640,11 +642,14 @@ async fn play_task(
                                 if writer.lock().await.write_all(packets.framed()).await.is_err() {
                                     return;
                                 }
+                                session.add_bytes(packets.framed().len());
                             }
                             PlayTransport::Udp { rtp_socket, client_rtp_addr, .. } => {
                                 rtp::packetize(info, &frame, ps, 0, &mut packets);
                                 for pkt in packets.bare() {
-                                    let _ = rtp_socket.send_to(pkt, *client_rtp_addr).await;
+                                    if rtp_socket.send_to(pkt, *client_rtp_addr).await.is_ok() {
+                                        session.add_bytes(pkt.len());
+                                    }
                                 }
                             }
                         }
@@ -661,6 +666,11 @@ async fn play_task(
                         return;
                     }
                 }
+            }
+            () = session.kicked() => {
+                tracing::info!("rtsp play kicked");
+                let _ = writer.lock().await.shutdown().await;
+                return;
             }
             _ = sr_ticker.tick() => {
                 for (track_id, transport) in &setups {

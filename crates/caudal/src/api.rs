@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use caudal_core::{Cue, CueKind, Registry, Stream};
 use serde::{Deserialize, Serialize};
@@ -169,6 +169,66 @@ async fn get_stream(State(state): State<Arc<AppState>>, Path(name): Path<String>
     }
 }
 
+/// One viewer session in `GET /api/v1/sessions`.
+#[derive(Debug, Serialize)]
+struct SessionJson {
+    id: u64,
+    stream: String,
+    protocol: &'static str,
+    ip: Option<String>,
+    /// Unix seconds.
+    started: u64,
+    duration_secs: u64,
+    /// What the output wrote at its own layer: TS for SRT, RTP for RTSP,
+    /// media payload before RTP/SRTP for WHEP.
+    bytes_out: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionsQuery {
+    stream: Option<String>,
+}
+
+/// `GET /api/v1/sessions[?stream=NAME]`: open viewer sessions, oldest first.
+/// LL-HLS and MoQ viewers are not listed yet (counted in `viewers` only).
+async fn list_sessions(State(state): State<Arc<AppState>>, Query(q): Query<SessionsQuery>) -> Json<Vec<SessionJson>> {
+    let list = state.registry.sessions().list(q.stream.as_deref());
+    Json(
+        list.into_iter()
+            .map(|s| SessionJson {
+                id: s.id,
+                stream: s.stream,
+                protocol: s.protocol,
+                ip: s.ip.map(|i| i.to_string()),
+                started: s.started,
+                duration_secs: s.duration_secs,
+                bytes_out: s.bytes_out,
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct KickQuery {
+    /// Keep the viewer's address off that stream this long (max 86400).
+    block_secs: Option<u64>,
+}
+
+/// `DELETE /api/v1/sessions/{id}[?block_secs=N]`: ends a viewer session.
+async fn kick_session(State(state): State<Arc<AppState>>, Path(id): Path<u64>, Query(q): Query<KickQuery>) -> Response {
+    let max = caudal_core::session::MAX_BLOCK.as_secs();
+    if q.block_secs.is_some_and(|b| b > max) {
+        return (StatusCode::BAD_REQUEST, format!("block_secs is at most {max}")).into_response();
+    }
+    let block = q.block_secs.map(std::time::Duration::from_secs);
+    match state.registry.sessions().kick(id, block) {
+        caudal_core::KickResult::NotFound => StatusCode::NOT_FOUND.into_response(),
+        caudal_core::KickResult::Kicked { blocked } => {
+            Json(serde_json::json!({ "kicked": id, "blocked": blocked })).into_response()
+        }
+    }
+}
+
 /// Body of `POST /api/v1/streams/{name}/cues`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -281,6 +341,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/streams", get(list_streams))
         .route("/api/v1/streams/{name}", get(get_stream))
         .route("/api/v1/streams/{name}/cues", post(post_cue))
+        .route("/api/v1/sessions", get(list_sessions))
+        .route("/api/v1/sessions/{id}", delete(kick_session))
         .route("/metrics", get(metrics_endpoint))
         .with_state(state)
 }
@@ -296,6 +358,46 @@ mod tests {
     fn app() -> (Router, Arc<AppState>) {
         let state = AppState::new(Registry::new());
         (router(state.clone()), state)
+    }
+
+    #[tokio::test]
+    async fn sessions_are_listed_and_kicked() {
+        let (app, state) = app();
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let mut s = state.registry.open_session("cam", "srt", Some(ip));
+        s.add_bytes(1316);
+        let _other = state.registry.open_session("other", "rtsp", None);
+
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/v1/sessions?stream=cam").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body.as_array().unwrap().len(), 1, "{body}");
+        assert_eq!(body[0]["protocol"], "srt");
+        assert_eq!(body[0]["ip"], "203.0.113.7");
+        assert_eq!(body[0]["bytes_out"], 1316);
+
+        let uri = format!("/api/v1/sessions/{}?block_secs=999999", s.id());
+        let res = app.clone().oneshot(Request::delete(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "block over a day");
+
+        let uri = format!("/api/v1/sessions/{}?block_secs=60", s.id());
+        let res = app.clone().oneshot(Request::delete(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_secs(1), s.kicked()).await.unwrap();
+        assert_eq!(
+            state.registry.authorize(caudal_core::Access::Play, "cam", None, Some(ip)).await,
+            Err(caudal_core::Denied::Refused("kicked from this stream; try again later".into())),
+            "the kicked address cannot come straight back"
+        );
+        assert_eq!(state.registry.authorize(caudal_core::Access::Play, "other", None, Some(ip)).await, Ok(()));
+
+        let res = app.oneshot(Request::delete("/api/v1/sessions/424242").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

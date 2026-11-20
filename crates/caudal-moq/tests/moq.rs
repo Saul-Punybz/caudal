@@ -151,5 +151,13 @@ async fn stream_plays_over_moq_and_ends() {
     stop.store(true, Ordering::Relaxed);
     feeder.await.unwrap();
     tokio::time::timeout(T, bc.closed()).await.expect("broadcast did not end");
-    drop(session);
+
+    // The connection is a viewer session (root path: listed as `*`), and a
+    // kick closes it from the server side.
+    let sessions = registry.sessions().list(None);
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!((sessions[0].protocol, sessions[0].stream.as_str()), ("moq", "*"));
+    assert_eq!(registry.sessions().kick(sessions[0].id, None), caudal_core::KickResult::Kicked { blocked: false });
+    tokio::time::timeout(T, session.closed()).await.expect("the kick closes the client's session");
+    assert!(registry.sessions().list(None).is_empty());
 }

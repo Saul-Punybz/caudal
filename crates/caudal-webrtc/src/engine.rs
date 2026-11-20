@@ -624,6 +624,16 @@ fn on_event(slot: &mut Slot, ev: Event) {
                 e.keyframe_requested();
             }
         }
+        Event::PeerStats(s) => {
+            if let Role::Whep(e) = &slot.peer.role {
+                if let Some(rtt) = s.rtt {
+                    e.quality.set_rtt(rtt);
+                }
+                if let Some(loss) = s.egress_loss_fraction {
+                    e.quality.set_loss(f64::from(loss));
+                }
+            }
+        }
         _ => {}
     }
 }

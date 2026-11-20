@@ -332,6 +332,12 @@ struct SessionJson {
     /// What the output wrote at its own layer: TS for SRT, RTP for RTSP,
     /// media payload before RTP/SRTP for WHEP.
     bytes_out: u64,
+    /// Round trip, when the protocol measures it (SRT, WHEP).
+    rtt_ms: Option<f64>,
+    /// Share of packets lost or retransmitted toward the viewer, 0..1 (SRT,
+    /// WHEP).
+    loss: Option<f64>,
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,7 +346,6 @@ struct SessionsQuery {
 }
 
 /// `GET /api/v1/sessions[?stream=NAME]`: open viewer sessions, oldest first.
-/// LL-HLS and MoQ viewers are not listed yet (counted in `viewers` only).
 async fn list_sessions(State(state): State<Arc<AppState>>, Query(q): Query<SessionsQuery>) -> Json<Vec<SessionJson>> {
     let list = state.registry.sessions().list(q.stream.as_deref());
     Json(
@@ -353,9 +358,49 @@ async fn list_sessions(State(state): State<Arc<AppState>>, Query(q): Query<Sessi
                 started: s.started,
                 duration_secs: s.duration_secs,
                 bytes_out: s.bytes_out,
+                rtt_ms: s.rtt_ms,
+                loss: s.loss,
+                tags: s.tags,
             })
             .collect(),
     )
+}
+
+#[derive(Debug, Deserialize)]
+struct TagBody {
+    tag: String,
+}
+
+/// `POST /api/v1/sessions/{id}/tags` `{"tag": "vip"}`: labels a session so
+/// a group can be kicked at once.
+async fn tag_session(State(state): State<Arc<AppState>>, Path(id): Path<u64>, Json(body): Json<TagBody>) -> Response {
+    match state.registry.sessions().tag(id, &body.tag) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e @ "no such session") => (StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkKickQuery {
+    stream: Option<String>,
+    tag: Option<String>,
+    block_secs: Option<u64>,
+}
+
+/// `DELETE /api/v1/sessions?stream=NAME&tag=T[&block_secs=N]`: ends every
+/// session matching all the given conditions (at least one is required).
+async fn kick_sessions(State(state): State<Arc<AppState>>, Query(q): Query<BulkKickQuery>) -> Response {
+    if q.stream.is_none() && q.tag.is_none() {
+        return (StatusCode::BAD_REQUEST, "give `stream`, `tag` or both").into_response();
+    }
+    let max = caudal_core::session::MAX_BLOCK.as_secs();
+    if q.block_secs.is_some_and(|b| b > max) {
+        return (StatusCode::BAD_REQUEST, format!("block_secs is at most {max}")).into_response();
+    }
+    let sel = caudal_core::Selector { stream: q.stream, tag: q.tag };
+    let kicked = state.registry.sessions().kick_matching(&sel, q.block_secs.map(std::time::Duration::from_secs));
+    Json(serde_json::json!({ "kicked": kicked })).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -495,8 +540,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/streams/{name}", get(get_stream))
         .route("/api/v1/streams/{name}/cues", post(post_cue))
         .route("/api/v1/omt/sources", get(omt_sources))
-        .route("/api/v1/sessions", get(list_sessions))
+        .route("/api/v1/sessions", get(list_sessions).delete(kick_sessions))
         .route("/api/v1/sessions/{id}", delete(kick_session))
+        .route("/api/v1/sessions/{id}/tags", post(tag_session))
         .route("/metrics", get(metrics_endpoint))
         .with_state(state)
 }
@@ -552,6 +598,58 @@ mod tests {
 
         let res = app.oneshot(Request::delete("/api/v1/sessions/424242").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sessions_are_tagged_and_kicked_in_bulk() {
+        let (app, state) = app();
+        let a = state.registry.open_session("cam", "srt", None);
+        let b = state.registry.open_session("cam", "whep", None);
+        let c = state.registry.open_session("other", "rtsp", None);
+        a.quality().set_rtt(std::time::Duration::from_millis(40));
+        let post = |id: u64, body: &'static str| {
+            Request::post(format!("/api/v1/sessions/{id}/tags"))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(post(a.id(), r#"{"tag":"vip"}"#)).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            app.clone().oneshot(post(c.id(), r#"{"tag":"vip"}"#)).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            app.clone().oneshot(post(b.id(), r#"{"tag":"no spaces"}"#)).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(app.clone().oneshot(post(9999, r#"{"tag":"vip"}"#)).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/v1/sessions?stream=cam").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let list: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(list[0]["tags"], serde_json::json!(["vip"]));
+        assert_eq!(list[0]["rtt_ms"], 40.0);
+        assert_eq!(list[1]["rtt_ms"], serde_json::Value::Null);
+
+        let del = |uri: &str| Request::delete(uri).body(Body::empty()).unwrap();
+        assert_eq!(app.clone().oneshot(del("/api/v1/sessions")).await.unwrap().status(), StatusCode::BAD_REQUEST);
+        let res = app.clone().oneshot(del("/api/v1/sessions?stream=cam&tag=vip")).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["kicked"], serde_json::json!([a.id()]), "both conditions must hold");
+        assert!(a.is_kicked() && !b.is_kicked() && !c.is_kicked());
+        let res = app.oneshot(del("/api/v1/sessions?tag=vip")).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert!(body["kicked"].as_array().unwrap().contains(&serde_json::json!(c.id())));
+        assert!(c.is_kicked() && !b.is_kicked());
     }
 
     #[tokio::test]

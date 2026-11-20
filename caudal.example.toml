@@ -64,6 +64,15 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # publish = true
 # play = false
 
+# Pull streams in (docs/PULL-INPUTS.md): call a remote SRT listener, or
+# take MPEG-TS over UDP (unicast or multicast, plain or RTP).
+# [[srt.pull]]
+# stream = "venue"
+# url = "srt://203.0.113.7:9000?streamid=play/main"
+# [[udp.pull]]
+# stream = "tv"
+# url = "udp://239.1.1.1:5000"
+
 # Signed webhooks (standardwebhooks.com) on stream.started / stream.ended.
 # [hooks]
 # urls = ["https://example.com/caudal-events"]

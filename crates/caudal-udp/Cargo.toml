@@ -1,0 +1,20 @@
+[package]
+name = "caudal-udp"
+description = "MPEG-TS over UDP into Caudal: unicast or multicast, plain or in RTP (RFC 2250)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+caudal-ts.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+socket2 = "0.6"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+rustix.workspace = true

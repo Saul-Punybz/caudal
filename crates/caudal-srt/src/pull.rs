@@ -26,14 +26,9 @@ pub(crate) async fn run(pull: SrtPull, registry: Arc<Registry>, buffer: BufferCo
                     tracing::info!(url = %pull.url, stream = %pull.stream, "srt pull connected");
                     let mut ingest = TsIngest::new(publisher);
                     let mut got_any = false;
-                    loop {
-                        match socket.recv().await {
-                            Ok(Some(payload)) => {
-                                got_any = true;
-                                ingest.feed(&payload);
-                            }
-                            Ok(None) | Err(_) => break,
-                        }
+                    while let Ok(Some(payload)) = socket.recv().await {
+                        got_any = true;
+                        ingest.feed(&payload);
                     }
                     drop(ingest);
                     tracing::info!(url = %pull.url, stream = %pull.stream, "srt pull ended; reconnecting");

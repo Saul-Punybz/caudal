@@ -555,3 +555,47 @@ fn kill_group(pgid: u32) {
         let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
     }
 }
+
+/// `[[srt.pull]]`: Caudal calls a remote SRT listener (srt-live-transmit
+/// fed by ffmpeg) and publishes what it sends; when the source goes away
+/// the stream ends, and when it comes back Caudal reconnects and publishes
+/// it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_calls_a_remote_listener_and_republishes() {
+    if !have("ffmpeg") || !have("srt-live-transmit") {
+        eprintln!("SKIP: ffmpeg/srt-live-transmit not installed");
+        return;
+    }
+    let port = free_port();
+    let source = Pipeline::start("320x240", 30, &format!("srt://:{port}"));
+    let registry = Registry::new();
+    let pulls = caudal_srt::start_pulls(
+        registry.clone(),
+        BufferConfig::default(),
+        vec![caudal_srt::SrtPull { stream: "remote".into(), url: format!("srt://127.0.0.1:{port}") }],
+    );
+
+    let stream = wait_for(Duration::from_secs(15), || registry.get("remote")).await.expect("the pull published");
+    let tracks = wait_for_tracks(&stream, Duration::from_secs(10)).await;
+    let codecs: Vec<_> = tracks.iter().map(|t| t.codec).collect();
+    assert!(codecs.contains(&caudal_core::Codec::H264) && codecs.contains(&caudal_core::Codec::Aac), "{codecs:?}");
+    let frames = wait_for(Duration::from_secs(5), || (stream.stats().frames_in > 30).then_some(())).await;
+    assert!(frames.is_some(), "frames keep arriving");
+
+    // The source goes away: the stream ends.
+    drop(source);
+    wait_for(Duration::from_secs(10), || stream.is_ended().then_some(()))
+        .await
+        .expect("the stream ended with its source");
+
+    // It comes back: Caudal reconnects and publishes the name again.
+    let _source = Pipeline::start("320x240", 30, &format!("srt://:{port}"));
+    let again = wait_for(Duration::from_secs(40), || registry.get("remote").filter(|s| !s.is_ended()))
+        .await
+        .expect("republished after the source returned");
+    assert!(!Arc::ptr_eq(&again, &stream), "a new publish, not the old one");
+    pulls.reload(&registry, Vec::new());
+    wait_for(Duration::from_secs(5), || again.is_ended().then_some(()))
+        .await
+        .expect("removing the pull ends the stream");
+}

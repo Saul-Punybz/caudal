@@ -284,6 +284,10 @@ fn read_pictures(
     }
 }
 
+// One per output, held for its whole life, like the audio engine: the size
+// gap costs nothing. (It only crosses clippy's threshold on Linux, where the
+// ffmpeg child process handle is larger.)
+#[allow(clippy::large_enum_variant)]
 enum Engine {
     Rusty {
         dec: Box<Decoder>,

@@ -578,6 +578,13 @@ async fn a_kicked_srt_viewer_stops_receiving_and_is_blocked() {
     })
     .await
     .expect("the SRT viewer is listed with bytes going out");
+    let measured = wait_for(Duration::from_secs(5), || {
+        reg.sessions().list(Some("kicked")).into_iter().find(|s| s.rtt_ms.is_some() && s.loss.is_some())
+    })
+    .await
+    .expect("SRT reports RTT and loss within a few seconds");
+    assert!(measured.rtt_ms.unwrap() >= 0.0 && measured.rtt_ms.unwrap() < 1000.0, "{measured:?}");
+    assert!((0.0..=1.0).contains(&measured.loss.unwrap()), "{measured:?}");
 
     assert_eq!(
         reg.sessions().kick(session.id, Some(Duration::from_secs(60))),

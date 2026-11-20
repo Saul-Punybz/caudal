@@ -114,6 +114,8 @@ pub(crate) struct Egress {
     pub(crate) sub: Option<Subscriber>,
     /// Moves to the forwarder with `sub`.
     pub(crate) session: Option<Session>,
+    /// Stays with the engine, which sees the peer's stats.
+    pub(crate) quality: caudal_core::Quality,
     pub(crate) ctl: Option<mpsc::UnboundedSender<Ctl>>,
     pub(crate) task: Option<tokio::task::AbortHandle>,
     video_mid: Option<Mid>,
@@ -139,6 +141,7 @@ impl Egress {
         Self {
             name,
             sub: Some(sub),
+            quality: session.quality(),
             session: Some(session),
             ctl: None,
             task: None,

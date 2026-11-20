@@ -1122,3 +1122,48 @@ fn complete_segments_hold_their_bytes_once() {
         assert_eq!(cat[..], full[..]);
     }
 }
+
+async fn get_as(app: &Router, path: &str, ua: &str) -> Reply {
+    let req = Request::get(path).header(header::USER_AGENT, ua).body(Body::empty()).unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    Reply { status, headers, body }
+}
+
+/// An LL-HLS player is a session (keyed by address + user agent) with the
+/// bytes of every file it fetches; once kicked, every request it makes is
+/// refused, while another player is untouched.
+#[tokio::test]
+async fn hls_players_are_sessions_and_a_kick_refuses_them() {
+    let reg = Registry::new();
+    let app = router(reg.clone(), CFG, Vec::new());
+    let fx = fixture();
+    let p = publish(&reg, "show", &fx, BufferConfig::default()).await;
+    push_loops(&p, &fx, 0..2);
+    wait_playlist(&app, "show", |pl| pl.contains("#EXT-X-PART:")).await;
+    // `wait_playlist` sent no user agent: that is one player already.
+    let before = reg.sessions().list(Some("show")).len();
+
+    let a = "PlayerA/1.0";
+    let pl = get_as(&app, "/hls/show/index.m3u8", a).await;
+    assert_eq!(pl.status, StatusCode::OK);
+    let init = get_as(&app, "/hls/show/init.mp4", a).await;
+    assert_eq!(init.status, StatusCode::OK);
+    let sessions = reg.sessions().list(Some("show"));
+    assert_eq!(sessions.len(), before + 1, "{sessions:?}");
+    let s = sessions.last().unwrap().clone();
+    assert_eq!(s.protocol, "hls");
+    assert_eq!(s.bytes_out, (pl.body.len() + init.body.len()) as u64, "playlist + init counted");
+
+    // A part or init request alone never opens a session.
+    assert_eq!(get_as(&app, "/hls/show/init.mp4", "NoPlaylist/1").await.status, StatusCode::OK);
+    assert_eq!(reg.sessions().list(Some("show")).len(), before + 1);
+
+    assert_eq!(reg.sessions().kick(s.id, None), caudal_core::KickResult::Kicked { blocked: false });
+    assert_eq!(get_as(&app, "/hls/show/index.m3u8", a).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(get_as(&app, "/hls/show/init.mp4", a).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(get_as(&app, "/hls/show/index.m3u8", "PlayerB/1.0").await.status, StatusCode::OK, "others unaffected");
+    drop(p);
+}

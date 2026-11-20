@@ -148,13 +148,21 @@ struct Entry {
     handoff_ready: tokio::sync::Notify,
     pkg: Mutex<Packager>,
     tick: watch::Sender<u64>,
-    /// Players seen recently, keyed by a hash of address + user agent.
-    viewers: Mutex<HashMap<u64, Instant>>,
+    /// Players seen recently, keyed by a hash of address + user agent, each
+    /// with its viewer session (closed when the player goes idle).
+    viewers: Mutex<HashMap<u64, Viewer>>,
     /// WebVTT parts and segments, rendered when their media counterparts
     /// close, under the packager lock (so the subtitle playlist, rendered
     /// under the same lock, never lists one that does not exist yet, and a
     /// file's text never changes once listed).
     subs: Mutex<VecDeque<SubSeg>>,
+}
+
+/// One LL-HLS player: plain HTTP requests, so its session is inferred from
+/// address + user agent and ends after [`VIEWER_IDLE`] without a request.
+struct Viewer {
+    last: Instant,
+    session: caudal_core::Session,
 }
 
 /// The WebVTT files of one media segment.
@@ -218,16 +226,44 @@ impl Entry {
         }
     }
 
-    fn seen(&self, key: u64) {
-        self.viewers.lock().unwrap_or_else(|e| e.into_inner()).insert(key, Instant::now());
+    /// A playlist request from player `key`: opens its session the first
+    /// time. `Err` when an operator kicked it; it stays refused until it
+    /// goes quiet for [`VIEWER_IDLE`].
+    fn seen(&self, registry: &Registry, name: &str, key: u64, ip: Option<std::net::IpAddr>) -> Result<(), ()> {
+        let mut v = self.viewers.lock().unwrap_or_else(|e| e.into_inner());
+        let viewer = v
+            .entry(key)
+            .or_insert_with(|| Viewer { last: Instant::now(), session: registry.open_session(name, "hls", ip) });
+        viewer.last = Instant::now();
+        if viewer.session.is_kicked() { Err(()) } else { Ok(()) }
     }
 
-    /// Drops players idle past `VIEWER_IDLE` and reports the rest.
+    /// Any other request from `key` (parts, segments, init): refused when
+    /// it was kicked, never opens a session.
+    fn kicked(&self, key: u64) -> bool {
+        let mut v = self.viewers.lock().unwrap_or_else(|e| e.into_inner());
+        match v.get_mut(&key) {
+            Some(viewer) if viewer.session.is_kicked() => {
+                viewer.last = Instant::now();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn add_bytes(&self, key: u64, n: u64) {
+        if let Some(viewer) = self.viewers.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            viewer.session.add_bytes(n as usize);
+        }
+    }
+
+    /// Drops players idle past `VIEWER_IDLE` (closing their sessions) and
+    /// reports the rest; kicked players are not counted.
     fn count_viewers(&self) {
         let n = {
             let mut v = self.viewers.lock().unwrap_or_else(|e| e.into_inner());
-            v.retain(|_, last| last.elapsed() < VIEWER_IDLE);
-            v.len()
+            v.retain(|_, viewer| viewer.last.elapsed() < VIEWER_IDLE);
+            v.values().filter(|viewer| !viewer.session.is_kicked()).count()
         };
         self.stream().set_output_viewers("hls", n);
     }
@@ -327,11 +363,11 @@ fn client_ip(req: &Request, trusted_proxies: &[caudal_core::Cidr]) -> Option<std
     Some(caudal_core::net::resolve_forwarded(peer, xff, trusted_proxies))
 }
 
-/// A stable key for one player: its address (when the server was started
-/// with connect info) plus its user agent.
-fn viewer_key(req: &Request) -> u64 {
+/// A stable key for one player: its address (the resolved client address,
+/// so players behind one trusted proxy stay apart) plus its user agent.
+fn viewer_key(req: &Request, ip: Option<std::net::IpAddr>) -> u64 {
     let mut h = DefaultHasher::new();
-    req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip()).hash(&mut h);
+    ip.hash(&mut h);
     req.headers().get(header::USER_AGENT).map(|v| v.as_bytes()).hash(&mut h);
     h.finish()
 }
@@ -497,18 +533,39 @@ async fn hls_file(
         }
         Err(caudal_core::Denied::Refused(_)) => return error(StatusCode::FORBIDDEN),
     }
-    if file.ends_with(".m3u8") {
-        entry.seen(viewer_key(&req));
+    let key = viewer_key(&req, ip);
+    let refused =
+        if file.ends_with(".m3u8") { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
+    if refused {
+        return error(StatusCode::FORBIDDEN);
     }
-    match file.as_str() {
-        "index.m3u8" => playlist(&hls, &name, &entry, query, token).await,
-        "master.m3u8" => master(&hls, &entry, &name, token).await,
-        "subs.m3u8" if hls.text_track(&name).is_some() => {
-            let flavor = Flavor::Subtitles { parts: loads_subtitle_parts(&req) };
-            playlist_of(&hls, &name, &entry, query, token, flavor).await
+    let apple = loads_subtitle_parts(&req);
+    let resp = serve_file(&hls, &name, &entry, &file, query, token, apple).await;
+    if let Some(n) = axum::body::HttpBody::size_hint(resp.body()).exact() {
+        entry.add_bytes(key, n);
+    }
+    resp
+}
+
+async fn serve_file(
+    hls: &Arc<Hls>,
+    name: &str,
+    entry: &Arc<Entry>,
+    file: &str,
+    query: &str,
+    token: Option<&str>,
+    apple: bool,
+) -> Response {
+    let entry = entry.as_ref();
+    match file {
+        "index.m3u8" => playlist(hls, name, entry, query, token).await,
+        "master.m3u8" => master(hls, entry, name, token).await,
+        "subs.m3u8" if hls.text_track(name).is_some() => {
+            let flavor = Flavor::Subtitles { parts: apple };
+            playlist_of(hls, name, entry, query, token, flavor).await
         }
-        other if hls.text_track(&name).is_some() && parse_vtt_name(other).is_some() => match parse_vtt_name(other) {
-            Some((msn, part)) => subtitle(&entry, msn, part).await,
+        other if hls.text_track(name).is_some() && parse_vtt_name(other).is_some() => match parse_vtt_name(other) {
+            Some((msn, part)) => subtitle(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
         "init.mp4" => {
@@ -527,7 +584,7 @@ async fn hls_file(
             }
         }
         other => match parse_media_name(other) {
-            Some((msn, part)) => media(&entry, msn, part).await,
+            Some((msn, part)) => media(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
     }

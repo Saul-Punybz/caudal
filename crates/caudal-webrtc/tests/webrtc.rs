@@ -545,7 +545,15 @@ async fn whep_sends_h264_that_reassembles_into_a_keyframe() {
     let types = got.unwrap();
     assert!(types.contains(&7) && types.contains(&8), "SPS/PPS sent before the IDR: {types:?}");
 
-    // The viewer is a session with bytes going out; a kick stops its media.
+    // The viewer is a session with bytes going out, and its RTT shows up
+    // once the peer stats have a round trip; a kick stops its media.
+    let mut rtt = None;
+    c.run_until(Duration::from_secs(8), |_| {
+        rtt = registry.sessions().list(Some("live")).first().and_then(|s| s.rtt_ms);
+        rtt.is_some()
+    })
+    .await;
+    assert!(rtt.is_some_and(|r| (0.0..1000.0).contains(&r)), "WHEP RTT reported: {rtt:?}");
     let sessions = registry.sessions().list(Some("live"));
     assert_eq!(sessions.len(), 1, "{sessions:?}");
     assert_eq!(sessions[0].protocol, "whep");

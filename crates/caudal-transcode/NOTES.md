@@ -31,6 +31,10 @@ rungs cut on the same frames) and one AAC encode per rung.
   the feeder drops frames up to the next source keyframe instead of growing
   memory or stalling the source.
 
+The process handling, the TS reader, the rendition publisher, the clock
+shift and the Matroska writer are public in `src/pipe.rs`
+(`caudal_transcode::pipe`), shared with `caudal-omt`'s raw-frame feed.
+
 ## Timestamp alignment
 
 Renditions carry the **source's own clock** (same frame → same time), so a

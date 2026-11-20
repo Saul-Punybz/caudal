@@ -50,7 +50,15 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
     await page.evaluate(() => {
       const hls = (window as any).__hlsInstance;
       (window as any).__fatal = [];
+      (window as any).__events = [];
+      const v = document.getElementById("v") as HTMLVideoElement;
+      for (const ev of ["ended", "waiting", "emptied", "durationchange"]) {
+        v.addEventListener(ev, () =>
+          (window as any).__events.push(`${ev}@${v.currentTime.toFixed(2)}/${v.duration}`),
+        );
+      }
       if (hls && (window as any).Hls) {
+        hls.on((window as any).Hls.Events.BUFFER_EOS, () => (window as any).__events.push("hls:BUFFER_EOS"));
         hls.on((window as any).Hls.Events.ERROR, (_e: unknown, d: any) => {
           if (d?.fatal) (window as any).__fatal.push(`${d.type}: ${d.details}`);
         });
@@ -61,7 +69,9 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
     await publisher.stop();
     const atDrop = await time();
     await page.waitForTimeout(GAP_MS);
-    expect(await ended(), "the player ended during the gap").toBe(false);
+    const gapEvents = await page.evaluate(() => (window as any).__events as string[]);
+    console.log(`[${browserName}] events during the gap: ${JSON.stringify(gapEvents)}`);
+    expect(await ended(), `the player ended during the gap; events: ${JSON.stringify(gapEvents)}`).toBe(false);
 
     // ...and comes back under the same name.
     const back = Date.now();

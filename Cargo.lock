@@ -827,6 +827,7 @@ dependencies = [
  "time",
  "tokio",
  "toml",
+ "toml_edit",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -6881,6 +6882,7 @@ dependencies = [
  "indexmap 2.14.2",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

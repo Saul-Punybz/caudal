@@ -7,6 +7,7 @@ mod admin;
 mod api;
 mod captions;
 mod config;
+mod config_edit;
 mod doctor;
 mod import_mist;
 mod metrics;
@@ -285,7 +286,8 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         None => axum::Router::new(),
     };
 
-    let reload_state = reload::ReloadState { supervisor: started.supervisor.clone(), config_path };
+    let reload_state =
+        reload::ReloadState { supervisor: started.supervisor.clone(), config_path, edits: Default::default() };
     reload::spawn_sighup(reload_state.clone());
 
     // Stream health alerts: no keyframes, bitrate floor, publisher lost.

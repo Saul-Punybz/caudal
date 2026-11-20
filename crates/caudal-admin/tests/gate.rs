@@ -204,6 +204,61 @@ async fn bad_logins_are_refused_and_rate_limited() {
     assert!(limited.headers.get(header::RETRY_AFTER).is_some());
 }
 
+/// Many addresses guessing one account: the per-IP limit never trips
+/// (two tries each), the per-account one does, and it does not spill over
+/// to other accounts or reveal whether the name exists.
+#[tokio::test]
+async fn many_addresses_guessing_one_account_lock_it() {
+    let app = app(&section());
+    let json = [("content-type", "application/json")];
+    let wrong = r#"{"name":"ana","password":"x"}"#;
+    for i in 0..20u8 {
+        let r = call_from(&app, [192, 0, 2, i / 2], Method::POST, "/api/v1/auth/login", &json, wrong).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "attempt {i}");
+    }
+    let locked = call_from(
+        &app,
+        [192, 0, 2, 200],
+        Method::POST,
+        "/api/v1/auth/login",
+        &json,
+        r#"{"name":"ana","password":"hunter2!"}"#,
+    )
+    .await;
+    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS, "even the right password waits out the lock");
+    assert!(locked.headers.get(header::RETRY_AFTER).is_some());
+
+    // An unknown name locks the same way, so the lock says nothing about
+    // which accounts exist.
+    for i in 0..20u8 {
+        call_from(
+            &app,
+            [192, 0, 3, i / 2],
+            Method::POST,
+            "/api/v1/auth/login",
+            &json,
+            r#"{"name":"bob","password":"x"}"#,
+        )
+        .await;
+    }
+    let bob = call_from(
+        &app,
+        [192, 0, 3, 200],
+        Method::POST,
+        "/api/v1/auth/login",
+        &json,
+        r#"{"name":"bob","password":"x"}"#,
+    )
+    .await;
+    assert_eq!(bob.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // The API token keeps working while the password login is locked.
+    let bearer = format!("Bearer {TOKEN}");
+    let api =
+        call_from(&app, [192, 0, 2, 201], Method::GET, "/api/v1/streams", &[("authorization", &bearer)], "").await;
+    assert_eq!(api.status, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn secure_cookie_over_tls() {
     let s = AdminSection { secure_cookies: true, ..section() };

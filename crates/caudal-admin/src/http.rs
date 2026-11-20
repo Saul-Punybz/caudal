@@ -215,6 +215,10 @@ async fn login(State(admin): State<Option<Admin>>, req: Request) -> Response {
     let Ok(body) = serde_json::from_slice::<LoginBody>(&bytes) else {
         return json_error(StatusCode::BAD_REQUEST, "expected {\"name\", \"password\"}");
     };
+    if let Err(retry) = admin.0.account_failures.check(&body.name, Instant::now()) {
+        tracing::warn!(%ip, user = %body.name, "admin login locked for this account (too many failures)");
+        return rate_limited(retry);
+    }
     let phc = admin.0.users.get(&body.name).cloned();
     let name = body.name.clone();
     // argon2 is deliberately slow; keep it off the async workers.
@@ -228,9 +232,11 @@ async fn login(State(admin): State<Option<Admin>>, req: Request) -> Response {
     .await
     .unwrap_or(false);
     if !ok {
+        admin.0.account_failures.failed(&name, Instant::now());
         tracing::warn!(%ip, user = %name, "admin login failed");
         return json_error(StatusCode::UNAUTHORIZED, "wrong name or password");
     }
+    admin.0.account_failures.succeeded(&name);
     tracing::info!(%ip, user = %name, "admin logged in");
     let (id, s) = admin.0.sessions.create(&name, Instant::now());
     let mut r = axum::Json(json!({ "user": s.user, "csrf_token": s.csrf })).into_response();

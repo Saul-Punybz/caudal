@@ -233,6 +233,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
 
     let state = api::AppState::new(registry.clone());
     state.set_access(started.access.clone());
+    state.set_hook_stats(started.hook_stats.clone());
     #[cfg(feature = "captions")]
     if let Some(c) = captions {
         state.set_captions(c);

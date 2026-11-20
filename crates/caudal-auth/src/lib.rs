@@ -7,15 +7,18 @@
 //! EdDSA), cached and refreshed.
 
 mod claims;
+mod gate_hook;
 mod hooks_delivery;
 mod jwks;
+
+pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError};
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Publish,
     Play,

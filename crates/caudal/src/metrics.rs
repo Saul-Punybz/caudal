@@ -75,6 +75,119 @@ pub fn render(
     out
 }
 
+/// Appends `caudal_omt_*` for every running `[[omt.pull]]` and
+/// `[[omt.output]]`. Pull series are labelled by `stream`; output series by
+/// `stream` and `output` (the OMT source name, unique per output).
+/// `caudal_omt_frames_dropped_total` and `caudal_omt_tally`, which both
+/// sides have, carry `direction` (`pull` or `output`) on top.
+pub fn render_omt(out: &mut String, pulls: &[caudal_omt::PullStatus], outputs: &[caudal_omt::OutputStatus]) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if pulls.is_empty() && outputs.is_empty() {
+        return;
+    }
+    let pulls: Vec<(&str, caudal_omt::PullStatsSnapshot)> =
+        pulls.iter().map(|p| (p.stream.as_str(), p.stats.snapshot())).collect();
+    let header = |out: &mut String, name: &str, kind: &str, help: &str| {
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} {kind}");
+    };
+
+    header(out, "caudal_omt_frames_in_total", "counter", "Frames received from an OMT source, by kind.");
+    for (stream, s) in &pulls {
+        for (kind, n) in [("video", s.video_in), ("audio", s.audio_in)] {
+            let _ = writeln!(out, "caudal_omt_frames_in_total{{stream=\"{}\",kind=\"{kind}\"}} {n}", escape(stream));
+        }
+    }
+    type Series = (&'static str, &'static str, &'static str, fn(&caudal_omt::PullStatsSnapshot) -> u64);
+    let pull_series: [Series; 4] = [
+        ("caudal_omt_bytes_in_total", "counter", "Bytes received from an OMT source.", |s| s.bytes_in),
+        ("caudal_omt_reconnects_total", "counter", "Reconnections to an OMT source after the first connect.", |s| {
+            s.reconnects
+        }),
+        ("caudal_omt_publishes_total", "counter", "Times an OMT pull (re)published its stream.", |s| s.publishes),
+        ("caudal_omt_connected", "gauge", "1 while every connection to the OMT source is up.", |s| {
+            u64::from(s.connected)
+        }),
+    ];
+    for (name, kind, help, value) in pull_series {
+        header(out, name, kind, help);
+        for (stream, s) in &pulls {
+            let _ = writeln!(out, "{name}{{stream=\"{}\"}} {}", escape(stream), value(s));
+        }
+    }
+
+    header(out, "caudal_omt_frames_out_total", "counter", "Video frames sent as an OMT source.");
+    for o in outputs {
+        let _ = writeln!(
+            out,
+            "caudal_omt_frames_out_total{{stream=\"{}\",output=\"{}\"}} {}",
+            escape(&o.stream),
+            escape(&o.name),
+            o.stats.video_sent.load(Relaxed)
+        );
+    }
+    header(out, "caudal_omt_receivers", "gauge", "OMT receivers of an output's video now.");
+    for o in outputs {
+        let _ = writeln!(
+            out,
+            "caudal_omt_receivers{{stream=\"{}\",output=\"{}\"}} {}",
+            escape(&o.stream),
+            escape(&o.name),
+            o.stats.receivers.load(Relaxed)
+        );
+    }
+
+    header(
+        out,
+        "caudal_omt_tally",
+        "gauge",
+        "1 while on this tally state: for a pull, what Caudal tells the source; for an output, what any receiver tells Caudal.",
+    );
+    for (stream, s) in &pulls {
+        for (state, on) in [("preview", s.tally.preview), ("program", s.tally.program)] {
+            let _ = writeln!(
+                out,
+                "caudal_omt_tally{{direction=\"pull\",stream=\"{}\",state=\"{state}\"}} {}",
+                escape(stream),
+                u8::from(on)
+            );
+        }
+    }
+    for o in outputs {
+        for (state, on) in [("preview", &o.stats.preview), ("program", &o.stats.program)] {
+            let _ = writeln!(
+                out,
+                "caudal_omt_tally{{direction=\"output\",stream=\"{}\",output=\"{}\",state=\"{state}\"}} {}",
+                escape(&o.stream),
+                escape(&o.name),
+                u8::from(on.load(Relaxed))
+            );
+        }
+    }
+
+    header(out, "caudal_omt_frames_dropped_total", "counter", "OMT frames dropped, by direction and reason.");
+    for (stream, s) in &pulls {
+        for (reason, n) in caudal_omt::DropReason::ALL.iter().zip(s.dropped) {
+            let _ = writeln!(
+                out,
+                "caudal_omt_frames_dropped_total{{direction=\"pull\",stream=\"{}\",reason=\"{}\"}} {n}",
+                escape(stream),
+                reason.as_str()
+            );
+        }
+    }
+    for o in outputs {
+        for (reason, n) in o.stats.dropped() {
+            let _ = writeln!(
+                out,
+                "caudal_omt_frames_dropped_total{{direction=\"output\",stream=\"{}\",output=\"{}\",reason=\"{reason}\"}} {n}",
+                escape(&o.stream),
+                escape(&o.name)
+            );
+        }
+    }
+}
+
 /// Escapes a label value per the Prometheus text format.
 pub(crate) fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
@@ -103,6 +216,71 @@ mod tests {
         assert!(body.contains("caudal_viewers{stream=\"test\"} 0"), "{body}");
         assert!(body.contains("caudal_bytes_in_total{stream=\"test\"} 0"), "{body}");
         assert!(body.contains("caudal_frames_in_total{stream=\"test\"} 0"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn renders_omt_series() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut out = String::new();
+        render_omt(&mut out, &[], &[]);
+        assert!(out.is_empty(), "nothing without pulls or outputs: {out}");
+
+        let registry = Registry::new();
+        // A real pull pointed at a closed loopback port: it only ever fails
+        // to connect, so the counters below are all ours.
+        let pulls = caudal_omt::start_pulls(
+            registry.clone(),
+            caudal_core::BufferConfig::default(),
+            vec![caudal_omt::PullConfig {
+                stream: "cam1".into(),
+                source: "omt://127.0.0.1:1".into(),
+                quality: caudal_omt::Quality::High,
+                video_kbps: 6000,
+                audio_kbps: 128,
+                ffmpeg: "ffmpeg".into(),
+                directory: None,
+                redirects: Default::default(),
+            }],
+        );
+        let outputs = caudal_omt::start_outputs(
+            registry,
+            caudal_omt::OutputOptions::default(),
+            vec![caudal_omt::OutputConfig {
+                announce: false,
+                ..caudal_omt::OutputConfig::new("show", "Program \"A\"")
+            }],
+        );
+        let (p, o) = (pulls.statuses(), outputs.outputs());
+        p[0].stats.video_in.store(600, Relaxed);
+        p[0].stats.audio_in.store(1000, Relaxed);
+        p[0].stats.dropped[caudal_omt::DropReason::ALL.iter().position(|r| r.as_str() == "queue_full").unwrap()]
+            .store(3, Relaxed);
+        p[0].stats.tally.store(2, Relaxed);
+        o[0].stats.receivers.store(2, Relaxed);
+        o[0].stats.program.store(true, Relaxed);
+        o[0].stats.errors.store(1, Relaxed);
+        render_omt(&mut out, &p, &o);
+        pulls.stop();
+        outputs.stop();
+        for line in [
+            "caudal_omt_frames_in_total{stream=\"cam1\",kind=\"video\"} 600",
+            "caudal_omt_frames_in_total{stream=\"cam1\",kind=\"audio\"} 1000",
+            "caudal_omt_frames_dropped_total{direction=\"pull\",stream=\"cam1\",reason=\"queue_full\"} 3",
+            "caudal_omt_frames_dropped_total{direction=\"pull\",stream=\"cam1\",reason=\"decode\"} 0",
+            "caudal_omt_tally{direction=\"pull\",stream=\"cam1\",state=\"program\"} 1",
+            "caudal_omt_tally{direction=\"pull\",stream=\"cam1\",state=\"preview\"} 0",
+            "caudal_omt_receivers{stream=\"show\",output=\"Program \\\"A\\\"\"} 2",
+            "caudal_omt_tally{direction=\"output\",stream=\"show\",output=\"Program \\\"A\\\"\",state=\"program\"} 1",
+            "caudal_omt_frames_dropped_total{direction=\"output\",stream=\"show\",output=\"Program \\\"A\\\"\",reason=\"error\"} 1",
+        ] {
+            assert!(out.lines().any(|l| l == line), "missing {line:?} in:\n{out}");
+        }
+        for name in ["caudal_omt_reconnects_total", "caudal_omt_connected", "caudal_omt_bytes_in_total"] {
+            assert!(out.contains(&format!("{name}{{stream=\"cam1\"}} ")), "{name}: {out}");
+        }
+        // One HELP/TYPE per metric family.
+        assert_eq!(out.matches("# TYPE caudal_omt_frames_dropped_total").count(), 1);
+        assert_eq!(out.matches("# TYPE caudal_omt_tally").count(), 1);
     }
 
     #[test]

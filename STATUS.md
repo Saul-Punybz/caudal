@@ -32,6 +32,29 @@ MistServer gap list (`docs/research/MISTSERVER-REVERSE.md`):
 thumbnails, auto-push rules. Soak (v0.1.0 blocker) still open; the weekly soak workflow is
 **disabled** (Saul, 19 Nov) until the leak is fixed.
 
+## M12 — Open Media Transport (branch `feat/m12-omt-verified`, 19 Nov 2026)
+
+**One branch now.** `feat/m12-omt` (crate, pull ingest, wiring) and `feat/m12-output` (output) are
+merged here, the temporary `wiring_stubs.rs` / `wiring-stubs` feature is gone, and the binary is wired
+to the real output API (`OutputOptions`, `reload(&registry, options, outputs)`, `outputs()`).
+
+**OMT pinned to `ec11ec2`, the last verified version** of `Saul-Punybz/open-media-transport`:
+byte-identical VMX vs libvmx; protocol vs libomtnet 1.0.0.19; Mac <-> Linux NUC over a real LAN
+(28 Sep); **OBS Studio 33.0.1 + omtplugin 1.0.0.19 both directions on one Mac (5 Nov)**. Not tested:
+vMix, Windows, wired/cross-subnet networks. The Pi was dropped from scope by Saul (5 Nov).
+(OMT `main` is now `fbde53c`: the OBS evidence plus a clippy-only loop rewrite; same code.)
+
+- **Security keys now enforced** (the library has them since that rev): pull `follow_redirects`
+  (false = `RedirectPolicy::Never`, true = `Any`), output `bind`, output `max_connections`
+  (absent = library cap 128). Still inert and warned at startup: pull `allowed_sources` for a name,
+  output `allow` (no peer allow-list in the library).
+- Verified locally 19 Nov: `cargo clippy --workspace --all-targets -D warnings` clean;
+  `cargo test -p caudal-omt` 45 passed (2 ignored: need the libomtnet harness / an external source);
+  `cargo test -p caudal --bins` 96 passed. Full CI runs on the PR.
+- **Still open:** 10-bit/alpha go through 8-bit; `bench/omt.py` never run; before tagging, OMT crates
+  from crates.io 0.2.x instead of git (cargo-deny allows the OMT git source meanwhile).
+- Rough CPU: x264 veryfast 1080p60 ≈ 0.6–0.7 core on an easy pattern (not measured on real content).
+
 ## RESUME HERE (22 Sep 2026) — paused; v0.1.0 tag BLOCKED
 
 **Pick up in this order:**

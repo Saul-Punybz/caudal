@@ -1,0 +1,28 @@
+[package]
+name = "caudal-omt"
+description = "Open Media Transport ingest and output for Caudal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+caudal-core.workspace = true
+caudal-transcode.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+# Our own OMT crates, pinned in the root Cargo.toml.
+open-media-transport.workspace = true
+vmx-codec.workspace = true
+# The output's decoders (pure Rust; same versions as caudal-transcode and
+# caudal-captions): H.264 Constrained Baseline, AAC-LC, Opus.
+mp4-atom = "0.15.0"
+opus-decoder = "0.1.1"
+rusty_aac = "0.5.0"
+rusty_h264 = { version = "=0.16.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

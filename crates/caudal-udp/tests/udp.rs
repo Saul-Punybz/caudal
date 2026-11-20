@@ -134,6 +134,10 @@ async fn ts_over_multicast() {
     }
     let port = free_udp_port();
     // An administratively scoped group, TTL 0: never leaves this machine.
+    // Sender and receiver both use the default multicast interface, like
+    // caudal-multicast's loopback test: on Linux a join on the default
+    // interface does not see what is sent out of `lo` (localaddr=127.0.0.1),
+    // although macOS delivers it.
     let group = format!("239.255.{}.{}", port % 250, port / 250 % 250);
     let registry = Registry::new();
     let _pulls = start_pulls(
@@ -142,6 +146,6 @@ async fn ts_over_multicast() {
         vec![UdpPull { stream: "mc1".into(), url: format!("udp://{group}:{port}"), interface: None }],
     );
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let _sender = Sender::start("mpegts", &format!("udp://{group}:{port}?pkt_size=1316&ttl=0&localaddr=127.0.0.1"));
+    let _sender = Sender::start("mpegts", &format!("udp://{group}:{port}?pkt_size=1316&ttl=0"));
     assert_live_h264_aac(&registry, "mc1").await;
 }

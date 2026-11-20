@@ -1,38 +1,42 @@
 # STATUS — Caudal
 
-**Last updated:** 22 Sep 2026 (v0.1 code complete; **tag blocked by per-churn RSS growth**; paused mid-investigation)
+**Last updated:** 20 Nov 2026 (MistServer gap points 1-5 merged; v0.1.0 tag still blocked by per-churn RSS growth)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (19 Nov 2026, evening) — read this block first
+## RESUME HERE (20 Nov 2026) — read this block first
 
-**Open PRs, in merge order** (Saul: merge each when CI is green):
-| PR | Branch | What | CI at pause |
-|---|---|---|---|
-| #28 | fix/deps-advisories | RUSTSEC 21 -> 1 (rsa via openidconnect, accepted) | **merged** (`f35e8d5`) |
-| #27 | feat/m12-omt-verified | M12 OMT on the last verified OMT `ec11ec2` | **browser + test + test-no-captions FAIL: investigate first** |
-| #29 | feat/blocking-hooks-login-limit | `[auth.hook]` blocking webhook + per-account login lock | **browser FAIL** (rest green); earlier a multicast loopback flake |
-| #30 | feat/viewer-sessions | sessions batch 1: list/kick SRT, RTSP, WHEP | green except one build-static still running |
-| #31 | feat/sessions-hls-moq (base #30) | sessions batch 2: HLS, MoQ, RTT/loss, tags, bulk kick | retarget to main after #30 |
-| #32 | feat/stream-api | `/api/v1/pulls` `/api/v1/pushes`, atomic toml_edit writes, pull/push validation | running |
+**Nothing open.** Merged to `main` 19-20 Nov (all with CI green):
+| PR | What |
+|---|---|
+| #27 | M12 OMT, pinned to the last verified OMT `ec11ec2` (section below) |
+| #28 | dependency advisories: RUSTSEC 21 -> 1 (rsa via openidconnect, accepted) |
+| #29 | `[auth.hook]` blocking webhook before publish/play (cached, single-flight; `docs/AUTH-HOOK.md`) + per-account login lock (20 failures / 15 min) |
+| #30, #31 | viewer sessions: list/kick/block for SRT, RTSP, WHEP, LL-HLS, MoQ; RTT/loss; tags and bulk kick (`docs/SESSIONS.md`) |
+| #32 | `/api/v1/pulls` `/api/v1/pushes`: atomic `toml_edit` config writes, secrets redacted, pull/push validation (`docs/STREAM-API.md`) |
+| #33 | multicast loopback test reads while publishing (CI flake) |
+| #34 | `[[srt.pull]]` (caller to a remote listener) and `[[udp.pull]]` (MPEG-TS over UDP unicast/multicast, plain or RTP), `caudal-ts::ingest::TsIngest` (`docs/PULL-INPUTS.md`) |
+| #35 | play page `liveDurationInfinity: true` + gap event logging in `reconnect.spec.ts` |
+| #36 | `docs/research/MISTSERVER-REVERSE.md` (MistServer read from source, `ddd9bec`) |
 
-**In progress, branch `feat/pull-inputs` (base #32), WIP commit, not a PR yet** — point 5 of the
-MistServer gap list (`docs/research/MISTSERVER-REVERSE.md`):
-- Done: `caudal_ts::ingest::TsIngest` (the TS -> publisher loop, moved out of `caudal-srt`, SRT
-  ingest refactored onto it, SRT tests green); `caudal-srt` `pull.rs` + `SrtPull` / `start_pulls`
-  / `PullHandle` (caller to a remote listener, backoff 1-30 s). Compiles; **no test yet**.
-- Next: (1) `[[srt.pull]]` config + supervisor start/reload + `Kind::SrtPull` in `config_edit`
-  (`srt://` in POST /api/v1/pulls) + validation; test with `srt-live-transmit` as the listener.
-  (2) `[[udp.pull]]`: MPEG-TS over UDP unicast/multicast (Rolando's chain), new crate or in
-  `caudal-multicast`; stream ends after 5 s without packets, next packet republishes; test with
-  ffmpeg `-f mpegts udp://`. (3) docs. HLS and RTMP pulls are a later batch.
+Points 1-5 of the MistServer gap list are done.
 
-**Then:** points from the MistServer list not started: `totals` compatible stats, TS-HLS,
-thumbnails, auto-push rules. Soak (v0.1.0 blocker) still open; the weekly soak workflow is
-**disabled** (Saul, 19 Nov) until the leak is fixed.
+**Browser suite is flaky, three different ways** (each also seen on `main`):
+- Firefox MoQ `tests/moq.spec.ts:70`: more frequent since #28 (quinn/rustls bump). Not verified.
+- WebKit `tests/reconnect.spec.ts:38` "the player ended during the gap": hypothesis is hls.js
+  MediaSource duration = playlist length; #35 sets `liveDurationInfinity`. **Not verified yet**: the
+  test now logs `ended`/`waiting`/`emptied`/`durationchange`/`BUFFER_EOS` during the gap, check them on
+  the next failure. The dashboard player (`ui/app/src/components/Player.tsx`) does not have the option
+  yet (needs a UI rebuild).
+- Chromium `tests/play.spec.ts:72`: `readyState` 2 at the sample (a rebuffer); passed on rerun.
 
-## M12 — Open Media Transport (branch `feat/m12-omt-verified`, 19 Nov 2026)
+**Next (proposed):** (1) stabilise the browser suite; (2) MPEG-2 video + MP2 audio demux in
+`caudal-ts` (Rolando's ATSC chain uses them; today they are not demuxed); (3) HLS and RTMP pulls;
+then `totals`-compatible stats, TS-HLS, thumbnails, auto-push rules. Soak (v0.1.0 blocker) still
+open; the weekly soak workflow is **disabled** (Saul, 19 Nov) until the leak is fixed.
+
+## M12 — Open Media Transport (merged in #27, 19 Nov 2026)
 
 **One branch now.** `feat/m12-omt` (crate, pull ingest, wiring) and `feat/m12-output` (output) are
 merged here, the temporary `wiring_stubs.rs` / `wiring-stubs` feature is gone, and the binary is wired

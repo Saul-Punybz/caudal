@@ -37,6 +37,9 @@ pub(crate) async fn handle(
     // other output's audience.
     let mut sub = stream.subscribe(StartAt::LiveEdge);
     let mut session = registry.open_session(name, "srt", Some(std::net::IpAddr::V4(*peer.ip())));
+    let quality = session.quality();
+    let mut stats_tick = tokio::time::interval(STATS_EVERY);
+    stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut tracks = sub.tracks();
     let mut mux = TsMux::new();
     mux.set_tracks(&tracks);
@@ -48,6 +51,10 @@ pub(crate) async fn handle(
             () = session.kicked() => {
                 tracing::info!(%peer, stream = %name, "srt play kicked");
                 break;
+            }
+            _ = stats_tick.tick() => {
+                report_quality(&socket, &quality);
+                continue;
             }
         };
         match ev {
@@ -80,6 +87,24 @@ pub(crate) async fn handle(
         session.add_bytes(out.len());
     }
     tracing::debug!(%peer, stream = %name, "srt play ended");
+}
+
+/// How often a viewer's RTT and loss are read from the socket.
+const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// RTT from SRT's own ACK/ACKACK measurement; "loss" as the share of data
+/// packets that had to be retransmitted (or were dropped too late), which
+/// is what the viewer's network cost us. Nothing before the first packet.
+fn report_quality(socket: &SrtSocket, quality: &caudal_core::Quality) {
+    let s = socket.stats();
+    if s.pkts_sent == 0 {
+        return;
+    }
+    if s.rtt_us > 0 {
+        quality.set_rtt(std::time::Duration::from_micros(u64::from(s.rtt_us)));
+    }
+    let bad = s.pkts_retransmitted + s.pkts_send_dropped;
+    quality.set_loss(bad as f64 / s.pkts_sent as f64);
 }
 
 /// Sends `data` (whole TS packets) in [`CHUNK_BYTES`]-sized pieces. Returns

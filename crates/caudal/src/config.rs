@@ -207,6 +207,8 @@ pub struct Config {
     pub captions: crate::captions::CaptionsSection,
     /// Origin-edge clustering. Absent: a standalone server.
     pub cluster: Option<ClusterSection>,
+    /// Open Media Transport: `[omt]`, `[[omt.pull]]`, `[[omt.output]]`.
+    pub omt: OmtSection,
 }
 
 /// `[cluster]`: this node's part in an origin-edge cluster (see
@@ -471,6 +473,318 @@ impl SrtSection {
     /// `[[srt.push]]` as the runtime type `caudal-srt` takes.
     pub fn push_targets(&self) -> Vec<caudal_srt::SrtPush> {
         self.push.iter().map(|p| caudal_srt::SrtPush { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
+}
+
+/// `[omt]`: Open Media Transport (see `docs/OMT.md`). `[[omt.pull]]` receives
+/// an OMT source into a stream (VMX decoded here, H.264/AAC by ffmpeg);
+/// `[[omt.output]]` sends a stream out as an OMT source. Every pull and
+/// output shares one discovery (mDNS responder and/or discovery server),
+/// set up by the keys below.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct OmtSection {
+    /// ffmpeg for the pulls' H.264/AAC encode. Absent: `[transcode] ffmpeg`.
+    pub ffmpeg: Option<std::path::PathBuf>,
+    /// Use this discovery server (`omt://host[:port]`, port 6399 by
+    /// default) to find sources and announce outputs, for networks without
+    /// multicast. Absent: mDNS (DNS-SD) only.
+    pub discovery_server: Option<String>,
+    /// mDNS on these interfaces only (names like `en0`/`eth1`, or an
+    /// address on the interface). Empty: every non-loopback interface.
+    pub interfaces: Vec<String>,
+    /// Never use these interfaces for mDNS.
+    pub exclude_interfaces: Vec<String>,
+    pub pull: Vec<OmtPullEntry>,
+    pub output: Vec<OmtOutputEntry>,
+}
+
+/// Quality suggested to the other side (`Default` defers to other
+/// receivers / follows receivers' suggestions).
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OmtQuality {
+    #[default]
+    Default,
+    Low,
+    Medium,
+    High,
+}
+
+impl OmtQuality {
+    pub fn to_omt(self) -> open_media_transport::command::Quality {
+        use open_media_transport::command::Quality;
+        match self {
+            OmtQuality::Default => Quality::Default,
+            OmtQuality::Low => Quality::Low,
+            OmtQuality::Medium => Quality::Medium,
+            OmtQuality::High => Quality::High,
+        }
+    }
+}
+
+/// One `[[omt.pull]]`: receive an OMT source and publish it as `stream`.
+/// Exactly one of `source` (the full name `MACHINE (Name)`, as `omt list`
+/// and vMix/OBS show it) or `url` (`omt://host:port`).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OmtPullEntry {
+    pub stream: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub quality: OmtQuality,
+    /// H.264 bitrate of the published stream.
+    #[serde(default = "default_omt_video_kbps")]
+    pub video_kbps: u32,
+    /// AAC bitrate of the published stream.
+    #[serde(default = "default_audio_kbps")]
+    pub audio_kbps: u32,
+    /// Follow a redirect the source sends (OMT §9: "use this other source
+    /// instead"). Off by default: anyone who can reach the sender's port
+    /// could point it elsewhere and put their picture on Caudal's public
+    /// outputs. Off: no redirect is followed; on: every one is (libomtnet's
+    /// behaviour).
+    #[serde(default)]
+    pub follow_redirects: bool,
+    /// Connect only to addresses inside these CIDRs (bare address = one
+    /// host), whatever a name resolves to. Empty (the default): any. A `url`
+    /// with a literal IP outside them is a config error; names are checked
+    /// when resolved — NOT ENFORCED YET (see `docs/OMT.md`, Security).
+    #[serde(default)]
+    pub allowed_sources: Vec<String>,
+}
+
+fn default_omt_video_kbps() -> u32 {
+    6000
+}
+
+/// One `[[omt.output]]`: send `stream` (H.264, any rendition) as the OMT
+/// source `name`, announced as `MACHINE (name)`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OmtOutputEntry {
+    pub stream: String,
+    pub name: String,
+    #[serde(default)]
+    pub quality: OmtQuality,
+    /// VMX encoder threads. 0 (the default): pick from the frame size, as
+    /// libomtnet does.
+    #[serde(default)]
+    pub encoder_threads: usize,
+    /// Listen only on this local address. Absent: every interface.
+    #[serde(default)]
+    pub bind: Option<std::net::IpAddr>,
+    /// Accept receivers only from these CIDRs (bare address = one host).
+    /// Empty (the default): any. NOT ENFORCED YET.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Most receiver connections at once (each video receiver costs one
+    /// VMX send; audio and metadata ride on their own connections).
+    /// Absent: the OMT library's default cap (128).
+    #[serde(default)]
+    pub max_connections: Option<usize>,
+}
+
+/// Security settings the config accepts and validates but the pinned OMT
+/// library (rev ec11ec2) cannot apply yet: filtering what a name resolves
+/// to on the receiver, and a peer allow-list on the sender. (Redirect
+/// policy, bind and the connection cap are applied since ec11ec2.) Named
+/// here so the startup log can say exactly which are inert.
+pub fn omt_unenforced(section: &OmtSection) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in &section.pull {
+        if !p.allowed_sources.is_empty() && p.source.is_some() {
+            out.push(format!("[[omt.pull]] `{}`: allowed_sources for a name (not checked when resolved)", p.stream));
+        }
+    }
+    for o in &section.output {
+        if !o.allow.is_empty() {
+            out.push(format!("[[omt.output]] `{}`: allow (any receiver may connect)", o.name));
+        }
+    }
+    out
+}
+
+const OMT_MAX_ENCODER_THREADS: usize = 64;
+const OMT_MAX_CONNECTIONS: usize = 1000;
+
+fn parse_cidrs(list: &[String]) -> Result<Vec<caudal_core::Cidr>, String> {
+    list.iter().map(|s| caudal_core::Cidr::parse(s)).collect()
+}
+
+impl OmtSection {
+    /// The ffmpeg the pulls run: `[omt] ffmpeg`, else `[transcode] ffmpeg`.
+    pub fn ffmpeg<'a>(&'a self, transcode: &'a TranscodeSection) -> &'a std::path::Path {
+        self.ffmpeg.as_deref().unwrap_or(&transcode.ffmpeg)
+    }
+
+    /// What the shared discovery is built from. Changing it needs a restart
+    /// (every pull and output holds the one discovery).
+    pub fn discovery_config(&self) -> open_media_transport::discovery::DiscoveryConfig {
+        open_media_transport::discovery::DiscoveryConfig {
+            server: self.discovery_server.clone(),
+            browse_mdns: true,
+            interfaces: open_media_transport::discovery::Interfaces {
+                only: self.interfaces.clone(),
+                exclude: self.exclude_interfaces.clone(),
+            },
+        }
+    }
+
+    /// The part of `[omt]` a reload cannot apply live.
+    pub fn discovery_key(&self) -> (&Option<String>, &Vec<String>, &Vec<String>) {
+        (&self.discovery_server, &self.interfaces, &self.exclude_interfaces)
+    }
+
+    /// Whether any pull or output needs the shared discovery: pulls by full
+    /// name (to look it up) and every output (to announce it).
+    pub fn needs_discovery(&self) -> bool {
+        !self.output.is_empty() || self.pull.iter().any(|p| p.source.is_some())
+    }
+
+    /// Checks `[omt]`; `taken` lists streams other ingests already publish.
+    pub fn validate(&self, taken: &[(&str, String)]) -> Result<(), String> {
+        if let Some(url) = &self.discovery_server {
+            open_media_transport::discovery_server::parse_url(url)
+                .map_err(|e| format!("[omt] discovery_server {url:?}: {e} (expected omt://host[:port])"))?;
+        }
+        for i in self.interfaces.iter().chain(&self.exclude_interfaces) {
+            if i.trim().is_empty() {
+                return Err("[omt] interfaces/exclude_interfaces: empty interface name".into());
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for p in &self.pull {
+            let ctx = |e: String| format!("[[omt.pull]] `{}`: {e}", p.stream);
+            if !caudal_core::media::valid_stream_name(&p.stream) {
+                return Err(format!("[[omt.pull]] stream `{}` is not a valid stream name", p.stream));
+            }
+            if !seen.insert(p.stream.as_str()) {
+                return Err(format!("[[omt.pull]] duplicate stream `{}`", p.stream));
+            }
+            if let Some((_, what)) = taken.iter().find(|(s, _)| *s == p.stream) {
+                return Err(ctx(format!("stream is also {what}")));
+            }
+            match (&p.source, &p.url) {
+                (Some(_), Some(_)) => return Err(ctx("set either `source` or `url`, not both".into())),
+                (None, None) => {
+                    return Err(ctx("needs `source` (\"MACHINE (Name)\") or `url` (omt://host:port)".into()));
+                }
+                (Some(s), None) => {
+                    if !open_media_transport::discovery::is_valid_full_name(s)
+                        || open_media_transport::discovery::split_full_name(s).is_none()
+                    {
+                        return Err(ctx(format!(
+                            "source {s:?}: expected a full name \"MACHINE (Name)\" (use `url` for omt://host:port)"
+                        )));
+                    }
+                }
+                (None, Some(u)) => match open_media_transport::address::Address::parse(u) {
+                    Ok(open_media_transport::address::Address::Url { .. }) => {}
+                    Ok(_) => return Err(ctx(format!("url {u:?}: expected omt://host:port"))),
+                    Err(e) => return Err(ctx(format!("url {u:?}: {e}"))),
+                },
+            }
+            if !(100..=200_000).contains(&p.video_kbps) {
+                return Err(ctx(format!("video_kbps {} is outside 100..=200000", p.video_kbps)));
+            }
+            if !(16..=1024).contains(&p.audio_kbps) {
+                return Err(ctx(format!("audio_kbps {} is outside 16..=1024", p.audio_kbps)));
+            }
+            let allowed = parse_cidrs(&p.allowed_sources).map_err(|e| ctx(format!("allowed_sources: {e}")))?;
+            if let (Some(u), false) = (&p.url, allowed.is_empty())
+                && let Ok(open_media_transport::address::Address::Url { host, .. }) =
+                    open_media_transport::address::Address::parse(u)
+                && let Ok(ip) = host.parse::<std::net::IpAddr>()
+                && !allowed.iter().any(|c| c.contains(ip))
+            {
+                return Err(ctx(format!("url {u:?} is outside allowed_sources")));
+            }
+        }
+        let mut names = std::collections::HashSet::new();
+        for o in &self.output {
+            let ctx = |e: String| format!("[[omt.output]] `{}`: {e}", o.name);
+            if !caudal_core::media::valid_stream_name(&o.stream) {
+                return Err(ctx(format!("stream `{}` is not a valid stream name", o.stream)));
+            }
+            let n = o.name.trim();
+            if n.is_empty() {
+                return Err("[[omt.output]] `name` must not be empty".into());
+            }
+            if n != o.name || o.name.len() > 128 || o.name.chars().any(|c| c.is_control() || c == '(' || c == ')') {
+                return Err(ctx(
+                    "name must be 1-128 characters without parentheses, control characters or edge spaces (it is announced as \"MACHINE (name)\")".into(),
+                ));
+            }
+            if !names.insert(o.name.as_str()) {
+                return Err(format!("[[omt.output]] duplicate name `{}`", o.name));
+            }
+            if o.encoder_threads > OMT_MAX_ENCODER_THREADS {
+                return Err(ctx(format!("encoder_threads {} is over {OMT_MAX_ENCODER_THREADS}", o.encoder_threads)));
+            }
+            parse_cidrs(&o.allow).map_err(|e| ctx(format!("allow: {e}")))?;
+            if let Some(n) = o.max_connections
+                && !(1..=OMT_MAX_CONNECTIONS).contains(&n)
+            {
+                return Err(ctx(format!("max_connections {n} is outside 1..={OMT_MAX_CONNECTIONS}")));
+            }
+        }
+        Ok(())
+    }
+
+    /// `[[omt.pull]]` as the runtime type `caudal-omt` takes.
+    pub fn pull_configs(
+        &self,
+        transcode: &TranscodeSection,
+        directory: Option<std::sync::Arc<open_media_transport::address::Directory>>,
+    ) -> Vec<caudal_omt::PullConfig> {
+        self.pull
+            .iter()
+            .map(|p| caudal_omt::PullConfig {
+                stream: p.stream.clone(),
+                source: p.source.clone().or_else(|| p.url.clone()).expect("validated"),
+                quality: p.quality.to_omt(),
+                video_kbps: p.video_kbps,
+                audio_kbps: p.audio_kbps,
+                ffmpeg: self.ffmpeg(transcode).to_path_buf(),
+                directory: directory.clone(),
+                redirects: if p.follow_redirects {
+                    open_media_transport::receiver::RedirectPolicy::Any
+                } else {
+                    open_media_transport::receiver::RedirectPolicy::Never
+                },
+            })
+            .collect()
+    }
+
+    /// What every output shares: the ffmpeg used for what the in-process
+    /// decoders cannot do (H.264 other than 8-bit 4:2:0, AAC other than LC).
+    pub fn output_options(&self, transcode: &TranscodeSection) -> caudal_omt::OutputOptions {
+        caudal_omt::OutputOptions { ffmpeg: Some(self.ffmpeg(transcode).to_path_buf()), decode_with_ffmpeg: false }
+    }
+
+    /// `[[omt.output]]` as the runtime type `caudal-omt` takes.
+    pub fn output_configs(
+        &self,
+        discovery: Option<std::sync::Arc<open_media_transport::discovery::Discovery>>,
+    ) -> Vec<caudal_omt::OutputConfig> {
+        self.output
+            .iter()
+            .map(|o| caudal_omt::OutputConfig {
+                stream: o.stream.clone(),
+                name: o.name.clone(),
+                quality: o.quality.to_omt(),
+                max_quality: None,
+                encoder_threads: o.encoder_threads,
+                announce: true,
+                discovery: discovery.clone(),
+                bind: o.bind,
+                max_connections: o.max_connections,
+            })
+            .collect()
     }
 }
 
@@ -1057,7 +1371,18 @@ impl Config {
         }
         self.failovers()?;
         self.multicast_targets()?;
+        self.omt.validate(&self.omt_taken_streams())?;
         Ok(())
+    }
+
+    /// Streams another ingest already publishes, which an `[[omt.pull]]`
+    /// must not also publish: `(stream, "a [[channel]]")`.
+    fn omt_taken_streams(&self) -> Vec<(&str, String)> {
+        let mut taken: Vec<(&str, String)> = Vec::new();
+        taken.extend(self.channel.iter().map(|c| (c.name.as_str(), "a [[channel]]".to_string())));
+        taken.extend(self.failover.iter().map(|f| (f.stream.as_str(), "a [[failover]] stream".to_string())));
+        taken.extend(self.rtsp.pull.iter().map(|p| (p.stream.as_str(), "an [[rtsp.pull]]".to_string())));
+        taken
     }
 
     /// `[[multicast]]` as the runtime type `caudal-multicast` takes,
@@ -1220,6 +1545,157 @@ mod tests {
             bad("[[multicast]]\nstream = \"a\"\ngroup = \"239.1.1.1:1\"\n[[multicast]]\nstream = \"b\"\ngroup = \"239.1.1.1:1\"\n")
                 .contains("used twice")
         );
+    }
+
+    #[test]
+    fn omt_section_parses_with_defaults() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.omt, OmtSection::default());
+        assert!(!cfg.omt.needs_discovery());
+
+        let src = r#"
+[transcode]
+ffmpeg = "/opt/ffmpeg/bin/ffmpeg"
+
+[omt]
+discovery_server = "omt://10.0.0.2"
+interfaces = ["en0"]
+exclude_interfaces = ["192.168.64.1"]
+
+[[omt.pull]]
+stream = "cam1"
+source = "STUDIO-PC (Camera 1)"
+quality = "high"
+
+[[omt.pull]]
+stream = "cam2"
+url = "omt://10.0.0.7:6400"
+video_kbps = 12000
+audio_kbps = 192
+
+[[omt.output]]
+stream = "program"
+name = "Caudal Program"
+
+[[omt.output]]
+stream = "program+720p"
+name = "Caudal 720p"
+quality = "medium"
+encoder_threads = 4
+"#;
+        let cfg: Config = toml::from_str(src).unwrap();
+        cfg.validate().unwrap();
+        let omt = &cfg.omt;
+        assert_eq!(omt.ffmpeg(&cfg.transcode), Path::new("/opt/ffmpeg/bin/ffmpeg"), "falls back to [transcode]");
+        assert!(omt.needs_discovery());
+        let d = omt.discovery_config();
+        assert_eq!(d.server.as_deref(), Some("omt://10.0.0.2"));
+        assert_eq!(d.interfaces.only, vec!["en0".to_string()]);
+        assert_eq!(d.interfaces.exclude, vec!["192.168.64.1".to_string()]);
+
+        let pulls = omt.pull_configs(&cfg.transcode, None);
+        assert_eq!(pulls[0].source, "STUDIO-PC (Camera 1)");
+        assert_eq!(pulls[0].quality, open_media_transport::command::Quality::High);
+        assert_eq!((pulls[0].video_kbps, pulls[0].audio_kbps), (6000, 128), "defaults");
+        assert_eq!(pulls[1].source, "omt://10.0.0.7:6400");
+        assert_eq!(pulls[1].quality, open_media_transport::command::Quality::Default);
+        assert_eq!((pulls[1].video_kbps, pulls[1].audio_kbps), (12000, 192));
+        assert_eq!(pulls[1].ffmpeg, Path::new("/opt/ffmpeg/bin/ffmpeg"));
+
+        let outputs = omt.output_configs(None);
+        assert_eq!((outputs[0].stream.as_str(), outputs[0].name.as_str()), ("program", "Caudal Program"));
+        assert_eq!(outputs[0].encoder_threads, 0, "0 = auto");
+        assert_eq!(outputs[1].quality, open_media_transport::command::Quality::Medium);
+        assert_eq!(outputs[1].encoder_threads, 4);
+
+        let own: Config = toml::from_str("[omt]\nffmpeg = \"/usr/bin/ffmpeg\"\n").unwrap();
+        assert_eq!(own.omt.ffmpeg(&own.transcode), Path::new("/usr/bin/ffmpeg"));
+
+        let url_only: Config = toml::from_str("[[omt.pull]]\nstream = \"a\"\nurl = \"omt://h:1\"\n").unwrap();
+        assert!(!url_only.omt.needs_discovery(), "a pull by URL needs no discovery");
+
+        // Security keys: safe defaults, and the ones the library cannot
+        // apply yet are named (never silently accepted).
+        assert!(!cfg.omt.pull[0].follow_redirects, "redirects off by default");
+        assert!(cfg.omt.pull[0].allowed_sources.is_empty());
+        assert_eq!((cfg.omt.output[0].bind, cfg.omt.output[0].max_connections), (None, None));
+        let secure: Config = toml::from_str(
+            "[[omt.pull]]\nstream = \"a\"\nsource = \"M (N)\"\nfollow_redirects = true\nallowed_sources = [\"10.0.0.0/8\"]\n\
+             [[omt.output]]\nstream = \"b\"\nname = \"B\"\nbind = \"10.0.0.1\"\nallow = [\"10.0.0.0/8\"]\nmax_connections = 4\n",
+        )
+        .unwrap();
+        secure.validate().unwrap();
+        let inert = omt_unenforced(&secure.omt);
+        assert_eq!(inert.len(), 2, "only name filtering and the output allow-list are inert: {inert:?}");
+        assert!(
+            inert
+                .iter()
+                .all(|s| !s.contains("follow_redirects") && !s.contains("bind") && !s.contains("max_connections"))
+        );
+        assert!(omt_unenforced(&cfg.omt).is_empty(), "the defaults are all enforced");
+        let pulls = secure.omt.pull_configs(&secure.transcode, None);
+        assert_eq!(pulls[0].redirects, open_media_transport::receiver::RedirectPolicy::Any);
+        assert_eq!(
+            cfg.omt.pull_configs(&cfg.transcode, None)[0].redirects,
+            open_media_transport::receiver::RedirectPolicy::Never
+        );
+        let outs = secure.omt.output_configs(None);
+        assert_eq!((outs[0].bind, outs[0].max_connections), (Some("10.0.0.1".parse().unwrap()), Some(4)));
+    }
+
+    #[test]
+    fn omt_section_rejects_bad_entries() {
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        let pull = |extra: &str| format!("[[omt.pull]]\nstream = \"cam\"\n{extra}");
+
+        assert!(bad(&pull("source = \"A (B)\"\nurl = \"omt://h:1\"\n")).contains("not both"));
+        assert!(bad(&pull("")).contains("needs `source`"));
+        assert!(bad(&pull("source = \"just-a-host\"\n")).contains("MACHINE (Name)"));
+        assert!(bad(&pull("url = \"omt://host\"\n")).contains("url"), "a pull URL needs a port");
+        assert!(bad(&pull("url = \"STUDIO (Cam)\"\n")).contains("omt://host:port"));
+        assert!(bad(&pull("url = \"omt://h:1\"\nvideo_kbps = 10\n")).contains("video_kbps"));
+        assert!(bad(&pull("url = \"omt://h:1\"\naudio_kbps = 0\n")).contains("audio_kbps"));
+        assert!(bad("[[omt.pull]]\nstream = \"a b\"\nurl = \"omt://h:1\"\n").contains("not a valid stream name"));
+        let twice = "[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://h:1\"\n[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://h:2\"\n";
+        assert!(bad(twice).contains("duplicate stream `cam`"));
+        let channel = "[[channel]]\nname = \"cam\"\nitems = []\n[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://h:1\"\n";
+        assert!(bad(channel).contains("also a [[channel]]"));
+        let rtsp = "[[rtsp.pull]]\nstream = \"cam\"\nurl = \"rtsp://x/y\"\n[[omt.pull]]\nstream = \"cam\"\nurl = \"omt://h:1\"\n";
+        assert!(bad(rtsp).contains("[[rtsp.pull]]"));
+        let quality = toml::from_str::<Config>(&pull("url = \"omt://h:1\"\nquality = \"ultra\"\n")).unwrap_err();
+        assert!(quality.to_string().contains("ultra"), "{quality}");
+        let typo = toml::from_str::<Config>(&pull("url = \"omt://h:1\"\nvideo_kbs = 1\n")).unwrap_err();
+        assert!(typo.to_string().contains("video_kbs"), "unknown keys rejected: {typo}");
+
+        let out = |extra: &str| format!("[[omt.output]]\nstream = \"show\"\n{extra}");
+        assert!(toml::from_str::<Config>(&out("")).is_err(), "name is required");
+        assert!(bad(&out("name = \"\"\n")).contains("must not be empty"));
+        assert!(bad(&out("name = \"Show (A)\"\n")).contains("parentheses"));
+        assert!(bad(&out("name = \" Show\"\n")).contains("edge spaces"));
+        assert!(bad(&out("name = \"Show\"\nencoder_threads = 65\n")).contains("encoder_threads"));
+        let dup = "[[omt.output]]\nstream = \"a\"\nname = \"Show\"\n[[omt.output]]\nstream = \"b\"\nname = \"Show\"\n";
+        assert!(bad(dup).contains("duplicate name `Show`"));
+        // The same stream under two names is fine.
+        let two = "[[omt.output]]\nstream = \"a\"\nname = \"One\"\n[[omt.output]]\nstream = \"a\"\nname = \"Two\"\n";
+        toml::from_str::<Config>(two).unwrap().validate().unwrap();
+
+        assert!(
+            bad(&pull("url = \"omt://10.0.0.7:6400\"\nallowed_sources = [\"192.168.1.0/24\"]\n"))
+                .contains("outside allowed_sources")
+        );
+        assert!(bad(&pull("url = \"omt://h:1\"\nallowed_sources = [\"nope\"]\n")).contains("allowed_sources"));
+        toml::from_str::<Config>(&pull("url = \"omt://10.0.0.7:6400\"\nallowed_sources = [\"10.0.0.0/8\"]\n"))
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert!(bad(&out("name = \"S\"\nallow = [\"300.1.1.1\"]\n")).contains("allow"));
+        assert!(bad(&out("name = \"S\"\nmax_connections = 0\n")).contains("max_connections"));
+        assert!(toml::from_str::<Config>(&out("name = \"S\"\nbind = \"eth0\"\n")).is_err(), "bind is an address");
+
+        assert!(bad("[omt]\ndiscovery_server = \"http://x\"\n").contains("discovery_server"));
+        assert!(bad("[omt]\ninterfaces = [\" \"]\n").contains("empty interface"));
+        let ok: Config = toml::from_str("[omt]\ndiscovery_server = \"omt://[::1]:6399\"\n").unwrap();
+        ok.validate().unwrap();
     }
 
     #[test]

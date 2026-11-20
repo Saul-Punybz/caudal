@@ -47,6 +47,13 @@ caudal-captions = { path = "crates/caudal-captions", version = "0.1.0" }
 caudal-cluster = { path = "crates/caudal-cluster", version = "0.1.0" }
 caudal-failover = { path = "crates/caudal-failover", version = "0.1.0" }
 caudal-multicast = { path = "crates/caudal-multicast", version = "0.1.0" }
+caudal-omt = { path = "crates/caudal-omt", version = "0.1.0" }
+# Our own OMT crates (MIT OR Apache-2.0), pinned to a pushed commit while M12
+# is developed; switch to crates.io 0.2.x before tagging (git dependencies
+# block publishing). caudal-omt and caudal both take them from here.
+# `version` too: cargo-deny's `wildcards = "deny"` counts a bare git dep.
+open-media-transport = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "ec11ec2", version = "0.1" }
+vmx-codec = { git = "https://github.com/Saul-Punybz/open-media-transport", rev = "ec11ec2", version = "0.1" }
 
 # argon2 unoptimized takes seconds per hash, which makes debug tests crawl.
 [profile.dev.package.argon2]
@@ -55,6 +62,9 @@ opt-level = 3
 opt-level = 3
 # The in-process H.264 engine encodes in real time; unoptimized it could not
 # keep up on a 4-core CI runner even alone (112 of 240 frames).
+# The VMX codec runs per frame at full HD in the OMT tests.
+[profile.dev.package.vmx-codec]
+opt-level = 3
 [profile.dev.package.rusty_h264]
 opt-level = 3
 [profile.dev.package.rusty_h264-common]

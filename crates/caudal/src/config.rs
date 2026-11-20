@@ -1357,6 +1357,7 @@ impl Config {
         self.record.to_record_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         self.rtsp.to_tls_config()?;
+        self.validate_pulls_and_pushes()?;
         if let Some(admin) = &self.admin {
             admin.validate()?;
         }
@@ -1462,6 +1463,42 @@ impl Config {
                 buffer,
             }
         })
+    }
+}
+
+impl Config {
+    /// `[[rtsp.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
+    /// name, the right URL scheme, and one pull per stream (two would race
+    /// to publish the same name).
+    fn validate_pulls_and_pushes(&self) -> Result<(), String> {
+        let name_ok = |section: &str, s: &str| {
+            if caudal_core::media::valid_stream_name(s) {
+                Ok(())
+            } else {
+                Err(format!("{section} stream {s:?} is not a valid stream name (A-Z a-z 0-9 _ - . +, at most 128)"))
+            }
+        };
+        let scheme_ok = |section: &str, url: &str, schemes: &[&str]| {
+            let ok = url.split_once("://").is_some_and(|(s, rest)| schemes.contains(&s) && !rest.is_empty());
+            if ok { Ok(()) } else { Err(format!("{section} url {url:?}: expected {}", schemes.join("://, ") + "://")) }
+        };
+        let mut pulled = std::collections::HashSet::new();
+        for p in &self.rtsp.pull {
+            name_ok("[[rtsp.pull]]", &p.stream)?;
+            scheme_ok("[[rtsp.pull]]", &p.url, &["rtsp", "rtsps"])?;
+            if !pulled.insert(p.stream.as_str()) {
+                return Err(format!("[[rtsp.pull]] stream {:?} is pulled twice", p.stream));
+            }
+        }
+        for p in &self.srt.push {
+            name_ok("[[srt.push]]", &p.stream)?;
+            scheme_ok("[[srt.push]]", &p.url, &["srt"])?;
+        }
+        for r in &self.restream {
+            name_ok("[[restream]]", &r.stream)?;
+            scheme_ok("[[restream]]", &r.url, &["rtmp", "rtmps"])?;
+        }
+        Ok(())
     }
 }
 
@@ -1760,6 +1797,22 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let bc = cfg.buffer.to_buffer_config();
         assert_eq!(bc.window, Duration::from_secs(10));
         assert_eq!(bc.max_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn pulls_and_pushes_are_validated() {
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[rtsp.pull]]\nstream = \"a b\"\nurl = \"rtsp://h/x\"\n").contains("not a valid stream name"));
+        assert!(bad("[[rtsp.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n").contains("rtsp://"));
+        let twice = "[[rtsp.pull]]\nstream = \"a\"\nurl = \"rtsp://h/1\"\n[[rtsp.pull]]\nstream = \"a\"\nurl = \"rtsp://h/2\"\n";
+        assert!(bad(twice).contains("pulled twice"));
+        assert!(bad("[[srt.push]]\nstream = \"a\"\nurl = \"udp://h:1\"\n").contains("srt://"));
+        assert!(bad("[[restream]]\nstream = \"a\"\nurl = \"srt://h:1\"\n").contains("rtmp://"));
+        let ok: Config = toml::from_str(
+            "[[srt.push]]\nstream = \"cam+720p\"\nurl = \"srt://h:1\"\n[[restream]]\nstream = \"cam\"\nurl = \"rtmps://h/app/key\"\n",
+        )
+        .unwrap();
+        ok.validate().expect("renditions and rtmps are fine");
     }
 
     #[test]

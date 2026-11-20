@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 
 use crate::gate::{Access, Denied, Gate};
 use crate::media::{Cue, Frame, TrackInfo, valid_stream_name};
+use crate::session::{Session, Sessions};
 use crate::stream::{BufferConfig, PushError, StartAt, Stream, Subscriber};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -33,6 +34,8 @@ pub struct Registry {
     /// Where a viewer's request for an unknown name goes (a cluster edge
     /// pulling from its origin). Same locking rationale as `gate`.
     demand: RwLock<Option<Arc<dyn Demand>>>,
+    /// Open viewer sessions and kick blocks.
+    sessions: Arc<Sessions>,
 }
 
 /// Longest [`Registry::get_or_demand`] waits for a [`Demand`] to bring a
@@ -60,6 +63,7 @@ impl Default for Registry {
             ended: broadcast::channel(64).0,
             gate: RwLock::new(None),
             demand: RwLock::new(None),
+            sessions: Arc::default(),
         }
     }
 }
@@ -104,11 +108,28 @@ impl Registry {
         token: Option<&str>,
         ip: Option<std::net::IpAddr>,
     ) -> Result<(), Denied> {
+        if access == Access::Play
+            && let Some(ip) = ip
+            && self.sessions.is_blocked(stream, ip)
+        {
+            return Err(Denied::Refused("kicked from this stream; try again later".into()));
+        }
         let gate = self.gate.read().clone();
         match gate {
             Some(g) => g.check(access, stream, token, ip).await,
             None => Ok(()),
         }
+    }
+
+    /// Opens a viewer session for `stream` over `protocol`; it lasts until
+    /// the returned [`Session`] is dropped. See [`crate::session`].
+    pub fn open_session(&self, stream: &str, protocol: &'static str, ip: Option<std::net::IpAddr>) -> Session {
+        self.sessions.open(stream.into(), protocol, ip)
+    }
+
+    /// Open sessions and kicks, for the API.
+    pub fn sessions(&self) -> &Sessions {
+        &self.sessions
     }
 
     /// Claims `name` for a new publisher. The claim lasts until the returned

@@ -429,6 +429,11 @@ impl Supervisor {
     /// changed section. On an invalid config, nothing changes and the
     /// error is returned (the caller decides how to report it: 400 for
     /// the API, a log line for SIGHUP).
+    /// The config currently applied (the startup one, or the last reload).
+    pub fn current_config(&self) -> Config {
+        self.current.lock().clone()
+    }
+
     pub fn reload(&self, new_cfg: Config) -> Result<ReloadReport, String> {
         new_cfg.validate()?;
 

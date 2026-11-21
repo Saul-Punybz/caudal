@@ -1058,8 +1058,12 @@ name = "caudal-hls-pull"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
+ "caudal-cmaf",
  "caudal-core",
+ "caudal-hls",
  "caudal-ts",
+ "mp4-atom",
  "parking_lot",
  "reqwest 0.12.28",
  "tempfile",

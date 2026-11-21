@@ -22,11 +22,19 @@ struct Sender(Child);
 
 impl Sender {
     fn start(format: &str, url: &str) -> Self {
+        Self::start_with(format, url, &["-c:v", "libx264", "-g", "25", "-c:a", "aac"], "320x240:rate=25")
+    }
+
+    /// `codecs`: the ffmpeg codec arguments; `size_rate`: testsrc2's
+    /// `size=...:rate=...` value.
+    fn start_with(format: &str, url: &str, codecs: &[&str], size_rate: &str) -> Self {
         use std::os::unix::process::CommandExt;
         let child = Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25"])
-            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-c:v", "libx264", "-g", "25"])
-            .args(["-c:a", "aac", "-t", "60", "-f", format, url])
+            .args(["-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi", "-i"])
+            .arg(format!("testsrc2=size={size_rate}"))
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
+            .args(codecs)
+            .args(["-t", "60", "-f", format, url])
             .process_group(0)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -148,4 +156,42 @@ async fn ts_over_multicast() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let _sender = Sender::start("mpegts", &format!("udp://{group}:{port}?pkt_size=1316&ttl=0"));
     assert_live_h264_aac(&registry, "mc1").await;
+}
+
+/// Rolando's chain: VLC sends MPEG-2 720p59.94 + MP2 over UDP to the ATSC
+/// multiplexer. Caudal takes it in and publishes both tracks as they are.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mpeg2_and_mp2_over_udp_like_an_atsc_feed() {
+    if !have("ffmpeg") {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let port = free_udp_port();
+    let registry = Registry::new();
+    let _pulls = start_pulls(
+        registry.clone(),
+        BufferConfig::default(),
+        vec![UdpPull { stream: "atsc".into(), url: format!("udp://127.0.0.1:{port}"), interface: None }],
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _sender = Sender::start_with(
+        "mpegts",
+        &format!("udp://127.0.0.1:{port}?pkt_size=1316"),
+        &["-c:v", "mpeg2video", "-b:v", "6M", "-g", "15", "-c:a", "mp2", "-b:a", "192k"],
+        "1280x720:rate=60000/1001",
+    );
+    let stream = wait_for(Duration::from_secs(15), || registry.get("atsc")).await.expect("published");
+    let tracks = wait_for(Duration::from_secs(10), || {
+        let t = stream.tracks();
+        (t.iter().any(|t| t.codec == Codec::Mpeg2Video) && t.iter().any(|t| t.codec == Codec::Mp2)).then_some(t)
+    })
+    .await
+    .unwrap_or_else(|| panic!("MPEG-2 + MP2 tracks: {:?}", stream.tracks().iter().map(|t| t.codec).collect::<Vec<_>>()));
+    let video = tracks.iter().find(|t| t.codec == Codec::Mpeg2Video).and_then(|t| t.video).unwrap();
+    assert_eq!((video.width, video.height), (1280, 720));
+    let before = stream.stats().frames_in;
+    assert!(
+        wait_for(Duration::from_secs(5), || (stream.stats().frames_in > before + 60).then_some(())).await.is_some(),
+        "frames keep arriving"
+    );
 }

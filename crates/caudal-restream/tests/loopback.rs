@@ -110,6 +110,7 @@ async fn restreams_into_a_real_rtmp_ingest() {
                 bind: format!("127.0.0.1:{dst_port}").parse().unwrap(),
                 app: "live".to_owned(),
                 buffer: BufferConfig::default(),
+                play: true,
             };
             let _ = caudal_rtmp::serve(cfg, reg).await;
         });

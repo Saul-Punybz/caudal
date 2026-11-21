@@ -81,6 +81,11 @@ pub struct RtmpSection {
     pub bind: SocketAddr,
     #[serde(default = "default_rtmp_app")]
     pub app: String,
+    /// Let viewers `play` streams over RTMP (`rtmp://host/app/stream`), as
+    /// VLC, ffplay or another server's RTMP pull do. Same auth as every
+    /// other output. On by default.
+    #[serde(default = "default_true")]
+    pub play: bool,
     /// RTMPS publish (`rtmps://host:port/{app}/{stream}`) on this address,
     /// with `[tls]`'s certificate (files or ACME). Off when absent.
     pub tls_bind: Option<SocketAddr>,
@@ -90,7 +95,7 @@ pub struct RtmpSection {
 
 impl Default for RtmpSection {
     fn default() -> Self {
-        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), tls_bind: None, pull: Vec::new() }
+        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), play: true, tls_bind: None, pull: Vec::new() }
     }
 }
 
@@ -113,10 +118,10 @@ impl RtmpSection {
 }
 
 impl RtmpSection {
-    /// Whether the listeners themselves (`bind`, `app`, the RTMPS `tls_bind`)
-    /// differ: pulls reload on their own without restarting them.
+    /// Whether the listeners themselves (`bind`, `app`, `play`, the RTMPS
+    /// `tls_bind`) differ: pulls reload on their own without restarting them.
     pub fn listener_changed(&self, other: &Self) -> bool {
-        self.bind != other.bind || self.app != other.app || self.tls_bind != other.tls_bind
+        self.bind != other.bind || self.app != other.app || self.play != other.play || self.tls_bind != other.tls_bind
     }
 
     /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
@@ -1563,8 +1568,9 @@ impl Default for AuthSection {
 }
 
 /// `[auth.hook]`: before a publish or a play goes ahead, POST it (signed,
-/// Standard Webhooks) to `url` and wait for the answer. 2xx allows,
-/// 401/403 deny; a timeout or any other answer is decided by `on_error`.
+/// Standard Webhooks) to `url` and wait for the answer. 2xx allows
+/// (with `reply = "mistserver"`, only when the body reads as true), 401/403
+/// deny; a timeout or any other answer is decided by `on_error`.
 /// See `caudal_auth::GateHook` and `docs/AUTH-HOOK.md`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1578,6 +1584,11 @@ pub struct AuthHookSection {
     /// `"deny"` (default) or `"allow"` when the service fails.
     #[serde(default = "default_auth_hook_on_error")]
     pub on_error: String,
+    /// How a 2xx is read: `"status"` (default, any 2xx allows) or
+    /// `"mistserver"` (the body must read as true, as a MistServer
+    /// blocking trigger handler answers).
+    #[serde(default = "default_auth_hook_reply")]
+    pub reply: String,
     #[serde(default = "default_true")]
     pub publish: bool,
     #[serde(default = "default_true")]
@@ -1595,6 +1606,9 @@ fn default_auth_hook_timeout_ms() -> u64 {
 }
 fn default_auth_hook_on_error() -> String {
     "deny".into()
+}
+fn default_auth_hook_reply() -> String {
+    "status".into()
 }
 fn default_auth_hook_allow_cache_secs() -> u64 {
     30
@@ -1618,6 +1632,11 @@ impl AuthHookSection {
             "allow" => caudal_auth::OnError::Allow,
             other => return Err(format!("[auth.hook] on_error {other:?}: expected \"deny\" or \"allow\"")),
         };
+        let reply = match self.reply.as_str() {
+            "status" => caudal_auth::ReplyMode::Status,
+            "mistserver" => caudal_auth::ReplyMode::MistServer,
+            other => return Err(format!("[auth.hook] reply {other:?}: expected \"status\" or \"mistserver\"")),
+        };
         if !self.publish && !self.play {
             return Err("[auth.hook] `publish` and `play` are both false; remove the section instead".into());
         }
@@ -1629,6 +1648,7 @@ impl AuthHookSection {
             secret: self.secret.clone(),
             timeout: Duration::from_millis(self.timeout_ms),
             on_error,
+            reply,
             publish: self.publish,
             play: self.play,
             allow_cache: Duration::from_secs(self.allow_cache_secs),
@@ -2580,6 +2600,7 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let h = ok.auth.hook_config().unwrap().unwrap();
         assert_eq!(h.timeout, Duration::from_millis(2000), "short default timeout");
         assert_eq!(h.on_error, caudal_auth::OnError::Deny, "fails closed by default");
+        assert_eq!(h.reply, caudal_auth::ReplyMode::Status, "status codes decide by default");
         assert!(h.publish && h.play);
         assert_eq!((h.allow_cache, h.deny_cache), (Duration::from_secs(30), Duration::from_secs(5)));
         assert!(Config::default().auth.hook_config().unwrap().is_none());
@@ -2595,6 +2616,12 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         assert!(bad("on_error = \"maybe\"\n").contains("on_error"));
         assert!(bad("publish = false\nplay = false\n").contains("both false"));
         assert!(bad("allow_cache_secs = 86400\n").contains("3600"));
+        assert!(bad("reply = \"body\"\n").contains("reply"));
+        let mist: Config = toml::from_str(&format!(
+            "[auth.hook]\nurl = \"https://a/g\"\nsecret = \"{secret}\"\nreply = \"mistserver\"\n"
+        ))
+        .unwrap();
+        assert_eq!(mist.auth.hook_config().unwrap().unwrap().reply, caudal_auth::ReplyMode::MistServer);
         let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(err("[auth.hook]\nurl = \"auth.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
         assert!(err("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"hunter2\"\n").contains("whsec_"));

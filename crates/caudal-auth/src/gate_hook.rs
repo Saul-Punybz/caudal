@@ -18,9 +18,19 @@
 //! Wire format: a POST signed per Standard Webhooks (same as `[hooks]`),
 //! body `{"type": "gate.publish" | "gate.play", "timestamp", "data":
 //! {"stream", "ip", "token"}}`. The token is passed through so the service
-//! can check its own credentials. Answer: any 2xx allows; 401/403 deny
-//! (an optional `{"reason": "..."}` body is logged); anything else, a
-//! timeout or a connection error is a failure, decided by `on_error`.
+//! can check its own credentials. How the answer is read depends on
+//! [`ReplyMode`]:
+//!
+//! - `status` (default): any 2xx allows.
+//! - `mistserver`: a 2xx allows only when its body reads as true under
+//!   MistServer's rule ([`mist_bool`]); `false`, `0`, an empty body or
+//!   anything else denies. This is how a MistServer blocking trigger
+//!   handler answers (`200` with `true`/`false`), so a handler moved over
+//!   from MistServer does not let everyone in by answering `200 false`.
+//!
+//! In both modes 401/403 deny (an optional `{"reason": "..."}` body is
+//! logged); anything else, a timeout or a connection error is a failure,
+//! decided by `on_error`.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -30,7 +40,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::Action;
-use crate::blocking::{FlightCache, Signer, deny_reason};
+use crate::blocking::{FlightCache, Signer, deny_reason, small_body};
 
 /// What to do when the service does not answer in time or answers with
 /// something other than 2xx/401/403.
@@ -40,6 +50,42 @@ pub enum OnError {
     Allow,
 }
 
+/// How a 2xx answer is read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ReplyMode {
+    /// The status decides: any 2xx allows, whatever the body.
+    #[default]
+    Status,
+    /// MistServer's blocking-trigger answer: a 2xx allows only when its
+    /// body is true per [`mist_bool`].
+    MistServer,
+}
+
+/// MistServer's `Util::stringToBool` (`lib/bitfields.cpp:62-73` at the
+/// commit pinned in `docs/research/MISTSERVER-REVERSE.md`), which
+/// `lib/triggers.cpp:291-297` applies to a blocking trigger's answer.
+///
+/// It drops every whitespace byte (C `isspace`: space, `\t`, `\n`, `\v`,
+/// `\f`, `\r`) anywhere in the body, lowercases the first four bytes left,
+/// and is true when those start with `1`, `yes`, `true` or `cont`. So
+/// `TRUE\n`, ` yes`, `1`, `10`, `continue` and `t r u e` are true; `false`,
+/// `0`, `no`, `ok` and an empty body are false.
+pub fn mist_bool(body: &[u8]) -> bool {
+    let mut head = [0u8; 4];
+    let mut n = 0;
+    for &b in body {
+        if n == head.len() {
+            break;
+        }
+        if !matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+            head[n] = b.to_ascii_lowercase();
+            n += 1;
+        }
+    }
+    let head = &head[..n];
+    [&b"1"[..], b"yes", b"true", b"cont"].iter().any(|p| head.starts_with(p))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateHookConfig {
     pub url: String,
@@ -47,6 +93,8 @@ pub struct GateHookConfig {
     pub secret: String,
     pub timeout: Duration,
     pub on_error: OnError,
+    /// How a 2xx answer is read.
+    pub reply: ReplyMode,
     /// Ask on publish.
     pub publish: bool,
     /// Ask on play.
@@ -129,7 +177,9 @@ impl GateHookStats {
     }
 }
 
-type Key = (Action, String, Option<IpAddr>, Option<String>);
+/// The reply mode is part of the key so a decision read one way is never
+/// served to a request that would read it the other way.
+type Key = (ReplyMode, Action, String, Option<IpAddr>, Option<String>);
 
 /// The blocking webhook. Cheap to share behind an `Arc`.
 pub struct GateHook {
@@ -155,6 +205,7 @@ impl GateHook {
             secret: String::new(),
             timeout: Duration::from_millis(100),
             on_error: OnError::Deny,
+            reply: ReplyMode::Status,
             publish: true,
             play: true,
             allow_cache: Duration::ZERO,
@@ -193,7 +244,7 @@ impl GateHook {
         if self.client.is_none() {
             return Err("authorization service unavailable".into());
         }
-        let key: Key = (action, stream.to_owned(), ip, token.map(str::to_owned));
+        let key: Key = (self.cfg.reply, action, stream.to_owned(), ip, token.map(str::to_owned));
         let (cell, from_cache) = self.cache.cell(key, |d| self.ttl(d));
         if from_cache {
             self.stats.cached[action_index(action)].fetch_add(1, Ordering::Relaxed);
@@ -234,7 +285,17 @@ impl GateHook {
         };
         let status = resp.status();
         if status.is_success() {
-            return Decision::Allow;
+            if self.cfg.reply == ReplyMode::Status {
+                return Decision::Allow;
+            }
+            let Some(body) = small_body(resp, self.cfg.timeout).await else {
+                return failed("unreadable answer body");
+            };
+            if mist_bool(&body) {
+                return Decision::Allow;
+            }
+            tracing::info!(stream, action = action.as_str(), %status, "auth hook denied (MistServer-style false)");
+            return Decision::Deny("refused by the authorization service".into());
         }
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             let reason = deny_reason(resp, self.cfg.timeout)
@@ -244,5 +305,23 @@ impl GateHook {
             return Decision::Deny(reason);
         }
         failed(status.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mist_bool;
+
+    #[test]
+    fn mist_bool_matches_mistserver_string_to_bool() {
+        for t in ["true", "TRUE\n", " yes", "Yes please", "1", "10", "cont", "continue", "t r u e", "\r\n\x0btrue"] {
+            assert!(mist_bool(t.as_bytes()), "{t:?} is true");
+        }
+        for f in ["", " \n", "false", "0", "no", "ok", "y", "tru", "yeah", "allow", "\0true", "on", "-1"] {
+            assert!(!mist_bool(f.as_bytes()), "{f:?} is false");
+        }
+        // Only the first four non-whitespace bytes are looked at.
+        assert!(mist_bool(b"truefalse"));
+        assert!(!mist_bool(b"\xc3\xa9true"));
     }
 }

@@ -20,7 +20,6 @@
 //! [`url::redact_url`]'s output instead. See `caudal_rtmp::url` and
 //! `crate::status`.
 
-mod flv;
 mod http;
 mod push;
 mod status;

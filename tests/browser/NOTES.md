@@ -257,3 +257,40 @@ or the certificate path the harness uses. A retry would hide it. The next step
 is to capture `about:networking`-level detail or server-side QUIC logs for the
 failing attempt — a server-side race in session accept would be a Caudal bug
 and must not be papered over in the spec.
+
+## Firefox MoQ flake, continued (20-21 Nov 2026)
+
+How often: 6 of 11 red browser runs between 19 and 20 Nov were this test
+(the others: WebKit reconnect, fixed by #35's `liveDurationInfinity`, and
+one Chromium `play.spec` rebuffer). Not caused by #28: that PR only moved
+quinn-proto 0.11.18 -> 0.11.19 and rustls 0.23.45 -> 0.23.46, and the flake
+was already 1 in 6 in September.
+
+Why there was no server evidence: the harness dropped caudal's stdout,
+which is where `tracing` writes. It now keeps the last 4000 lines of the
+server's stdout and stderr in memory (`CaudalServer.logs()`), with a
+per-server `RUST_LOG`; `moq.spec.ts` runs with debug for `caudal_moq`,
+`moq_native`, `moq_net`, `web_transport_quinn`, `quinn`, `quinn_proto`
+and prints the MoQ/QUIC lines only when it fails.
+
+First failure with server logs (run 44894254186): **caudal never received
+a MoQ session**. No accept, no refusal, no handshake error: only startup
+and the publish. `@moq/net` retries on an error (`connection error:` in
+the console) but the page console was empty, so the browser's attempt
+neither failed nor connected: a WebTransport `ready` that never settles
+never reaches that retry loop.
+
+The spec now also wraps `WebTransport`/`WebSocket` in the page and logs
+each one's URL and whether `ready` resolved, rejected or never settled
+(`[wt]`/`[ws]` lines). Six runs in a row with that instrumentation were
+green, so the next failure has not been captured yet. When it is, read:
+
+- no `[wt] new` line: the page never tried (UI or fingerprint problem);
+- `[wt] new` and nothing after, with no quinn line for that connection on
+  the server: Firefox's QUIC never reached caudal (browser side);
+- quinn lines for the connection but no `moq:` line: the handshake stalls
+  inside quinn/moq-native (server side, a Caudal bug to fix, not retry).
+
+If it is the first case of the last two, a connect timeout in the player
+(abort and retry when `ready` has not settled after a few seconds) is the
+fix that helps real viewers too.

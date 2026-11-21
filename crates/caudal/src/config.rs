@@ -140,6 +140,10 @@ pub struct HlsSection {
     /// of the same name within them continues it. 0 ends it at once.
     #[serde(default = "default_reconnect_grace_secs")]
     pub reconnect_grace_secs: u32,
+    /// Also serve classic HLS with MPEG-TS segments at
+    /// `/hls/{name}/ts.m3u8` (older set-top boxes, MPEG-2 + MP2 feeds).
+    #[serde(default = "default_true")]
+    pub ts: bool,
 }
 
 fn default_reconnect_grace_secs() -> u32 {
@@ -154,6 +158,7 @@ impl Default for HlsSection {
             cue_tags: true,
             cue_out_tags: false,
             reconnect_grace_secs: default_reconnect_grace_secs(),
+            ts: true,
         }
     }
 }
@@ -1977,6 +1982,9 @@ encoder_threads = 4
         assert_eq!(cfg.hls.reconnect_grace_secs, 10, "reconnect grace defaults to 10 s");
         let cfg: Config = toml::from_str("[hls]\nreconnect_grace_secs = 0\n").unwrap();
         assert_eq!(cfg.hls.reconnect_grace_secs, 0);
+        assert!(HlsSection::default().ts && toml::from_str::<Config>("").unwrap().hls.ts, "ts-hls defaults on");
+        let cfg: Config = toml::from_str("[hls]\nts = false\n").unwrap();
+        assert!(!cfg.hls.ts);
     }
 
     #[test]

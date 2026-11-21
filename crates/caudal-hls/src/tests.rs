@@ -3,7 +3,7 @@
 //! B-frames on), and the real router answering real requests.
 
 #[path = "mp4demux.rs"]
-mod mp4demux;
+pub(crate) mod mp4demux;
 
 use std::time::{Duration, Instant};
 
@@ -17,8 +17,14 @@ use super::*;
 use mp4demux::{Demuxed, demux};
 
 /// No reconnect grace: a dropped publisher ends the playlist at once.
-const CFG: HlsConfig =
-    HlsConfig { part_ms: 200, segment_ms: 2000, cue_tags: true, cue_out_tags: false, reconnect_grace: Duration::ZERO };
+const CFG: HlsConfig = HlsConfig {
+    part_ms: 200,
+    segment_ms: 2000,
+    cue_tags: true,
+    cue_out_tags: false,
+    reconnect_grace: Duration::ZERO,
+    ts: true,
+};
 
 fn fixture() -> Demuxed {
     demux(include_bytes!("../tests/fixtures/av.mp4"))

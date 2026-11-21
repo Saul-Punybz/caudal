@@ -449,7 +449,7 @@ variant is what MistUtilLoad polls.
 | TS PTS rollover | per-track rollover counter | **Copy** (check `caudal-ts` has it) | `lib/ts_stream.cpp:563-567` |
 | Keyframe / fragment | fragment = first key ≥ 1900 ms after the last; audio-only gets a synthetic key every 2047 ms | **Copy** the audio-only key rule if `caudal-core` lacks one (audio-only streams need seek points) | `lib/dtsc.cpp:3135-3203` |
 | Jitter keep-away | the viewer start point is `lastms - (jitter + lookahead)`; speed control via `realTime`/`maxSkipAhead` 7500 ms | **Consider** the measured-jitter idea for the LL-HLS live edge | `output.cpp:122-167, 1488-1560`; `lib/dtsc.cpp:3016-3051` |
-| TS-HLS | segment = DTSC fragment; target duration = biggest fragment/1000 + 1; window ≥ 4× target | Caudal is fMP4-only. TS-HLS is only needed for old set-top boxes. | `output_hls.cpp:105-190` |
+| TS-HLS | segment = DTSC fragment; target duration = biggest fragment/1000 + 1; window ≥ 4× target | Done: `/hls/{name}/ts.m3u8` (Mist's `index.m3u8` path is LL-HLS in Caudal); keyframe-cut segments near `[hls] segment_ms`, window 6, target = longest segment rounded up. | `output_hls.cpp:105-190` |
 | LL-HLS | in CMAF: `partduration` 500 ms default, blocking reload, preload hints, `llhls=0` opt-out, `NOLLHLS` build flag | Caudal is already ahead (200 ms parts, Apple-validated). Nothing to copy. | `output_cmaf.cpp:210-218, 269-320`; `lib/hls_support.cpp:422-566` |
 | DASH | LL-DASH, chunked, `availabilityTimeOffset`, `UTCTiming` `time.txt` | Reference if DASH is ever built (backlog) | `output_cmaf.cpp:562-588, 965-987` |
 | WebRTC | own stack on mbedtls DTLS + libsrtp2; ICE-lite, host candidates only (no TURN/STUN gathering), NACK buffer, ulpfec, goog-remb, data channels via usrsctp; WS signalling + WHIP/WHEP + WHIP push out | Caudal uses str0m. **Copy two features:** WHIP *push out* (`whip://`) and a JSON/metadata data channel. **Avoid** the hand-written signalling. | `output_webrtc.cpp:15, 180-187, 470-476, 649-706, 742-743, 1880-1936`; `lib/sdp_media.cpp:893, 994-1021`; `output_webrtc_srtp.cpp:57-101` |
@@ -499,7 +499,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
 | MistServer | Caudal | Evidence |
 |---|---|---|
 | LL-HLS (CMAF) | has (ahead: Apple-validated, rendition reports) | `C:crates/caudal-hls/src/packager.rs` |
-| TS-HLS | missing (fMP4 only) | no `video/mp2t` anywhere in crates |
+| TS-HLS | has: `/hls/{name}/ts.m3u8`, v3, TS segments incl. MPEG-2 + MP2, on demand (`docs/HLS.md`) | `C:crates/caudal-hls/src/tsseg.rs` |
 | DASH / LL-DASH | missing (backlog) | no `.mpd` |
 | WHEP | has | `C:crates/caudal-webrtc/src/egress.rs` |
 | WebRTC WebSocket signalling | won't (WHIP/WHEP only) | — |

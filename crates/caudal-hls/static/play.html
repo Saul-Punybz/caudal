@@ -136,21 +136,24 @@
     if (pos !== null && isFinite(pos) && pos > video.currentTime) video.currentTime = pos;
   }
 
-  // After the buffer runs dry on a live stream, refill it to the target
-  // latency before playing again. hls.js has no rebuffer goal: the element
-  // resumes on the first frames that arrive, and the latency controller only
-  // ever speeds up (maxLiveSyncPlaybackRate), never backs off. So when a
-  // publisher drops and comes back within the reconnect grace, playback
-  // restarts on the first part of the new publish and stays one part behind
-  // the encoder, with no headroom at all. Chromium and Firefox cope; WebKit
-  // (GStreamer MSE on Linux) on a loaded 2-core CI runner did not: it
-  // advanced 0.50 s in 3 s after the seam (browser suite, 21 Nov 2026).
-  // Holding until hls.targetLatency is buffered (at least HOLD_MIN_S: hls.js
-  // reports no stall of its own while the element is paused, so it will not
-  // raise the target) puts the player back about where it joined. Capped so
-  // the latency stays under 3 s, and released after HOLD_MAX_MS so a stream
-  // that ends still plays out its tail. Holes up to 0.5 s count as buffer:
-  // hls.js' gap controller jumps those once playing.
+  // After the buffer runs dry at the live edge, wait until the playlist is
+  // the target latency ahead before playing again. hls.js has no rebuffer
+  // goal: the element resumes on the first frames that arrive, and the
+  // latency controller only ever speeds up (maxLiveSyncPlaybackRate), never
+  // backs off. So when a publisher drops and comes back within the
+  // reconnect grace, playback restarts on the first part of the new publish
+  // and stays one part behind the encoder, with no headroom at all.
+  // Chromium and Firefox cope; WebKit (GStreamer MSE on Linux) on a loaded
+  // 2-core CI runner did not: it advanced 0.50 s in 3 s after the seam
+  // (browser suite, 21 Nov 2026).
+  // The distance is to the playlist's edge (not hls.latency, which keeps
+  // growing with the playlist's age while a publisher is away). A stall
+  // further back than the goal (a slow fetch) is left alone: holding there
+  // would only add latency. The goal is hls.targetLatency, at least
+  // HOLD_MIN_S (hls.js reports no stall of its own while the element is
+  // paused, so it does not raise the target) and at most HOLD_CAP_S, so the
+  // latency stays under 3 s. HOLD_MAX_MS releases a stream that ended, and
+  // holes up to 0.5 s count as buffer (hls.js' gap controller jumps them).
   var holding = false, holdSince = 0, played = false;
   var HOLD_MIN_S = 1, HOLD_CAP_S = 2, HOLD_MAX_MS = 8000;
   video.addEventListener("playing", function () { played = true; });
@@ -161,18 +164,19 @@
   }
   function rebufferToTarget() {
     var details = hls && hls.latestLevelDetails;
-    var live = !!(details && details.live);
+    var live = !!(details && details.live && isFinite(details.edge));
+    var goal = Math.min(Math.max((hls && hls.targetLatency) || 0, HOLD_MIN_S), HOLD_CAP_S);
+    var edgeAhead = live ? details.edge - video.currentTime : 0;
     if (holding && !video.paused) holding = false; // the viewer pressed play
     if (holding) {
-      var goal = Math.min(Math.max((hls && hls.targetLatency) || 0, HOLD_MIN_S), HOLD_CAP_S);
-      if (!live || bufferAhead() >= goal || Date.now() - holdSince > HOLD_MAX_MS) {
+      if (!live || (edgeAhead >= goal && bufferAhead() > 0.3) || Date.now() - holdSince > HOLD_MAX_MS) {
         holding = false;
         video.play().catch(function () {});
       }
       return;
     }
     if (!live || !played || video.paused || video.seeking || video.ended) return;
-    if (video.readyState >= 3 || bufferAhead() > 0.1) return;
+    if (video.readyState >= 3 || bufferAhead() > 0.1 || edgeAhead >= goal) return;
     holding = true;
     holdSince = Date.now();
     video.pause();

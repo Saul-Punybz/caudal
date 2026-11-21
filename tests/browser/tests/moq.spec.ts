@@ -141,8 +141,28 @@ test.describe("MoQ playback in a real browser", () => {
 
     const moqRadio = page.getByRole("radio", { name: "MoQ" });
     await expect(moqRadio, "MoQ option should be enabled: this Chromium build has WebTransport").toBeEnabled();
+    // The 21 Nov failure (NOTES.md, "Firefox MoQ flake: the click"): the web
+    // fonts swapped in during the click, the segmented button moved, and
+    // the click never reached React — aria-checked stayed false and LL-HLS
+    // kept playing, so no WebTransport was ever constructed. The UI now
+    // reserves icon widths; label text can still reflow when Roboto Flex
+    // arrives, so wait for the fonts, then confirm the switch took and say
+    // so loudly if it needed another click. Clicking twice is what a viewer
+    // would do; it does not hide anything on the MoQ path, which only
+    // starts once the switch has happened.
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
     const radioClickedAt = Date.now();
-    await moqRadio.click();
+    let clicks = 0;
+    await expect(async () => {
+      if ((await moqRadio.getAttribute("aria-checked")) !== "true") {
+        clicks++;
+        await moqRadio.click();
+      }
+      await expect(moqRadio).toHaveAttribute("aria-checked", "true", { timeout: 2_000 });
+    }).toPass({ timeout: 10_000 });
+    if (clicks > 1) {
+      console.log(`[${browserName}] MoQ radio needed ${clicks} clicks before aria-checked=true (layout shift under the pointer)`);
+    }
 
     // frameCount comes straight from `<moq-watch>.video.out.stats` (see
     // node_modules/@moq/watch/video/decoder.d.ts) — the same public signal
@@ -164,13 +184,25 @@ test.describe("MoQ playback in a real browser", () => {
     await expect
       .poll(
         async () => {
-          const [width, height, frames] = await Promise.all([
-            canvas.evaluate((c: HTMLCanvasElement) => c.width).catch(() => 0),
-            canvas.evaluate((c: HTMLCanvasElement) => c.height).catch(() => 0),
+          // page.evaluate, not canvas.evaluate: a locator waits for its
+          // element, so with no <moq-watch> the first poll blocked for the
+          // whole 20 s and logged once. This logs every poll, plus what the
+          // player box is showing (its overlay text or error).
+          const [{ width, height, mounted, overlay }, frames] = await Promise.all([
+            page.evaluate(() => {
+              const c = document.querySelector("moq-watch canvas") as HTMLCanvasElement | null;
+              const box = document.querySelector('[role="alert"], [aria-live="polite"].pointer-events-none, [role="status"]');
+              return {
+                width: c?.width ?? 0,
+                height: c?.height ?? 0,
+                mounted: document.querySelector("moq-watch") !== null,
+                overlay: box?.textContent?.trim() ?? "",
+              };
+            }),
             frameCount().catch(() => -1),
           ]);
           console.log(
-            `[${browserName}] moq canvas width=${width} height=${height} frameCount=${frames} @ +${Date.now() - radioClickedAt}ms`,
+            `[${browserName}] moq canvas width=${width} height=${height} frameCount=${frames} moq-watch=${mounted} overlay=${JSON.stringify(overlay)} @ +${Date.now() - radioClickedAt}ms`,
           );
           return width;
         },

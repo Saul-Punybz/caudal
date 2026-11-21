@@ -236,6 +236,8 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
 
     // `/audio/{name}.aac|.mp3`: a stream's audio alone, internet-radio style.
     let audio_router = caudal_audio::router(registry.clone(), trusted_proxies.clone());
+    // `/ts/{name}.ts`: the stream as one endless MPEG-TS response.
+    let http_ts_router = caudal_hls::http_ts::router(registry.clone(), trusted_proxies.clone());
     // `/mp4/{name}.mp4`: the stream as one endless fragmented MP4 response.
     let mp4_router = caudal_mp4::router(registry.clone(), trusted_proxies.clone());
 
@@ -351,6 +353,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     let app = api::router(state.clone())
         .merge(hls_router)
         .merge(audio_router)
+        .merge(http_ts_router)
         .merge(mp4_router)
         .merge(webrtc_router)
         .merge(moq_router)

@@ -28,6 +28,7 @@ Both endpoints are under `/api/`, so they need the admin login when
 | Protocol | A session is | `ip` | `bytes_out` | `rtt_ms` / `loss` |
 |---|---|---|---|---|
 | SRT | one connection | yes | MPEG-TS sent | from SRT's own measurements; `loss` = share of packets retransmitted or dropped late |
+| HTTP-TS | one `/ts/{name}.ts` request | yes | MPEG-TS handed to the connection | `null` |
 | Progressive MP4 | one `/mp4/{name}.mp4` request | yes | fMP4 handed to the connection | `null` |
 | RTSP | one PLAY | yes | RTP sent | `null` (not measured yet) |
 | WHEP | one peer | yes | media payload, before RTP/SRTP | from the peer stats: RTT, and the loss the viewer reports over RTCP |

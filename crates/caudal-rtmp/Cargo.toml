@@ -28,4 +28,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 webpki-roots = "1.0"
 
 [dev-dependencies]
+caudal-tls.workspace = true
+rcgen = "0.13"
+tempfile = "3"
 tokio = { workspace = true, features = ["full", "test-util", "process"] }

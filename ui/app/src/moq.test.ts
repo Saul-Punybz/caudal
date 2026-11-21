@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildMoqUrl, hexFingerprintToBytes } from './moq';
+import { buildMoqUrl, hexFingerprintToBytes, withTimeout } from './moq';
 
 describe('hexFingerprintToBytes', () => {
   it('decodes a hex string into raw bytes', () => {
@@ -52,5 +52,21 @@ describe('buildMoqUrl', () => {
     const url = buildMoqUrl('https://example.com:4443', 'a b/c');
     expect(url.searchParams.get('jwt')).toBe('a b/c');
     expect(url.toString()).toContain('jwt=a+b%2Fc');
+  });
+});
+
+describe('withTimeout', () => {
+  it('passes the value through when the promise settles in time', async () => {
+    await expect(withTimeout(Promise.resolve(7), 50, 'x')).resolves.toBe(7);
+  });
+
+  it('passes a rejection through unchanged', async () => {
+    await expect(withTimeout(Promise.reject(new Error('boom')), 50, 'x')).rejects.toThrow('boom');
+  });
+
+  it('rejects with a named error when the promise never settles', async () => {
+    await expect(withTimeout(new Promise(() => {}), 10, 'loading the player')).rejects.toThrow(
+      'loading the player did not finish in 10 ms',
+    );
   });
 });

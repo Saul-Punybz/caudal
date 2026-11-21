@@ -785,6 +785,7 @@ dependencies = [
  "bytes",
  "caudal-access",
  "caudal-admin",
+ "caudal-audio",
  "caudal-auth",
  "caudal-captions",
  "caudal-channel",
@@ -872,6 +873,20 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "subtle",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "caudal-audio"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-core",
+ "caudal-ts",
+ "futures-util",
  "tokio",
  "tower",
  "tracing",

@@ -74,6 +74,9 @@ async fn reload_config(State(state): State<ReloadState>) -> Response {
 struct EntryBody {
     stream: String,
     url: String,
+    /// `whip://` pushes only: the endpoint's bearer token.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,7 +180,7 @@ async fn add_push(State(state): State<ReloadState>, Json(b): Json<EntryBody>) ->
         Ok(k) => k,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };
-    edit_config(&state, "add push", |t| config_edit::add(t, kind, &b.stream, &b.url)).await
+    edit_config(&state, "add push", |t| config_edit::add_with(t, kind, &b.stream, &b.url, b.token.as_deref())).await
 }
 
 /// Removes from every kind in `kinds`; `NotFound` only when none matched.
@@ -380,6 +383,38 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(crate::config_edit::check(&text).unwrap().srt.push.is_empty());
         assert!(text.starts_with("# production box\n"));
+    }
+
+    /// A WHIP push over the API: written to `[[webrtc.push]]` with its
+    /// token, applied live (not a `[webrtc]` restart), listed masked.
+    #[tokio::test]
+    async fn whip_push_over_the_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("caudal.toml");
+        std::fs::write(&path, "[rtmp]\nbind = \"127.0.0.1:0\"\n[srt]\nbind = \"127.0.0.1:0\"\n").unwrap();
+        let cfg = crate::config::load(&path).unwrap();
+        let started = Supervisor::start(&cfg, caudal_core::Registry::new());
+        let supervisor = started.supervisor.clone();
+        let app = router(ReloadState {
+            supervisor: started.supervisor,
+            config_path: Some(path.clone()),
+            edits: Default::default(),
+        });
+        let add = r#"{"stream":"main","url":"whip://cf.example/0123456789abcdef0123/webRTC/publish","token":"s3cr3t"}"#;
+        let (st, body) = call(&app, "POST", "/api/v1/pushes", Some(add)).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert!(body["applied"].as_array().unwrap().iter().any(|a| a == "webrtc.push"), "{body}");
+        assert!(body["requires_restart"].as_array().unwrap().is_empty(), "{body}");
+        assert_eq!(supervisor.current_config().webrtc.push[0].token.as_deref(), Some("s3cr3t"));
+        let (_, list) = call(&app, "GET", "/api/v1/pushes", None).await;
+        assert_eq!(
+            list,
+            serde_json::json!([{"stream": "main", "url": "whip://cf.example/****/webRTC/publish", "section": "[[webrtc.push]]"}])
+        );
+        let tok = r#"{"stream":"main","url":"srt://127.0.0.1:9","token":"x"}"#;
+        assert_eq!(call(&app, "POST", "/api/v1/pushes", Some(tok)).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(call(&app, "DELETE", "/api/v1/pushes/main", None).await.0, StatusCode::OK);
+        assert!(supervisor.current_config().webrtc.push.is_empty());
     }
 
     /// `[[push.auto]]` arrives by reload, shows in `GET /api/v1/pushes` in

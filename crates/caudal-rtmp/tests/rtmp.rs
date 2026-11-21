@@ -46,6 +46,7 @@ impl TestServer {
                 bind: format!("127.0.0.1:{port}").parse().unwrap(),
                 app: app.to_string(),
                 buffer: BufferConfig::default(),
+                play: true,
             };
             let reg = registry.clone();
             let handle = tokio::spawn(async move {

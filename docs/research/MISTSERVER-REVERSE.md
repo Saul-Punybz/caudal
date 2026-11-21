@@ -506,7 +506,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | WebRTC data channel (metadata/subtitles) | missing | no sctp/datachannel |
 | WHIP push out (`whip://`) | missing | — |
 | RTMP(S) push out | has | `C:crates/caudal-restream/src/lib.rs` |
-| RTMP play (viewers pull RTMP) | missing (not verified otherwise) | `C:crates/caudal-rtmp/src/lib.rs:26` is ingest-only |
+| RTMP play (viewers pull RTMP) | has: `play` on the listener, H.264/AAC + Enhanced RTMP HEVC/AV1/Opus, auth, sessions (`docs/RTMP.md`) | `C:crates/caudal-rtmp/src/play.rs` |
 | SRT play / SRT push out | has | `C:crates/caudal-srt/src/play.rs`, `push.rs` |
 | RTSP server | has (TCP, UDP unicast, RTSPS, multicast) | `C:crates/caudal-rtsp/src/server.rs`, `udp.rs` |
 | TS UDP/RTP multicast out | has | `C:crates/caudal-multicast/src/lib.rs` |

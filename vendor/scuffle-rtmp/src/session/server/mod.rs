@@ -8,7 +8,7 @@ use scuffle_context::ContextFutExt;
 use scuffle_future_ext::FutureExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::chunk::CHUNK_SIZE;
+use crate::chunk::{CHUNK_SIZE, CHUNK_STREAM_ID_AUDIO, CHUNK_STREAM_ID_COMMAND, CHUNK_STREAM_ID_VIDEO, Chunk};
 use crate::chunk::reader::ChunkReader;
 use crate::chunk::writer::ChunkWriter;
 use crate::command_messages::netconnection::{
@@ -19,18 +19,24 @@ use crate::command_messages::on_status::{OnStatus, OnStatusCode};
 use crate::command_messages::{Command, CommandResultLevel, CommandType};
 use crate::handshake;
 use crate::handshake::HandshakeServer;
-use crate::messages::MessageData;
+use crate::messages::{MessageData, MessageType};
 use crate::protocol_control_messages::{
     ProtocolControlMessageAcknowledgement, ProtocolControlMessageSetChunkSize, ProtocolControlMessageSetPeerBandwidth,
     ProtocolControlMessageSetPeerBandwidthLimitType, ProtocolControlMessageWindowAcknowledgementSize,
 };
-use crate::user_control_messages::EventMessageStreamBegin;
+use crate::user_control_messages::{EventMessageStreamBegin, EventType};
 
 mod error;
 mod handler;
 
 pub use error::ServerSessionError;
-pub use handler::{SessionData, SessionHandler};
+pub use handler::{PlayMessage, PlayResponse, SessionData, SessionHandler};
+
+/// Caudal patch: how long one write to a playing client may block. Longer
+/// than the 2 s every other write gets: a viewer on a slow link absorbs a
+/// keyframe burst at its own pace, but one that stops reading for this
+/// long is gone (or too slow to be worth buffering for) and is dropped.
+const PLAY_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 // The default acknowledgement window size that is used until the client sends a
 // new acknowledgement window size.
@@ -81,6 +87,12 @@ pub struct ServerSession<S, H> {
     chunk_writer: ChunkWriter,
     /// Is Publishing
     publishing_stream_ids: Vec<u32>,
+    /// Caudal patch: the stream id the client is playing, if any (one per
+    /// connection, as every real player does).
+    playing_stream_id: Option<u32>,
+    /// Caudal patch: flush what is queued, then end the session (a refused
+    /// `play`, or the played stream ended).
+    closing: bool,
 }
 
 impl<S, H> ServerSession<S, H> {
@@ -101,6 +113,8 @@ impl<S, H> ServerSession<S, H> {
             read_buf: BytesMut::new(),
             write_buf: Vec::new(),
             publishing_stream_ids: Vec::new(),
+            playing_stream_id: None,
+            closing: false,
         }
     }
 
@@ -243,12 +257,24 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin, H: SessionHandler>
         } else {
             self.read_buf.reserve(CHUNK_SIZE);
 
-            let n = self
-                .io
-                .read_buf(&mut self.read_buf)
-                .with_timeout(Duration::from_millis(2500))
-                .await
-                .map_err(ServerSessionError::Timeout)?? as u32;
+            let n = if let Some(play_stream_id) = self.playing_stream_id {
+                // Caudal patch: a playing client may stay silent for as
+                // long as it likes (it only sends acknowledgements), so no
+                // read timeout here; the next outgoing message races the
+                // read instead. Both futures are cancel-safe.
+                tokio::select! {
+                    n = self.io.read_buf(&mut self.read_buf) => n? as u32,
+                    msg = self.handler.next_play_message() => {
+                        return self.write_play_message(play_stream_id, msg);
+                    }
+                }
+            } else {
+                self.io
+                    .read_buf(&mut self.read_buf)
+                    .with_timeout(Duration::from_millis(2500))
+                    .await
+                    .map_err(ServerSessionError::Timeout)?? as u32
+            };
 
             if n == 0 {
                 return Ok(false);
@@ -280,7 +306,72 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin, H: SessionHandler>
 
         self.process_chunks().await?;
 
+        if self.closing {
+            // Caudal patch: send the final onStatus before hanging up.
+            self.flush().await?;
+            return Ok(false);
+        }
+
         Ok(true)
+    }
+
+    /// Caudal patch: queues one outgoing message for the played stream.
+    /// Returns whether the session goes on (`run` flushes after `Ok(true)`).
+    fn write_play_message(&mut self, stream_id: u32, msg: PlayMessage) -> Result<bool, crate::error::RtmpError> {
+        let (csid, msg_type, timestamp, data) = match msg {
+            PlayMessage::Video { timestamp, data } => (CHUNK_STREAM_ID_VIDEO, MessageType::Video, timestamp, data),
+            PlayMessage::Audio { timestamp, data } => (CHUNK_STREAM_ID_AUDIO, MessageType::Audio, timestamp, data),
+            PlayMessage::Amf0 { timestamp, data } => (CHUNK_STREAM_ID_COMMAND, MessageType::DataAMF0, timestamp, data),
+            PlayMessage::End => {
+                self.write_user_control(EventType::StreamEOF, stream_id)?;
+                self.write_stream_status(stream_id, CommandResultLevel::Status, "NetStream.Play.Stop", "stream ended")?;
+                self.playing_stream_id = None;
+                self.closing = true;
+                return Ok(true);
+            }
+            PlayMessage::Close => return Ok(false),
+        };
+        self.chunk_writer
+            .write_chunk(&mut self.write_buf, Chunk::new(csid, timestamp, msg_type, stream_id, data))?;
+        Ok(true)
+    }
+
+    /// Caudal patch: a user control event (`StreamBegin`, `StreamEOF`) for
+    /// `stream_id`.
+    fn write_user_control(&mut self, event: EventType, stream_id: u32) -> Result<(), crate::error::RtmpError> {
+        let mut data = Vec::with_capacity(6);
+        data.extend_from_slice(&event.0.to_be_bytes());
+        data.extend_from_slice(&stream_id.to_be_bytes());
+        self.chunk_writer.write_chunk(
+            &mut self.write_buf,
+            Chunk::new(0x02, 0, MessageType::UserControlEvent, 0, data.into()),
+        )?;
+        Ok(())
+    }
+
+    /// Caudal patch: an `onStatus` on the stream itself (message stream id
+    /// `stream_id`, not 0 as `Command::write` sends), which is where
+    /// players expect `NetStream.Play.*`.
+    fn write_stream_status(
+        &mut self,
+        stream_id: u32,
+        level: CommandResultLevel,
+        code: &'static str,
+        description: &str,
+    ) -> Result<(), crate::error::RtmpError> {
+        let mut payload = Vec::new();
+        OnStatus {
+            code: OnStatusCode::from(code),
+            level,
+            description: Some(StringCow::from_ref(description)),
+            others: None,
+        }
+        .write(&mut payload, 0.0)?;
+        self.chunk_writer.write_chunk(
+            &mut self.write_buf,
+            Chunk::new(CHUNK_STREAM_ID_COMMAND, 0, MessageType::CommandAMF0, stream_id, payload.into()),
+        )?;
+        Ok(())
     }
 
     /// Parse data from the client into RTMP messages and process them.
@@ -357,8 +448,15 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin, H: SessionHandler>
             CommandType::NetConnection(NetConnectionCommand::CreateStream) => {
                 self.on_command_create_stream(stream_id, command.transaction_id).await?;
             }
-            CommandType::NetStream(NetStreamCommand::Play { .. })
-            | CommandType::NetStream(NetStreamCommand::Play2 { .. }) => {
+            CommandType::NetStream(NetStreamCommand::Play { values }) => {
+                // Caudal patch: hand `play` to the handler.
+                let name = match values.first() {
+                    Some(scuffle_amf0::Amf0Value::String(name)) => name.as_str().to_owned(),
+                    _ => String::new(),
+                };
+                self.on_command_play(stream_id, &name).await?;
+            }
+            CommandType::NetStream(NetStreamCommand::Play2 { .. }) => {
                 return Err(crate::error::RtmpError::Session(ServerSessionError::PlayNotSupported));
             }
             CommandType::NetStream(NetStreamCommand::DeleteStream {
@@ -476,6 +574,10 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin, H: SessionHandler>
 
         // Remove the stream id from the list of publishing stream ids
         self.publishing_stream_ids.retain(|id| *id != stream_id);
+        // Caudal patch: and stop playing it.
+        if self.playing_stream_id == Some(stream_id) {
+            self.playing_stream_id = None;
+        }
 
         Command {
             command_type: CommandType::OnStatus(OnStatus {
@@ -488,6 +590,35 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin, H: SessionHandler>
         }
         .write(&mut self.write_buf, &self.chunk_writer)?;
 
+        Ok(())
+    }
+
+    /// Caudal patch: `play` on `stream_id`.
+    async fn on_command_play(&mut self, stream_id: u32, stream_name: &str) -> Result<(), crate::error::RtmpError> {
+        let Some(app_name) = &self.app_name else {
+            return Err(crate::error::RtmpError::Session(ServerSessionError::PublishBeforeConnect));
+        };
+        let response = if self.playing_stream_id.is_some() {
+            PlayResponse::Reject {
+                code: "NetStream.Play.Failed",
+                description: "this connection is already playing a stream".into(),
+            }
+        } else {
+            self.handler.on_play(stream_id, app_name.as_ref(), stream_name).await?
+        };
+        match response {
+            PlayResponse::Start => {
+                self.write_user_control(EventType::StreamBegin, stream_id)?;
+                let description = format!("playing {}", stream_name.split('?').next().unwrap_or_default());
+                self.write_stream_status(stream_id, CommandResultLevel::Status, "NetStream.Play.Reset", &description)?;
+                self.write_stream_status(stream_id, CommandResultLevel::Status, "NetStream.Play.Start", &description)?;
+                self.playing_stream_id = Some(stream_id);
+            }
+            PlayResponse::Reject { code, description } => {
+                self.write_stream_status(stream_id, CommandResultLevel::Error, code, &description)?;
+                self.closing = true;
+            }
+        }
         Ok(())
     }
 
@@ -528,9 +659,11 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin, H: SessionHandler>
 
     async fn flush(&mut self) -> Result<(), crate::error::RtmpError> {
         if !self.write_buf.is_empty() {
+            // Caudal patch: see PLAY_WRITE_TIMEOUT.
+            let timeout = if self.playing_stream_id.is_some() { PLAY_WRITE_TIMEOUT } else { Duration::from_secs(2) };
             self.io
                 .write_all(self.write_buf.as_ref())
-                .with_timeout(Duration::from_secs(2))
+                .with_timeout(timeout)
                 .await
                 .map_err(ServerSessionError::Timeout)??;
             self.write_buf.clear();

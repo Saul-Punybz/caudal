@@ -7,18 +7,33 @@
 bind = "0.0.0.0:1935"
 app = "live"
 
-[[restream]]
-stream = "main"
+[hls]
+ts = false
+
+[[push.auto]]
+streams = ["main"]
 url = "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"
 
-[[restream]]
-stream = "backup"
-url = "rtmp://live.twitch.tv/app/live_xxxxxxxx"
+# Scheduled in MistServer: uncomment once this Caudal has `[[push.auto]]`
+# `start`/`stop` (PR #57). Active without them it would push all the time.
+# [[push.auto]]
+# streams = ["backup"]
+# url = "rtmp://live.twitch.tv/app/live_xxxxxxxx"
+# start = "2026-01-01T00:00:00Z"
 
 [record]
 enabled = true
 dir = "/records/main"
 streams = ["main"]
+
+# From MistServer's PUSH_REWRITE / PLAY_REWRITE. The request is signed JSON,
+# not text lines; plain-text answers are accepted. docs/REWRITE-HOOK.md
+[auth.rewrite]
+url = "http://ops.example.com/hooks/rewrite"
+secret = "whsec_GENERATED"
+on_error = "deny"
+publish = true
+play = false
 
 # Admin login: without it, Caudal refuses to listen on anything but loopback.
 # Hash each MistServer user's new password: printf '%s\n' 'pass' | caudal hash-password

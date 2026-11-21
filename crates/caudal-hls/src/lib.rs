@@ -581,25 +581,29 @@ async fn hls_file(
     let query = query.as_deref().unwrap_or("");
     let token = request_token(query, &req);
     let ip = client_ip(&req, &hls.trusted_proxies);
-    let entry = match hls.get(&name) {
-        Some(e) => e,
-        None => match demand(&hls, &name, token, ip).await {
-            Some(e) => e,
-            None => return error(StatusCode::NOT_FOUND),
-        },
-    };
     if token.is_some_and(|t| !token_is_url_safe(t)) {
-        return error(StatusCode::FORBIDDEN);
+        return if hls.get(&name).is_some() { error(StatusCode::FORBIDDEN) } else { error(StatusCode::NOT_FOUND) };
     }
-    match hls.registry.authorize(caudal_core::Access::Play, &name, token, ip).await {
-        Ok(()) => {}
+    // The rewrite hook (if any) and the gate, on the final name. Refusals
+    // for a name nobody serves stay a plain 404, as before clustering.
+    let requested = name;
+    let name = match hls.registry.resolve(caudal_core::Access::Play, "hls", &requested, token, ip).await {
+        Ok(n) => n,
+        Err(_) if hls.get(&requested).is_none() => return error(StatusCode::NOT_FOUND),
         Err(caudal_core::Denied::Missing) => {
             let mut r = error(StatusCode::UNAUTHORIZED);
             r.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
             return r;
         }
         Err(caudal_core::Denied::Refused(_)) => return error(StatusCode::FORBIDDEN),
-    }
+    };
+    let entry = match hls.get(&name) {
+        Some(e) => e,
+        None => match demand(&hls, &name).await {
+            Some(e) => e,
+            None => return error(StatusCode::NOT_FOUND),
+        },
+    };
     let key = viewer_key(&req, ip);
     let refused =
         if file.ends_with(".m3u8") { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
@@ -607,16 +611,20 @@ async fn hls_file(
         return error(StatusCode::FORBIDDEN);
     }
     let apple = loads_subtitle_parts(&req);
-    let resp = serve_file(&hls, &name, &entry, &file, query, token, apple).await;
+    let resp = serve_file(&hls, &name, &requested, &entry, &file, query, token, apple).await;
     if let Some(n) = axum::body::HttpBody::size_hint(resp.body()).exact() {
         entry.add_bytes(key, n);
     }
     resp
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_file(
     hls: &Arc<Hls>,
     name: &str,
+    // The name in the URL, before the rewrite hook: the master's URI for
+    // `name` itself keeps it, so a routed viewer stays on its alias.
+    requested: &str,
     entry: &Arc<Entry>,
     file: &str,
     query: &str,
@@ -634,7 +642,7 @@ async fn serve_file(
     let entry = entry.as_ref();
     match file {
         "index.m3u8" => playlist(hls, name, entry, query, token).await,
-        "master.m3u8" => master(hls, entry, name, token).await,
+        "master.m3u8" => master(hls, entry, name, requested, token).await,
         "subs.m3u8" if hls.text_track(name).is_some() => {
             let flavor = Flavor::Subtitles { parts: apple };
             playlist_of(hls, name, entry, query, token, flavor).await
@@ -813,13 +821,9 @@ fn loads_subtitle_parts(req: &Request) -> bool {
 
 /// A request for a name with no packager: on a cluster edge, an
 /// authorized viewer's first request starts the pull
-/// ([`Registry::get_or_demand`]) and waits for its packager. Refusals and
-/// names nobody has stay a plain 404, as before clustering.
-async fn demand(hls: &Arc<Hls>, name: &str, token: Option<&str>, ip: Option<std::net::IpAddr>) -> Option<Arc<Entry>> {
-    if token.is_some_and(|t| !token_is_url_safe(t)) {
-        return None;
-    }
-    hls.registry.authorize(caudal_core::Access::Play, name, token, ip).await.ok()?;
+/// ([`Registry::get_or_demand`]) and waits for its packager. Only called
+/// after `Registry::resolve` allowed the request.
+async fn demand(hls: &Arc<Hls>, name: &str) -> Option<Arc<Entry>> {
     hls.registry.get_or_demand(name).await?;
     // The packager starts from the publish event, on another task.
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1017,7 +1021,7 @@ fn rendition_reports(hls: &Hls, name: &str) -> String {
 /// highest `BANDWIDTH` first. When `name` already names one rendition
 /// (contains `+`), the master keeps working as a single-variant playlist for
 /// just that stream, as it always has.
-async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) -> Response {
+async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, requested: &str, token: Option<&str>) -> Response {
     let siblings = || -> Vec<(String, VariantAttrs)> {
         if name.contains('+') {
             return Vec::new();
@@ -1036,12 +1040,12 @@ async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) 
         (p.variant_attrs(), p.ready())
     };
     let mut variants = match root_now {
-        Some(a) => vec![(name.to_owned(), a)],
+        Some(a) => vec![(requested.to_owned(), a)],
         None if !root_ready && !siblings().is_empty() => Vec::new(),
         None => {
             let wait = entry.block_timeout();
             match entry.wait(wait, |p| p.variant_attrs()).await {
-                Some(a) => vec![(name.to_owned(), a)],
+                Some(a) => vec![(requested.to_owned(), a)],
                 None => Vec::new(),
             }
         }

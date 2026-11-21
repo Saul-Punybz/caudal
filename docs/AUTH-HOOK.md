@@ -26,7 +26,8 @@ deny_cache_secs = 5         # remember a denial or a failure this long
 ## Order
 
 Every protocol goes through the same check, in this order. The first refusal
-ends it:
+ends it. If `[auth.rewrite]` is set ([REWRITE-HOOK.md](REWRITE-HOOK.md)), it
+runs first and every step below judges the name it returned:
 
 1. Cluster node tokens (play only, inside a `[cluster]`).
 2. `[[access.rules]]` (IP / CIDR / country).

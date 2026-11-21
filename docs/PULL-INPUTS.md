@@ -1,7 +1,7 @@
-# Pulling streams in: SRT caller, MPEG-TS over UDP, MPEG-TS over HTTP, HLS
+# Pulling streams in: SRT caller, MPEG-TS over UDP, MPEG-TS over HTTP, HLS, RTMP
 
 Besides receiving publishers (RTMP, SRT listener, WHIP, MoQ) and pulling
-cameras (`[[rtsp.pull]]`), Caudal can go and get a stream four more ways.
+cameras (`[[rtsp.pull]]`), Caudal can go and get a stream five more ways.
 All can be added from the API too (`POST /api/v1/pulls`, see
 `docs/STREAM-API.md`).
 
@@ -162,6 +162,39 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
   whose path ends in `.m3u8` adds an `[[hls.pull]]`. A playlist at a path
   without `.m3u8` can still be pulled by writing `[[hls.pull]]` by hand.
 
+## `[[rtmp.pull]]`: play a stream from a remote RTMP server
+
+```toml
+[[rtmp.pull]]
+stream = "remote"
+url = "rtmp://203.0.113.7/live/cam1"      # or rtmps://host[:port]/app/key
+```
+
+Caudal connects as a player, the way VLC or ffplay would: `connect` to the
+app, `createStream`, then `play` the last path segment of the URL (anything
+before it is the app, so `rtmp://h/app/_definst_/key` works, and a
+`?token=...` on the key is sent as part of the `play`). This is how
+MistServer's `rtmp://` inputs work: pull from nginx-rtmp, SRS, Wowza,
+another MistServer, or an encoder that serves RTMP.
+
+- What arrives goes through the same FLV demuxer as an RTMP publisher
+  connecting in: H.264, AAC, and Enhanced RTMP H.265 and AV1. `onMetaData`'s
+  frame rate is kept.
+- The stream is published when the first audio or video message arrives:
+  a server without the stream leaves no empty stream. The stream ends when
+  the connection closes, when the server says so (`NetStream.Play.Stop`,
+  `.Complete`, `.UnpublishNotify`), or after 5 s without media; the pull
+  then reconnects with backoff (1 s, doubling to 30 s, back to 1 s once
+  media flowed). `NetStream.Play.StreamNotFound` counts as a failed attempt.
+- `rtmps://` uses the system-independent WebPKI roots (port 443 by
+  default); a server with a self-signed certificate is refused.
+- The stream key never appears in a log line: logs print
+  `rtmp://host/app/****`, like `[[restream]]`.
+- One pull per stream across every pull kind, checked at config load.
+- From the API: `POST /api/v1/pulls` with an `rtmp://` or `rtmps://` URL.
+- Not carried: AMF0 `onCuePoint` SCTE-35 cues (a publisher connecting in
+  keeps them; the client library only surfaces `onMetaData`).
+
 ## Tested with
 
 - SRT: `srt-live-transmit` listening (`srt://:PORT`), fed by ffmpeg; the
@@ -194,3 +227,11 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
   variant's own audio is what is pulled).
 - Caudal to Caudal: a pull of another registry's `/ts/{name}.ts` publishes
   H.264 + AAC (`crates/caudal-hls/tests/http_ts.rs`).
+- RTMP: ffmpeg as the RTMP server (`-f flv -listen 1 rtmp://127.0.0.1:PORT/live/cam1`),
+  which answers `connect`/`createStream`/`play` with `NetStream.Play.Start`
+  and sends FLV: H.264 + AAC published (320x240 read from the avcC), frames
+  keep arriving, the stream ends when the server goes away and is
+  republished when it comes back; libx265 over Enhanced RTMP publishes an
+  H.265 track. Not tested: nginx-rtmp, SRS, Wowza, MistServer as the
+  server, `rtmps://`, `NetStream.Play.UnpublishNotify` from a server that
+  keeps the connection open.

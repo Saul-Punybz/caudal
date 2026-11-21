@@ -20,7 +20,8 @@
 //!   keeps streaming until it disconnects on its own. Revoking an
 //!   in-progress session needs killing its connection some other way
 //!   (there is no per-session kill switch today).
-//! - **Restarted (this listener only):** `[rtmp]`, `[srt]`'s bind/
+//! - **Restarted (this listener only):** `[rtmp]` (plain and RTMPS
+//!   together), `[srt]`'s bind/
 //!   latency/passphrase, and `[rtsp]`'s server/RTSPS fields each restart
 //!   only their own listener task. Aborting it never drops an
 //!   already-accepted connection: every connection handler is its own
@@ -256,11 +257,26 @@ fn spawn_rtmp(
     registry: Arc<Registry>,
     buffer: caudal_core::BufferConfig,
     section: &config::RtmpSection,
+    tls: &config::TlsSection,
 ) -> RtmpListener {
     let cfg = caudal_rtmp::RtmpConfig { bind: section.bind, app: section.app.clone(), buffer };
-    tracing::info!(bind = %cfg.bind, app = %cfg.app, "starting rtmp listener");
+    let rtmps = section.tls_source(tls).expect("validated");
+    tracing::info!(bind = %cfg.bind, app = %cfg.app, tls_bind = ?rtmps.as_ref().map(|(b, _)| b), "starting rtmp listener");
     let task = tokio::spawn(async move {
-        match caudal_rtmp::serve(cfg, registry).await {
+        let plain = caudal_rtmp::serve(cfg.clone(), registry.clone());
+        let result = match rtmps {
+            None => plain.await,
+            Some((bind, source)) => {
+                let secure = async {
+                    let acceptor = caudal_tls::tls_acceptor(&source)
+                        .await
+                        .map_err(|e| std::io::Error::new(e.kind(), format!("rtmps tls: {e}")))?;
+                    caudal_rtmp::serve_tls(caudal_rtmp::RtmpConfig { bind, ..cfg }, acceptor, registry).await
+                };
+                tokio::try_join!(plain, secure).map(|_| ())
+            }
+        };
+        match result {
             Ok(()) => tracing::info!("rtmp listener stopped"),
             Err(e) => tracing::error!(error = %e, "rtmp listener failed"),
         }
@@ -443,7 +459,7 @@ impl Supervisor {
         let hooks_task = Mutex::new(None);
         apply_hooks(&registry, &hooks_task, &cfg.hooks);
 
-        let rtmp = Mutex::new(spawn_rtmp(registry.clone(), buffer, &cfg.rtmp));
+        let rtmp = Mutex::new(spawn_rtmp(registry.clone(), buffer, &cfg.rtmp, &cfg.tls));
         let srt_listen = Mutex::new(spawn_srt(registry.clone(), buffer, &cfg.srt));
         let srt_push = caudal_srt::start_pushes(registry.clone(), cfg.srt.push_targets());
         let srt_pull = caudal_srt::start_pulls(registry.clone(), buffer, cfg.srt.pull_targets());
@@ -657,7 +673,7 @@ impl Supervisor {
             );
             let mut l = self.rtmp.lock();
             l.task.abort();
-            *l = spawn_rtmp(self.registry.clone(), self.buffer, &new_cfg.rtmp);
+            *l = spawn_rtmp(self.registry.clone(), self.buffer, &new_cfg.rtmp, &new_cfg.tls);
             report.restarted.push("rtmp".into());
         }
         let new_srt_core = srt_core_key(&new_cfg.srt);

@@ -21,6 +21,14 @@ connecting in. A dropped connection ends the stream; Caudal reconnects
 The URL takes the same `streamid`, `passphrase` and `latency` options as
 `[[srt.push]]`.
 
+**No rendezvous mode.** Pulls and pushes are SRT callers; a URL with
+`mode=rendezvous` (the ffmpeg / `srt-live-transmit` spelling) or
+`mode=listener` is refused when the config loads (and by `POST
+/api/v1/pulls` / `pushes`, which validate the same way). The SRT library Caudal uses
+(`rsrt`, 0.3.6 and 0.4.0 checked) implements caller and listener only and
+drops rendezvous handshakes. Between two sites behind NAT, open one UDP port
+on one side and make the other side the caller.
+
 ## `[[udp.pull]]`: MPEG-TS over UDP, unicast or multicast
 
 ```toml

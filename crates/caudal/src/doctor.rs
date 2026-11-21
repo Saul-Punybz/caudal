@@ -220,6 +220,9 @@ fn check_binds(cfg: &Config, checks: &mut Vec<Check>) {
         tcp_bind_check("bind https", tls_bind, http_bind, checks);
     }
     tcp_bind_check("bind rtmp", cfg.rtmp.bind, http_bind, checks);
+    if let Some(bind) = cfg.rtmp.tls_bind {
+        tcp_bind_check("bind rtmps", bind, http_bind, checks);
+    }
     if let Some(bind) = cfg.rtsp.bind {
         tcp_bind_check("bind rtsp", bind, http_bind, checks);
     }

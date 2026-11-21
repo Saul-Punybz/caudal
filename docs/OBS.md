@@ -15,6 +15,36 @@ Assumes a running Caudal server — see [QUICKSTART.md](QUICKSTART.md) first.
 - Stream Key: the stream name, e.g. `main`. This is what appears in the
   URLs below and in `GET /api/v1/streams`.
 
+**RTMPS (RTMP inside TLS).** To publish encrypted, e.g. over the public
+internet, set `[rtmp] tls_bind` next to a configured `[tls]` and use
+`rtmps://<host>:<port>/live` as the Server instead:
+
+```toml
+[tls]
+bind = "0.0.0.0:8443"
+cert = "/etc/caudal/fullchain.pem"   # or acme_domains = ["live.example.com"]
+key = "/etc/caudal/privkey.pem"
+
+[rtmp]
+bind = "0.0.0.0:1935"
+tls_bind = "0.0.0.0:1936"            # rtmps://live.example.com:1936/live
+```
+
+- The certificate is `[tls]`'s, nothing else to configure: PEM files are
+  re-read when they change (checked every 5 s), and an ACME certificate is
+  the one the HTTPS listener orders and renews, picked up as it renews.
+  RTMPS with ACME needs the HTTPS listener reachable for the
+  Let's Encrypt TLS-ALPN-01 challenge (port 443), as HTTPS itself does.
+- `tls_bind` must differ from `[rtmp] bind` and from `[tls] bind`; use 443
+  for RTMPS only if HTTPS is on another port. Plain RTMP on `bind` keeps
+  working alongside.
+- The encoder must trust the certificate. A Let's Encrypt certificate works
+  everywhere; with a self-signed one most encoders refuse to connect
+  (ffmpeg connects with `-tls_verify 0`, its default, or verifies with
+  `-tls_verify 1 -ca_file cert.pem`).
+- Changing `[rtmp]` (including `tls_bind`) on reload restarts the RTMP and
+  RTMPS listeners together; connected publishers are not dropped.
+
 **Settings → Output (Advanced mode recommended):**
 
 - Encoder: x264, with **Tune: `zerolatency`** — or a hardware encoder

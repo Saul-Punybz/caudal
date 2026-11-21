@@ -81,21 +81,42 @@ pub struct RtmpSection {
     pub bind: SocketAddr,
     #[serde(default = "default_rtmp_app")]
     pub app: String,
+    /// RTMPS publish (`rtmps://host:port/{app}/{stream}`) on this address,
+    /// with `[tls]`'s certificate (files or ACME). Off when absent.
+    pub tls_bind: Option<SocketAddr>,
     /// Pull streams in from remote RTMP/RTMPS servers (Caudal plays them).
     pub pull: Vec<RtmpPullEntry>,
 }
 
 impl Default for RtmpSection {
     fn default() -> Self {
-        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), pull: Vec::new() }
+        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), tls_bind: None, pull: Vec::new() }
     }
 }
 
 impl RtmpSection {
-    /// Whether the listener itself (`bind`, `app`) differs: pulls reload on
-    /// their own without restarting it.
+    /// RTMPS needs a certificate, and the only place one is configured is
+    /// `[tls]`. `Ok(None)` when RTMPS is off.
+    pub fn tls_source(&self, tls: &TlsSection) -> Result<Option<(SocketAddr, caudal_tls::CertSource)>, String> {
+        let Some(bind) = self.tls_bind else { return Ok(None) };
+        if bind == self.bind {
+            return Err("[rtmp] tls_bind must differ from bind".into());
+        }
+        match tls.to_tls_config()? {
+            Some(t) if t.bind == bind => {
+                Err("[rtmp] tls_bind must differ from [tls] bind (one port, one protocol)".into())
+            }
+            Some(t) => Ok(Some((bind, t.source))),
+            None => Err("[rtmp] tls_bind needs a certificate in [tls] (cert + key, or acme_domains)".into()),
+        }
+    }
+}
+
+impl RtmpSection {
+    /// Whether the listeners themselves (`bind`, `app`, the RTMPS `tls_bind`)
+    /// differ: pulls reload on their own without restarting them.
     pub fn listener_changed(&self, other: &Self) -> bool {
-        self.bind != other.bind || self.app != other.app
+        self.bind != other.bind || self.app != other.app || self.tls_bind != other.tls_bind
     }
 
     /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
@@ -1897,6 +1918,7 @@ impl Config {
         self.record.to_record_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         self.rtsp.to_tls_config()?;
+        self.rtmp.tls_source(&self.tls)?;
         self.validate_pulls_and_pushes()?;
         if let Some(admin) = &self.admin {
             admin.validate()?;
@@ -2094,6 +2116,10 @@ impl Config {
         for p in &self.srt.push {
             name_ok("[[srt.push]]", &p.stream)?;
             scheme_ok("[[srt.push]]", &p.url, &["srt"])?;
+            caudal_srt::check_caller_url(&p.url).map_err(|e| format!("[[srt.push]] url {e}"))?;
+        }
+        for p in &self.srt.pull {
+            caudal_srt::check_caller_url(&p.url).map_err(|e| format!("[[srt.pull]] url {e}"))?;
         }
         for r in &self.restream {
             name_ok("[[restream]]", &r.stream)?;
@@ -2404,6 +2430,18 @@ origins = ["http://origin-a:8080", "https://origin-b"]
     }
 
     #[test]
+    fn rtmps_bind_change_restarts_the_listener() {
+        let a = RtmpSection::default();
+        let b = RtmpSection { tls_bind: Some("0.0.0.0:1936".parse().unwrap()), ..RtmpSection::default() };
+        assert!(a.listener_changed(&b), "turning RTMPS on must restart the listener");
+        let c = RtmpSection {
+            pull: vec![RtmpPullEntry { stream: "x".into(), url: "rtmp://h/a/k".into() }],
+            ..RtmpSection::default()
+        };
+        assert!(!a.listener_changed(&c), "a pull change alone does not");
+    }
+
+    #[test]
     fn http_pulls_are_validated() {
         let ok: Config = toml::from_str(
             "[[http.pull]]\nstream = \"web\"\nurl = \"http://10.0.0.5:8080/stream.ts\"\n\
@@ -2637,6 +2675,28 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let ok: Config = toml::from_str("[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n[auth]\nsecret = \"0123456789abcdef0123456789abcdef\"\nplay = true").unwrap();
         assert!(ok.validate().is_ok());
         assert!(ok.auth.publish, "publish defaults to required once keys exist");
+    }
+
+    #[test]
+    fn rtmps_needs_tls_certificates() {
+        let parse = |t: &str| toml::from_str::<Config>(t).unwrap();
+        assert!(parse("").rtmp.tls_bind.is_none(), "RTMPS is off by default");
+        let no_tls = parse("[rtmp]\ntls_bind = \"0.0.0.0:1936\"").validate().unwrap_err();
+        assert!(no_tls.contains("[tls]"), "{no_tls}");
+        let tls = "[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n";
+        let clash = parse(&format!("{tls}[rtmp]\ntls_bind = \"0.0.0.0:8443\"")).validate().unwrap_err();
+        assert!(clash.contains("differ"), "{clash}");
+        let same = parse(&format!("{tls}[rtmp]\nbind = \"0.0.0.0:1936\"\ntls_bind = \"0.0.0.0:1936\"")).validate();
+        assert!(same.unwrap_err().contains("differ"));
+        let ok = parse(&format!("{tls}[rtmp]\ntls_bind = \"0.0.0.0:1936\""));
+        assert!(ok.validate().is_ok());
+        let (bind, source) = ok.rtmp.tls_source(&ok.tls).unwrap().unwrap();
+        assert_eq!(bind, "0.0.0.0:1936".parse().unwrap());
+        assert!(matches!(source, caudal_tls::CertSource::Files { .. }));
+        let acme = parse(
+            "[tls]\nbind = \"0.0.0.0:443\"\nacme_domains = [\"live.example\"]\n[rtmp]\ntls_bind = \"0.0.0.0:1936\"",
+        );
+        assert!(matches!(acme.rtmp.tls_source(&acme.tls).unwrap().unwrap().1, caudal_tls::CertSource::Acme { .. }));
     }
 
     #[test]

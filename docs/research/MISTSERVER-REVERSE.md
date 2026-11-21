@@ -536,7 +536,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | Health alerts (`STREAM_BUFFER`-like) | has | `C:crates/caudal-health` |
 | JWT with JWKS | has (HS256 secret; RS256/ES256/EdDSA via JWKS; `exp` required) | `C:crates/caudal-auth/src/lib.rs:64, 111-114`; `claims.rs:14` |
 | JWT per-key permissions, `ipa` claim | missing (not found) | — |
-| Auto-push rules with schedules and conditions | partial: `[[push.auto]]` (stream patterns + `$stream` URL template, RTMP(S)/SRT/UDP/RTP; no schedule, conditions or `inhibit`), `[[record.schedule]]` cron | `C:crates/caudal/src/config.rs:294, 895-905` |
+| Auto-push rules with schedules and conditions | partial: `[[push.auto]]` (stream patterns + `$stream` URL template, RTMP(S)/SRT/UDP/RTP; `start`/`stop` or `cron` windows, `enabled` with an API toggle, `inhibit` by stream pattern; no `start_rule`/`end_rule`), `[[record.schedule]]` cron | `C:crates/caudal/src/config.rs:294, 895-905` |
 | Recording via push + target variables | partial: `[record]` dir/segments/retention/upload; no `$datetime`-style templates | `C:crates/caudal/src/config.rs:911-923` |
 | Load balancer (MistUtilLoad) | partial: origin-edge cluster with `/api/v1/cluster/locate/{name}`; no weighted CPU/RAM/BW/geo scoring | `C:crates/caudal-cluster` |
 | Sessions (`clients`, per-viewer bytes, kick by session/tag) | has: list/kick/block, bytes, RTT/loss, tags (#30, #31) | `C:crates/caudal-core/src/session.rs` |
@@ -562,7 +562,8 @@ Status on 2026-11-21 (the ranking is the 19 Nov one):
 5. **TS-HLS and DASH; progressive MP4; thumbnails.** Done: TS-HLS (#46), thumbnails (#45).
    In progress: HTTP-TS output. Missing: DASH, progressive MP4.
 6. **Auto-push with schedules and conditions, push target templates.** Partial: `[[push.auto]]`
-   with patterns and `$stream` templates (#44); no schedules or conditions.
+   with patterns and `$stream` templates (#44); time windows, `enabled`/API toggle and `inhibit`
+   (docs/AUTO-PUSH.md); no general `start_rule`/`end_rule` conditions.
 
 Also added for the ATSC use case: MPEG-2 video + MP2 pass-through (#38), `[[udp.push]]` to one
 receiver (#39), an H.264 copy of an MPEG-2 feed for browsers (#40), Windows builds (#41).

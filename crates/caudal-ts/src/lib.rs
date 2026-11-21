@@ -4,5 +4,6 @@
 //! `caudal-srt` in batch 7 so the transcoder can talk TS to ffmpeg too.
 
 pub mod demux;
+pub mod ingest;
 pub mod mux;
 pub mod ts;

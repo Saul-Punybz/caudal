@@ -545,3 +545,49 @@ fn kill_group(pgid: u32) {
         let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
     }
 }
+
+/// A real ffmpeg viewer shows up as a session with bytes counting, a kick
+/// ends its connection at once, and the block keeps it from coming back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kicked_viewer_is_cut_off_and_blocked() {
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("SKIP: ffmpeg/ffprobe not installed");
+        return;
+    }
+    let port = free_port();
+    let source = Source::start("kick", port, None).await;
+    let url = format!("rtsp://127.0.0.1:{port}/kick");
+    let started = std::time::Instant::now();
+    let viewer = {
+        let url = url.clone();
+        tokio::task::spawn_blocking(move || {
+            run_cmd(&format!("ffmpeg -v error -rtsp_transport tcp -i '{url}' -t 30 -f null -"), Duration::from_secs(40))
+        })
+    };
+
+    let reg = source.registry.clone();
+    let session = wait_for(Duration::from_secs(15), || {
+        reg.sessions().list(Some("kick")).into_iter().find(|s| s.protocol == "rtsp" && s.bytes_out > 10_000)
+    })
+    .await
+    .expect("the ffmpeg viewer is listed with bytes going out");
+    assert_eq!(session.ip, Some("127.0.0.1".parse().unwrap()));
+
+    let kicked_at = std::time::Instant::now();
+    assert_eq!(
+        reg.sessions().kick(session.id, Some(Duration::from_secs(60))),
+        caudal_core::KickResult::Kicked { blocked: true }
+    );
+    let _ = viewer.await.unwrap();
+    let cut = kicked_at.elapsed();
+    assert!(cut < Duration::from_secs(10), "ffmpeg should stop soon after the kick, took {cut:?}");
+    assert!(started.elapsed() < Duration::from_secs(28), "it did not just run to its 30 s end");
+    assert!(
+        wait_for(Duration::from_secs(5), || reg.sessions().list(Some("kick")).is_empty().then_some(())).await.is_some(),
+        "the session closes with the connection"
+    );
+
+    // The block: the same address is refused on its next try.
+    assert_eq!(describe_status(port, "/kick").await, 403, "blocked for 60 s after the kick");
+    source.kill();
+}

@@ -98,9 +98,17 @@ async fn serve(
         }
     };
     tracing::debug!(path = %path, %transport, "moq: viewer session open");
-    // Dropping the session closes it: hold it until the peer goes away.
-    let err = session.closed().await;
-    tracing::debug!(path = %path, reason = %err, "moq: viewer session closed");
+    // A Caudal session for `GET/DELETE /api/v1/sessions`. A session on the
+    // root path sees every stream it may play: listed as `*`. No address
+    // (see `allowed`) and, for now, no byte count: moq-net's stats are per
+    // broadcast, not per session.
+    let mut viewer = registry.open_session(if path.is_empty() { "*" } else { &path }, "moq", None);
+    // Dropping the session closes it: hold it until the peer goes away or
+    // an operator kicks it.
+    tokio::select! {
+        err = session.closed() => tracing::debug!(path = %path, reason = %err, "moq: viewer session closed"),
+        () = viewer.kicked() => tracing::info!(path = %path, "moq: viewer session kicked"),
+    }
 }
 
 /// A `publish/<name>` session: authorize, accept the encoder's announce

@@ -45,6 +45,9 @@ caudal-cluster.workspace = true
 url = "2"
 caudal-failover.workspace = true
 caudal-multicast.workspace = true
+caudal-udp.workspace = true
+caudal-omt.workspace = true
+open-media-transport.workspace = true
 axum.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
@@ -67,10 +70,13 @@ rustls-pki-types = "1"
 # in the dependency tree via rustls-acme and moq-native.
 x509-parser = "0.18"
 rustix.workspace = true
+# Config edits from the API: keep the operator's comments and layout, and
+# replace the file atomically (both already in the dependency tree).
+toml_edit = "0.25"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
 rcgen = "0.14"
 time = "0.3"
 serde_json.workspace = true

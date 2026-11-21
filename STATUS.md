@@ -1,17 +1,112 @@
 # STATUS — Caudal
 
-**Last updated:** 21 Sep 2026 (v0.1 code complete; **120-min soak FAILED — memory leak; tag blocked**)
+**Last updated:** 20 Nov 2026 (MistServer gap points 1-5 merged; v0.1.0 tag still blocked by per-churn RSS growth)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (21 Sep 2026) — v0.1 tag BLOCKED by a memory leak
+## RESUME HERE (20 Nov 2026) — read this block first
+
+**Nothing open.** Merged to `main` 19-20 Nov (all with CI green):
+| PR | What |
+|---|---|
+| #27 | M12 OMT, pinned to the last verified OMT `ec11ec2` (section below) |
+| #28 | dependency advisories: RUSTSEC 21 -> 1 (rsa via openidconnect, accepted) |
+| #29 | `[auth.hook]` blocking webhook before publish/play (cached, single-flight; `docs/AUTH-HOOK.md`) + per-account login lock (20 failures / 15 min) |
+| #30, #31 | viewer sessions: list/kick/block for SRT, RTSP, WHEP, LL-HLS, MoQ; RTT/loss; tags and bulk kick (`docs/SESSIONS.md`) |
+| #32 | `/api/v1/pulls` `/api/v1/pushes`: atomic `toml_edit` config writes, secrets redacted, pull/push validation (`docs/STREAM-API.md`) |
+| #33 | multicast loopback test reads while publishing (CI flake) |
+| #34 | `[[srt.pull]]` (caller to a remote listener) and `[[udp.pull]]` (MPEG-TS over UDP unicast/multicast, plain or RTP), `caudal-ts::ingest::TsIngest` (`docs/PULL-INPUTS.md`) |
+| #35 | play page `liveDurationInfinity: true` + gap event logging in `reconnect.spec.ts` |
+| #36 | `docs/research/MISTSERVER-REVERSE.md` (MistServer read from source, `ddd9bec`) |
+
+Points 1-5 of the MistServer gap list are done.
+
+**Browser suite is flaky, three different ways** (each also seen on `main`):
+- Firefox MoQ `tests/moq.spec.ts:70`: more frequent since #28 (quinn/rustls bump). Not verified.
+- WebKit `tests/reconnect.spec.ts:38` "the player ended during the gap": hypothesis is hls.js
+  MediaSource duration = playlist length; #35 sets `liveDurationInfinity`. **Not verified yet**: the
+  test now logs `ended`/`waiting`/`emptied`/`durationchange`/`BUFFER_EOS` during the gap, check them on
+  the next failure. The dashboard player (`ui/app/src/components/Player.tsx`) does not have the option
+  yet (needs a UI rebuild).
+- Chromium `tests/play.spec.ts:72`: `readyState` 2 at the sample (a rebuffer); passed on rerun.
+
+**Next (proposed):** (1) stabilise the browser suite; (2) MPEG-2 video + MP2 audio demux in
+`caudal-ts` (Rolando's ATSC chain uses them; today they are not demuxed); (3) HLS and RTMP pulls;
+then `totals`-compatible stats, TS-HLS, thumbnails, auto-push rules. Soak (v0.1.0 blocker) still
+open; the weekly soak workflow is **disabled** (Saul, 19 Nov) until the leak is fixed.
+
+## M12 — Open Media Transport (merged in #27, 19 Nov 2026)
+
+**One branch now.** `feat/m12-omt` (crate, pull ingest, wiring) and `feat/m12-output` (output) are
+merged here, the temporary `wiring_stubs.rs` / `wiring-stubs` feature is gone, and the binary is wired
+to the real output API (`OutputOptions`, `reload(&registry, options, outputs)`, `outputs()`).
+
+**OMT pinned to `ec11ec2`, the last verified version** of `Saul-Punybz/open-media-transport`:
+byte-identical VMX vs libvmx; protocol vs libomtnet 1.0.0.19; Mac <-> Linux NUC over a real LAN
+(28 Sep); **OBS Studio 33.0.1 + omtplugin 1.0.0.19 both directions on one Mac (5 Nov)**. Not tested:
+vMix, Windows, wired/cross-subnet networks. The Pi was dropped from scope by Saul (5 Nov).
+(OMT `main` is now `fbde53c`: the OBS evidence plus a clippy-only loop rewrite; same code.)
+
+- **Security keys now enforced** (the library has them since that rev): pull `follow_redirects`
+  (false = `RedirectPolicy::Never`, true = `Any`), output `bind`, output `max_connections`
+  (absent = library cap 128). Still inert and warned at startup: pull `allowed_sources` for a name,
+  output `allow` (no peer allow-list in the library).
+- Verified locally 19 Nov: `cargo clippy --workspace --all-targets -D warnings` clean;
+  `cargo test -p caudal-omt` 45 passed (2 ignored: need the libomtnet harness / an external source);
+  `cargo test -p caudal --bins` 96 passed. Full CI runs on the PR.
+- **Still open:** 10-bit/alpha go through 8-bit; `bench/omt.py` never run; before tagging, OMT crates
+  from crates.io 0.2.x instead of git (cargo-deny allows the OMT git source meanwhile).
+- Rough CPU: x264 veryfast 1080p60 ≈ 0.6–0.7 core on an easy pattern (not measured on real content).
+
+## RESUME HERE (22 Sep 2026) — paused; v0.1.0 tag BLOCKED
+
+**Pick up in this order:**
+1. **Finish the soak diagnosis.** The mechanism is proven (growth is per churn event, not per unit of time — table below). What is left is one pair of runs isolating the publisher restart from the viewer batch: add `--churn-kind publisher|viewers|both` to `bench/soak.py` (both fire together at `soak.py:359-380`), expose it as a `soak.yml` input on branch `fix/soak-rss-growth`, and dispatch two 30-min runs with churn every 2 min. Then fix whatever it names, and prove it with a >= 60-min soak under 1 MB/h.
+2. **Then tag v0.1.0** — `git tag -a v0.1.0 && git push origin v0.1.0` publishes binaries + `ghcr.io/saul-punybz/caudal:0.1.0`. Update the soak paragraph in `docs/release-notes/v0.1.0.md` with the final figure first.
+3. Open PRs, neither merged: **#25** (soak tooling, draft) and **#26** (decoded-frame counter + firefox MoQ diagnosis, ready).
+
+**Two decisions waiting on Saul, not on code:**
+- **The competing Rust OMT crates** — see the section at the end of this block. Nobody has run them; the "first working" claim is unverified in both directions.
+- Whether the firefox MoQ session failure is worth blocking on (it is not a v0.1 blocker today; MoQ is not in the v0.1 headline set).
+
+**Other sessions:** the OMT protocol port runs in its own terminal on `~/Downloads/_Projects/open-media-transport/` (trigger "CONTINUE OMT"; it has its own STATUS.md and has moved to a draft v0.1.0 there). Do not mix the two repos.
+
+**Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI is green; up to 5 agents but ONE heavy local job at a time (lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); benchmarks and soak on GitHub, never on the laptop; a question is not a request; say what is not verified.
 **Saul's rules** (memory `caudal-permisos`, `saul-pregunta-no-es-pedido`): merge when CI is green; up to 5 agents but ONE heavy local job at a time (lock `/private/tmp/caudal-build.lock`, `CARGO_BUILD_JOBS=2`, `nice`); benchmarks and soak on GitHub (`bench.yml`, `soak.yml`), never on the laptop; a question is not a request.
 
 **main = `03821c8`, CI + browser green.** All four v0.1 code items merged — but the tag is blocked:
 
-### The blocker: the 120-min soak found a leak (run 35606887553)
-`RSS slope +11.15 MB/h, growth 7.0 %` over 240 samples, final RSS 336.5 MB — fails the < 1 MB/h rule (~2 GB a week on a real server). Everything else clean: fd 117 and threads 13 flat, 3 streams / 63 viewers kept up on LL-HLS, RTSP and WHEP, config reload and clip ok, no panics. The RTSP errors (210) and WHEP timeouts (70) cluster at the scripted publisher restarts, and every viewer reconnected. The 30-min run PASSED with a *negative* slope, so this only shows over hours — which is the whole point of the soak. Agent on branch `fix/soak-rss-growth`; suspects to check against the CSV (stepped at the 15-min churn events = per-publish/per-viewer state; steady ramp = a growing buffer or cache): `caudal-health`'s `publisher_lost` map, LL-HLS packager entries after republish, recording bookkeeping, WebRTC `ufrags`/`by_source`, cluster history, per-session metric labels. **Do not tag until a >= 60-min soak on the fix branch shows slope < 1 MB/h.**
+### The blocker: the 120-min soak found RSS growth (run 35606887553)
+`RSS slope +11.15 MB/h, growth 7.0 %` over 240 samples, final RSS 336.5 MB — fails the < 1 MB/h rule. Everything else clean: fd 117 and threads 12-13 flat, 3 streams / 63 viewers kept up on LL-HLS, RTSP and WHEP, reload + clip ok, no panics, and the server log is balanced (110 WebRTC sessions created / 110 closed, 10 publishes / 10 ends). The 30-min run PASSED with a negative slope, so this only shows over hours.
+
+**CONFIRMED BY CONTROLLED EXPERIMENT (21 Sep 2026): the growth is per churn event, not per unit of time.** Three runs, same workload (3 streams x 3 protocols x 10 viewers), only the churn rate differs. A churn event = one publisher restart plus a batch of extra viewers that join and leave. Slopes below are post-warm-up, the same statistic the verdict uses (`bench/soak.py` drops the first 600 s):
+
+| Run | Churn | Events | Slope after warm-up | Verdict |
+|---|---|---|---|---|
+| 35622279613 (30 min) | none | 0 | **-17.3 MB/h** (falling) | PASS |
+| 35606887553 (120 min) | every 15 min | 7 | +11.1 MB/h | FAIL |
+| 35622240566 (30 min) | every 2 min | 15 | **+56.0 MB/h** | FAIL |
+
+7.5x the churn rate gives 5.1x the growth rate, and with no churn at all memory is flat to falling (oscillates 318-331 MB over 30 min, ends at 321). Quiet operation does not leak; the publish/unpublish + viewer join/leave cycle does.
+
+**Heap at its peak** (run 35622517287, dhat, 26 % into the run): 73.8 MB live, of which **37.6 MB in 1,498 blocks is `caudal-rtmp/src/demux.rs:82` (`own`)** — over half. Next are `caudal-hls/src/packager.rs:623` (`close_segment`, 7.7 MB) and str0m's `do_payload` (3.9 MB). The RTMP demux path across a republish is the first place to look.
+
+**Two corrections to earlier notes in this file, both mine:**
+1. *"The verdict fits a line from t=0, so short runs are dominated by warm-up"* — **wrong**. `bench/soak.py:502-506` already drops the first 600 s; the verdict figures match a post-warm-up fit exactly (11.148 vs 11.15, -17.261 vs -17.26). The 20-min run's 45 MB/h is real per-event growth measured over a short window, not a warm-up artifact.
+2. *"Heap at exit is 0.1 MB, so there is no leak"* — **not a valid inference**. dhat's at-exit report is taken after shutdown has dropped everything, so state that accumulates during the run and is freed on shutdown reads as zero. Use the at-peak figures (`gb`/`gbk`) instead, which is where the RTMP number above came from.
+
+**Still open:** which half of a churn event does it — the publisher restart, or the viewer batch. That needs one more pair of runs with the two isolated (`bench/soak.py` fires both together at `soak.py:359-380`; a `--churn-kind publisher|viewers|both` flag would split them).
+
+### Browser work, PR #26 (`test/browser-decoded-frames`, draft)
+Decoded-frame counter (TEST-AUDIT gap 12) done and green. `currentTime` never proved decoding because `play.html`'s catch-up guard seeks; the specs now count frames the decoder produced. **WebKit resets `totalVideoFrames` about every 300 ms** (65 resets in a 20 s window), so endpoint subtraction gave negative deltas — the counter accumulates forward movement instead and reports the reset count. Six browser runs on the branch: five green, one failure that finally caught the firefox MoQ flake.
+
+**Firefox MoQ flake diagnosed (run 35626725779):** not a late canvas resize, as earlier notes said. `frameCount=0` after 20.9 s and an empty page debug log (no `announced:`, no `subscribe start:`) while chromium logs all of it in 358 ms — **the MoQ session never establishes**. Everything else on firefox passed in the same run (LL-HLS failover, playback, reconnect, steady state at 1.64 s median), so the machine was fine. Unresolved and not to be guessed at: Firefox's WebTransport client vs moq-native accepting the session vs the harness certificate path. A server-side race in session accept would be a Caudal bug — do not add a retry. Full write-up in `tests/browser/NOTES.md`.
+
+### Open decision for Saul: the competing Rust OMT crates
+`MikanseiLaboratory/openmediatransport-rs` (protocol, ~9K lines) and `vmx-rs` (codec, claims "byte-compatible with libvmx", has CI and a Verified checklist) already cover this ground. Saul believes they do not work; **nobody has run them**, so that is unverified in both directions. A test was started and stopped before it cloned anything. Until it is run, "the first working native Rust OMT" is not a defensible public claim; "byte-identical to the C++ reference under test" is, and needs no comparison to anyone.
+
+**Do not tag v0.1.0** until a >= 60-min soak shows slope < 1 MB/h.
 
 Merged v0.1 items:
 - #20 soak test (`soak.yml`, `bench/soak.py`): 30-min run PASSED (RSS slope -15 MB/h, growth -0.7 %, fd 115 and threads 11 flat, 3 streams / 63 viewers, 0 errors, reload + clip ok) — run 35464718699. **120-min run dispatched on main: 35606887553.**

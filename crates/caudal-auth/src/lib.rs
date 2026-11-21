@@ -7,15 +7,18 @@
 //! EdDSA), cached and refreshed.
 
 mod claims;
+mod gate_hook;
 mod hooks_delivery;
 mod jwks;
+
+pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError};
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Publish,
     Play,
@@ -81,7 +84,9 @@ impl Authorizer {
     pub fn new(cfg: AuthConfig) -> Self {
         let keys = cfg.keys.as_ref().map(|source| {
             Arc::new(match source {
-                KeySource::Secret(secret) => Keys::Secret(Box::new(DecodingKey::from_secret(secret.as_bytes()))),
+                KeySource::Secret(secret) => Keys::Secret(Box::new(
+                    DecodingKey::from_secret(secret.as_bytes()).expect("[auth] secret is validated to 32+ characters"),
+                )),
                 KeySource::Jwks { url, refresh } => Keys::Jwks(jwks::JwksCache::spawn(url.clone(), *refresh)),
             })
         });
@@ -214,7 +219,7 @@ mod tests {
     }
 
     fn token_with(secret: &str, alg: Algorithm, claims: serde_json::Value) -> String {
-        encode(&Header::new(alg), &claims, &EncodingKey::from_secret(secret.as_bytes())).unwrap()
+        encode(&Header::new(alg), &claims, &EncodingKey::from_secret(secret.as_bytes()).unwrap()).unwrap()
     }
 
     fn hs256_token(secret: &str, sub: &str, act: serde_json::Value, exp_offset: i64) -> String {

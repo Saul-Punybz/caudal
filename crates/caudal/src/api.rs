@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use caudal_core::{Cue, CueKind, Registry, Stream};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ pub struct AppState {
     /// `caudal_access_denied_total`. Always present: `subsystems::Supervisor`
     /// creates a `caudal_access::Checker` even with no `[[access.rules]]`.
     access: std::sync::OnceLock<Arc<caudal_access::Checker>>,
+    /// `[auth.hook]` counters for `/metrics`.
+    hook_stats: std::sync::OnceLock<Arc<caudal_auth::GateHookStats>>,
     /// Set once, if `[captions]` captions any stream; read by `/metrics`
     /// for `caudal_captions_*`.
     #[cfg(feature = "captions")]
@@ -39,6 +41,9 @@ pub struct AppState {
     edge: std::sync::OnceLock<caudal_cluster::Edge>,
     /// Set once at startup; `/metrics` appends `caudal_multicast_*`.
     multicast: std::sync::OnceLock<caudal_multicast::MulticastHandle>,
+    /// Set once at startup: `/api/v1/omt/sources`, the `omt` fields of the
+    /// stream inventory, `caudal_omt_*`.
+    omt: std::sync::OnceLock<Arc<crate::omt::OmtRuntime>>,
 }
 
 impl AppState {
@@ -49,10 +54,12 @@ impl AppState {
             cue_seq: AtomicU32::new(1),
             health: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
+            hook_stats: std::sync::OnceLock::new(),
             #[cfg(feature = "captions")]
             captions: std::sync::OnceLock::new(),
             edge: std::sync::OnceLock::new(),
             multicast: std::sync::OnceLock::new(),
+            omt: std::sync::OnceLock::new(),
         })
     }
 
@@ -68,6 +75,10 @@ impl AppState {
         let _ = self.health.set(service);
     }
 
+    pub fn set_hook_stats(&self, stats: Arc<caudal_auth::GateHookStats>) {
+        let _ = self.hook_stats.set(stats);
+    }
+
     pub fn set_access(&self, checker: Arc<caudal_access::Checker>) {
         let _ = self.access.set(checker);
     }
@@ -79,6 +90,10 @@ impl AppState {
 
     pub fn set_multicast(&self, handle: caudal_multicast::MulticastHandle) {
         let _ = self.multicast.set(handle);
+    }
+
+    pub fn set_omt(&self, omt: Arc<crate::omt::OmtRuntime>) {
+        let _ = self.omt.set(omt);
     }
 
     pub fn set_edge(&self, edge: caudal_cluster::Edge) {
@@ -115,10 +130,91 @@ struct StreamJson {
     name: String,
     tracks: Vec<TrackJson>,
     stats: StatsJson,
+    /// Only on a stream an `[[omt.pull]]` publishes or an `[[omt.output]]`
+    /// sends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    omt: Option<OmtStreamJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtStreamJson {
+    /// The `[[omt.pull]]` publishing this stream.
+    pull: Option<OmtPullJson>,
+    /// Every `[[omt.output]]` sending it.
+    outputs: Vec<OmtOutputJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtPullJson {
+    source: String,
+    /// Every connection to the source is up.
+    connected: bool,
+    video_in: u64,
+    audio_in: u64,
+    bytes_in: u64,
+    reconnects: u64,
+    /// Times the stream was (re)published.
+    publishes: u64,
+    /// Frames dropped, by reason.
+    dropped: std::collections::BTreeMap<&'static str, u64>,
+    /// What Caudal tells the source (program while the stream has viewers).
+    tally: OmtTallyJson,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtOutputJson {
+    name: String,
+    /// `MACHINE (name)`, once announced.
+    full_name: Option<String>,
+    /// `omt://MACHINE:port`, once listening.
+    url: Option<String>,
+    receivers: usize,
+    frames_sent: u64,
+    dropped: std::collections::BTreeMap<&'static str, u64>,
+    tally: OmtTallyJson,
+}
+
+#[derive(Debug, Serialize)]
+struct OmtTallyJson {
+    preview: bool,
+    program: bool,
+}
+
+fn omt_stream_json(omt: &crate::omt::OmtRuntime, stream: &str) -> Option<OmtStreamJson> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let pull = omt.pulls().into_iter().find(|p| p.stream == stream).map(|p| {
+        let st = p.stats.snapshot();
+        OmtPullJson {
+            source: p.source.clone(),
+            connected: st.connected,
+            video_in: st.video_in,
+            audio_in: st.audio_in,
+            bytes_in: st.bytes_in,
+            reconnects: st.reconnects,
+            publishes: st.publishes,
+            dropped: caudal_omt::DropReason::ALL.iter().map(|r| r.as_str()).zip(st.dropped).collect(),
+            tally: OmtTallyJson { preview: st.tally.preview, program: st.tally.program },
+        }
+    });
+    let outputs: Vec<OmtOutputJson> = omt
+        .outputs()
+        .into_iter()
+        .filter(|o| o.stream == stream)
+        .map(|o| OmtOutputJson {
+            name: o.name.clone(),
+            full_name: o.stats.full_name(),
+            url: o.stats.url(),
+            receivers: o.stats.receivers.load(Relaxed),
+            frames_sent: o.stats.video_sent.load(Relaxed),
+            dropped: o.stats.dropped().into_iter().collect(),
+            tally: OmtTallyJson { preview: o.stats.preview.load(Relaxed), program: o.stats.program.load(Relaxed) },
+        })
+        .collect();
+    (pull.is_some() || !outputs.is_empty()).then_some(OmtStreamJson { pull, outputs })
 }
 
 impl StreamJson {
-    fn from_stream(s: &Stream) -> Self {
+    fn from_stream(s: &Stream, omt: Option<&crate::omt::OmtRuntime>) -> Self {
         let stats = s.stats();
         StreamJson {
             name: s.name().to_string(),
@@ -146,6 +242,7 @@ impl StreamJson {
                 buffered_ms: stats.buffered_micros / 1000,
                 viewers: stats.viewers,
             },
+            omt: omt.and_then(|o| omt_stream_json(o, s.name())),
         }
     }
 }
@@ -159,13 +256,178 @@ async fn readyz(State(state): State<Arc<AppState>>) -> StatusCode {
 }
 
 async fn list_streams(State(state): State<Arc<AppState>>) -> Json<Vec<StreamJson>> {
-    Json(state.registry.list().iter().map(|s| StreamJson::from_stream(s)).collect())
+    let omt = state.omt.get().map(|o| o.as_ref());
+    Json(state.registry.list().iter().map(|s| StreamJson::from_stream(s, omt)).collect())
 }
 
 async fn get_stream(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     match state.registry.get(&name) {
-        Some(s) => Json(StreamJson::from_stream(&s)).into_response(),
+        Some(s) => Json(StreamJson::from_stream(&s, state.omt.get().map(|o| o.as_ref()))).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct OmtSourceJson {
+    /// `MACHINE (Name)`: what `[[omt.pull]] source` takes.
+    name: String,
+    host: String,
+    port: u16,
+    /// Best first.
+    addresses: Vec<std::net::IpAddr>,
+    /// `omt://address:port` with the best address: what `[[omt.pull]] url`
+    /// takes.
+    url: String,
+}
+
+/// How long the first `GET /api/v1/omt/sources` (the one that starts
+/// discovery) waits for answers before listing.
+const OMT_FIRST_BROWSE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// `GET /api/v1/omt/sources`: the OMT sources discovered on the network now
+/// (mDNS and/or the discovery server), sorted by name. The first call
+/// starts discovery if no pull or output has, and waits 1.5 s for answers.
+async fn omt_sources(State(state): State<Arc<AppState>>) -> Response {
+    let Some(omt) = state.omt.get().cloned() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": "OMT is not running" })))
+            .into_response();
+    };
+    let listed = tokio::task::spawn_blocking(move || {
+        let (sources, fresh) = omt.sources()?;
+        if !fresh {
+            return Ok(sources);
+        }
+        std::thread::sleep(OMT_FIRST_BROWSE);
+        omt.sources().map(|(s, _)| s)
+    })
+    .await;
+    match listed {
+        Ok(Ok(sources)) => Json(
+            sources
+                .into_iter()
+                .map(|s| OmtSourceJson {
+                    url: match s.addresses.first() {
+                        Some(std::net::IpAddr::V6(a)) => format!("omt://[{a}]:{}", s.port),
+                        Some(a) => format!("omt://{a}:{}", s.port),
+                        None => format!("omt://{}:{}", s.host.trim_end_matches('.'), s.port),
+                    },
+                    name: s.full_name,
+                    host: s.host,
+                    port: s.port,
+                    addresses: s.addresses,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Ok(Err(e)) => (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": e }))).into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response()
+        }
+    }
+}
+
+/// One viewer session in `GET /api/v1/sessions`.
+#[derive(Debug, Serialize)]
+struct SessionJson {
+    id: u64,
+    stream: String,
+    protocol: &'static str,
+    ip: Option<String>,
+    /// Unix seconds.
+    started: u64,
+    duration_secs: u64,
+    /// What the output wrote at its own layer: TS for SRT, RTP for RTSP,
+    /// media payload before RTP/SRTP for WHEP.
+    bytes_out: u64,
+    /// Round trip, when the protocol measures it (SRT, WHEP).
+    rtt_ms: Option<f64>,
+    /// Share of packets lost or retransmitted toward the viewer, 0..1 (SRT,
+    /// WHEP).
+    loss: Option<f64>,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionsQuery {
+    stream: Option<String>,
+}
+
+/// `GET /api/v1/sessions[?stream=NAME]`: open viewer sessions, oldest first.
+async fn list_sessions(State(state): State<Arc<AppState>>, Query(q): Query<SessionsQuery>) -> Json<Vec<SessionJson>> {
+    let list = state.registry.sessions().list(q.stream.as_deref());
+    Json(
+        list.into_iter()
+            .map(|s| SessionJson {
+                id: s.id,
+                stream: s.stream,
+                protocol: s.protocol,
+                ip: s.ip.map(|i| i.to_string()),
+                started: s.started,
+                duration_secs: s.duration_secs,
+                bytes_out: s.bytes_out,
+                rtt_ms: s.rtt_ms,
+                loss: s.loss,
+                tags: s.tags,
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct TagBody {
+    tag: String,
+}
+
+/// `POST /api/v1/sessions/{id}/tags` `{"tag": "vip"}`: labels a session so
+/// a group can be kicked at once.
+async fn tag_session(State(state): State<Arc<AppState>>, Path(id): Path<u64>, Json(body): Json<TagBody>) -> Response {
+    match state.registry.sessions().tag(id, &body.tag) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e @ "no such session") => (StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkKickQuery {
+    stream: Option<String>,
+    tag: Option<String>,
+    block_secs: Option<u64>,
+}
+
+/// `DELETE /api/v1/sessions?stream=NAME&tag=T[&block_secs=N]`: ends every
+/// session matching all the given conditions (at least one is required).
+async fn kick_sessions(State(state): State<Arc<AppState>>, Query(q): Query<BulkKickQuery>) -> Response {
+    if q.stream.is_none() && q.tag.is_none() {
+        return (StatusCode::BAD_REQUEST, "give `stream`, `tag` or both").into_response();
+    }
+    let max = caudal_core::session::MAX_BLOCK.as_secs();
+    if q.block_secs.is_some_and(|b| b > max) {
+        return (StatusCode::BAD_REQUEST, format!("block_secs is at most {max}")).into_response();
+    }
+    let sel = caudal_core::Selector { stream: q.stream, tag: q.tag };
+    let kicked = state.registry.sessions().kick_matching(&sel, q.block_secs.map(std::time::Duration::from_secs));
+    Json(serde_json::json!({ "kicked": kicked })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct KickQuery {
+    /// Keep the viewer's address off that stream this long (max 86400).
+    block_secs: Option<u64>,
+}
+
+/// `DELETE /api/v1/sessions/{id}[?block_secs=N]`: ends a viewer session.
+async fn kick_session(State(state): State<Arc<AppState>>, Path(id): Path<u64>, Query(q): Query<KickQuery>) -> Response {
+    let max = caudal_core::session::MAX_BLOCK.as_secs();
+    if q.block_secs.is_some_and(|b| b > max) {
+        return (StatusCode::BAD_REQUEST, format!("block_secs is at most {max}")).into_response();
+    }
+    let block = q.block_secs.map(std::time::Duration::from_secs);
+    match state.registry.sessions().kick(id, block) {
+        caudal_core::KickResult::NotFound => StatusCode::NOT_FOUND.into_response(),
+        caudal_core::KickResult::Kicked { blocked } => {
+            Json(serde_json::json!({ "kicked": id, "blocked": blocked })).into_response()
+        }
     }
 }
 
@@ -267,8 +529,14 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     if let Some(edge) = state.edge.get() {
         edge.render_metrics(&mut body);
     }
+    if let Some(stats) = state.hook_stats.get() {
+        metrics::render_auth_hook(&mut body, stats);
+    }
     if let Some(multicast) = state.multicast.get() {
         multicast.render_metrics(&mut body);
+    }
+    if let Some(omt) = state.omt.get() {
+        metrics::render_omt(&mut body, &omt.pulls(), &omt.outputs());
     }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
@@ -281,6 +549,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/streams", get(list_streams))
         .route("/api/v1/streams/{name}", get(get_stream))
         .route("/api/v1/streams/{name}/cues", post(post_cue))
+        .route("/api/v1/omt/sources", get(omt_sources))
+        .route("/api/v1/sessions", get(list_sessions).delete(kick_sessions))
+        .route("/api/v1/sessions/{id}", delete(kick_session))
+        .route("/api/v1/sessions/{id}/tags", post(tag_session))
         .route("/metrics", get(metrics_endpoint))
         .with_state(state)
 }
@@ -296,6 +568,98 @@ mod tests {
     fn app() -> (Router, Arc<AppState>) {
         let state = AppState::new(Registry::new());
         (router(state.clone()), state)
+    }
+
+    #[tokio::test]
+    async fn sessions_are_listed_and_kicked() {
+        let (app, state) = app();
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let mut s = state.registry.open_session("cam", "srt", Some(ip));
+        s.add_bytes(1316);
+        let _other = state.registry.open_session("other", "rtsp", None);
+
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/v1/sessions?stream=cam").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body.as_array().unwrap().len(), 1, "{body}");
+        assert_eq!(body[0]["protocol"], "srt");
+        assert_eq!(body[0]["ip"], "203.0.113.7");
+        assert_eq!(body[0]["bytes_out"], 1316);
+
+        let uri = format!("/api/v1/sessions/{}?block_secs=999999", s.id());
+        let res = app.clone().oneshot(Request::delete(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "block over a day");
+
+        let uri = format!("/api/v1/sessions/{}?block_secs=60", s.id());
+        let res = app.clone().oneshot(Request::delete(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_secs(1), s.kicked()).await.unwrap();
+        assert_eq!(
+            state.registry.authorize(caudal_core::Access::Play, "cam", None, Some(ip)).await,
+            Err(caudal_core::Denied::Refused("kicked from this stream; try again later".into())),
+            "the kicked address cannot come straight back"
+        );
+        assert_eq!(state.registry.authorize(caudal_core::Access::Play, "other", None, Some(ip)).await, Ok(()));
+
+        let res = app.oneshot(Request::delete("/api/v1/sessions/424242").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sessions_are_tagged_and_kicked_in_bulk() {
+        let (app, state) = app();
+        let a = state.registry.open_session("cam", "srt", None);
+        let b = state.registry.open_session("cam", "whep", None);
+        let c = state.registry.open_session("other", "rtsp", None);
+        a.quality().set_rtt(std::time::Duration::from_millis(40));
+        let post = |id: u64, body: &'static str| {
+            Request::post(format!("/api/v1/sessions/{id}/tags"))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(post(a.id(), r#"{"tag":"vip"}"#)).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            app.clone().oneshot(post(c.id(), r#"{"tag":"vip"}"#)).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            app.clone().oneshot(post(b.id(), r#"{"tag":"no spaces"}"#)).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(app.clone().oneshot(post(9999, r#"{"tag":"vip"}"#)).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/v1/sessions?stream=cam").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let list: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(list[0]["tags"], serde_json::json!(["vip"]));
+        assert_eq!(list[0]["rtt_ms"], 40.0);
+        assert_eq!(list[1]["rtt_ms"], serde_json::Value::Null);
+
+        let del = |uri: &str| Request::delete(uri).body(Body::empty()).unwrap();
+        assert_eq!(app.clone().oneshot(del("/api/v1/sessions")).await.unwrap().status(), StatusCode::BAD_REQUEST);
+        let res = app.clone().oneshot(del("/api/v1/sessions?stream=cam&tag=vip")).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["kicked"], serde_json::json!([a.id()]), "both conditions must hold");
+        assert!(a.is_kicked() && !b.is_kicked() && !c.is_kicked());
+        let res = app.oneshot(del("/api/v1/sessions?tag=vip")).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert!(body["kicked"].as_array().unwrap().contains(&serde_json::json!(c.id())));
+        assert!(c.is_kicked() && !b.is_kicked());
     }
 
     #[tokio::test]
@@ -453,6 +817,120 @@ mod tests {
         let out = caudal_scte35::build(CueKind::Out { duration_us: None }, None, 1, Default::default()).unwrap();
         let body = format!(r#"{{"kind":"in","section_hex":"{}"}}"#, caudal_scte35::to_hex(&out));
         assert_eq!(post_cue_req(&app, "live", &body).await.0, StatusCode::BAD_REQUEST);
+    }
+
+    fn omt_app() -> (Router, Arc<AppState>, Arc<crate::omt::OmtRuntime>) {
+        use open_media_transport::discovery::{Source, SourceEvent};
+        let state = AppState::new(Registry::new());
+        let directory = open_media_transport::address::Directory::manual();
+        directory.apply(SourceEvent::Resolved(Source {
+            full_name: "STUDIO (Camera 2)".into(),
+            host: "studio.local.".into(),
+            port: 6401,
+            addresses: vec!["192.168.1.20".parse().unwrap(), "fe80::1".parse().unwrap()],
+        }));
+        directory.apply(SourceEvent::Resolved(Source {
+            full_name: "BOOTH (Program)".into(),
+            host: "booth.local.".into(),
+            port: 6400,
+            addresses: vec!["fd00::5".parse().unwrap()],
+        }));
+        let omt = crate::omt::OmtRuntime::with_directory(directory, state.registry.clone());
+        state.set_omt(omt.clone());
+        (router(state.clone()), state, omt)
+    }
+
+    async fn get_json(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let res = app.clone().oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn omt_sources_lists_the_directory() {
+        let (app, _state, _omt) = omt_app();
+        let (status, json) = get_json(&app, "/api/v1/omt/sources").await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"name": "BOOTH (Program)", "host": "booth.local.", "port": 6400,
+                 "addresses": ["fd00::5"], "url": "omt://[fd00::5]:6400"},
+                {"name": "STUDIO (Camera 2)", "host": "studio.local.", "port": 6401,
+                 "addresses": ["192.168.1.20", "fe80::1"], "url": "omt://192.168.1.20:6401"},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn omt_sources_without_omt_is_503() {
+        let (app, _state) = app();
+        let (status, json) = get_json(&app, "/api/v1/omt/sources").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(json["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn streams_carry_omt_fields_only_when_omt_touches_them() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        use caudal_core::BufferConfig;
+        use caudal_omt::Quality;
+
+        let (app, state, omt) = omt_app();
+        let _cam = state.registry.publish("cam2", BufferConfig::default()).unwrap();
+        let _other = state.registry.publish("other", BufferConfig::default()).unwrap();
+        omt.reload_for_test(
+            // A real pull at a closed loopback port: it never connects.
+            vec![caudal_omt::PullConfig {
+                stream: "cam2".into(),
+                source: "omt://127.0.0.1:1".into(),
+                quality: Quality::High,
+                video_kbps: 6000,
+                audio_kbps: 128,
+                ffmpeg: "ffmpeg".into(),
+                directory: None,
+                redirects: Default::default(),
+            }],
+            vec![
+                caudal_omt::OutputConfig { announce: false, ..caudal_omt::OutputConfig::new("cam2", "Cam 2 relay") },
+                caudal_omt::OutputConfig { announce: false, ..caudal_omt::OutputConfig::new("nowhere", "Unrelated") },
+            ],
+        );
+        let pull = &omt.pulls()[0];
+        pull.stats.video_in.store(120, Relaxed);
+        pull.stats.dropped[caudal_omt::DropReason::ALL.iter().position(|r| r.as_str() == "decode").unwrap()]
+            .store(1, Relaxed);
+        let out = &omt.outputs()[0];
+        out.stats.receivers.store(1, Relaxed);
+        out.stats.preview.store(true, Relaxed);
+
+        let (status, json) = get_json(&app, "/api/v1/streams/cam2").await;
+        assert_eq!(status, StatusCode::OK);
+        let o = &json["omt"];
+        assert_eq!(o["pull"]["source"], "omt://127.0.0.1:1");
+        assert_eq!(o["pull"]["connected"], false);
+        assert_eq!(o["pull"]["video_in"], 120);
+        assert_eq!(o["pull"]["dropped"]["decode"], 1);
+        assert_eq!(o["pull"]["dropped"]["queue_full"], 0);
+        assert_eq!(o["pull"]["tally"], serde_json::json!({"preview": false, "program": false}));
+        assert_eq!(o["outputs"].as_array().unwrap().len(), 1, "only this stream's outputs: {o}");
+        assert_eq!(o["outputs"][0]["name"], "Cam 2 relay");
+        assert_eq!(o["outputs"][0]["receivers"], 1);
+        assert_eq!(o["outputs"][0]["tally"], serde_json::json!({"preview": true, "program": false}));
+
+        let (_, json) = get_json(&app, "/api/v1/streams/other").await;
+        assert!(json.get("omt").is_none(), "no omt key on a non-OMT stream: {json}");
+        let (_, list) = get_json(&app, "/api/v1/streams").await;
+        let list = list.as_array().unwrap();
+        assert_eq!(list.iter().filter(|s| s.get("omt").is_some()).count(), 1);
+
+        let res = app.oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap()).await.unwrap();
+        let body =
+            String::from_utf8(axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert!(body.contains("caudal_omt_frames_in_total{stream=\"cam2\",kind=\"video\"} 120"), "{body}");
+        assert!(body.contains("caudal_omt_receivers{stream=\"cam2\",output=\"Cam 2 relay\"} 1"), "{body}");
     }
 
     #[tokio::test]

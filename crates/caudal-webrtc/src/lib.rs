@@ -341,7 +341,13 @@ fn is_sdp(headers: &HeaderMap) -> bool {
 }
 
 fn build_rtc(candidates: &[SocketAddr]) -> Rtc {
-    let mut cfg = RtcConfig::new().set_ice_lite(true).clear_codecs().enable_opus(true);
+    // Peer stats once a second: a WHEP viewer's RTT and the loss its
+    // receiver reports (RTCP), for `GET /api/v1/sessions`.
+    let mut cfg = RtcConfig::new()
+        .set_ice_lite(true)
+        .clear_codecs()
+        .enable_opus(true, false)
+        .set_stats_interval(Some(std::time::Duration::from_secs(1)));
     // H.264 packetization-mode 1 only, the profiles browsers and ffmpeg offer.
     for (pt, rtx, profile_level_id) in
         [(127u8, 121u8, 0x42001f), (108, 109, 0x42e01f), (123, 119, 0x4d001f), (114, 115, 0x64001f)]
@@ -506,7 +512,7 @@ async fn whep_post(
         session: session.clone(),
         name: name.clone(),
         rtc,
-        role: Role::Whep(Box::new(egress::Egress::new(name.clone(), sub))),
+        role: Role::Whep(Box::new(egress::Egress::new(name.clone(), sub, st.registry.open_session(&name, "whep", ip)))),
     };
     if !engines.add(peer).await {
         return plain(StatusCode::SERVICE_UNAVAILABLE, "WebRTC is not running");

@@ -7,9 +7,11 @@ mod admin;
 mod api;
 mod captions;
 mod config;
+mod config_edit;
 mod doctor;
 mod import_mist;
 mod metrics;
+mod omt;
 mod reload;
 mod shutdown;
 mod subsystems;
@@ -231,11 +233,13 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
 
     let state = api::AppState::new(registry.clone());
     state.set_access(started.access.clone());
+    state.set_hook_stats(started.hook_stats.clone());
     #[cfg(feature = "captions")]
     if let Some(c) = captions {
         state.set_captions(c);
     }
     state.set_multicast(started.multicast.clone());
+    state.set_omt(started.omt.clone());
     let webrtc_router = caudal_webrtc::router(
         registry.clone(),
         caudal_webrtc::WebRtcConfig {
@@ -284,7 +288,8 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         None => axum::Router::new(),
     };
 
-    let reload_state = reload::ReloadState { supervisor: started.supervisor.clone(), config_path };
+    let reload_state =
+        reload::ReloadState { supervisor: started.supervisor.clone(), config_path, edits: Default::default() };
     reload::spawn_sighup(reload_state.clone());
 
     // Stream health alerts: no keyframes, bitrate floor, publisher lost.

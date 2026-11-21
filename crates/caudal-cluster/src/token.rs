@@ -49,7 +49,10 @@ impl Secret {
         if secret.len() < MIN_SECRET_LEN {
             return Err(SecretError::TooShort);
         }
-        Ok(Self { enc: EncodingKey::from_secret(secret.as_bytes()), dec: DecodingKey::from_secret(secret.as_bytes()) })
+        // Never empty: the length is checked above.
+        let enc = EncodingKey::from_secret(secret.as_bytes()).expect("secret is not empty");
+        let dec = DecodingKey::from_secret(secret.as_bytes()).expect("secret is not empty");
+        Ok(Self { enc, dec })
     }
 
     /// A token for `node_id`, valid for five minutes.

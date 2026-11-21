@@ -555,3 +555,100 @@ fn kill_group(pgid: u32) {
         let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
     }
 }
+
+/// `[[srt.pull]]`: Caudal calls a remote SRT listener (srt-live-transmit
+/// fed by ffmpeg) and publishes what it sends; when the source goes away
+/// the stream ends, and when it comes back Caudal reconnects and publishes
+/// it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_calls_a_remote_listener_and_republishes() {
+    if !have("ffmpeg") || !have("srt-live-transmit") {
+        eprintln!("SKIP: ffmpeg/srt-live-transmit not installed");
+        return;
+    }
+    let port = free_port();
+    let source = Pipeline::start("320x240", 30, &format!("srt://:{port}"));
+    let registry = Registry::new();
+    let pulls = caudal_srt::start_pulls(
+        registry.clone(),
+        BufferConfig::default(),
+        vec![caudal_srt::SrtPull { stream: "remote".into(), url: format!("srt://127.0.0.1:{port}") }],
+    );
+
+    let stream = wait_for(Duration::from_secs(15), || registry.get("remote")).await.expect("the pull published");
+    let tracks = wait_for_tracks(&stream, Duration::from_secs(10)).await;
+    let codecs: Vec<_> = tracks.iter().map(|t| t.codec).collect();
+    assert!(codecs.contains(&caudal_core::Codec::H264) && codecs.contains(&caudal_core::Codec::Aac), "{codecs:?}");
+    let frames = wait_for(Duration::from_secs(5), || (stream.stats().frames_in > 30).then_some(())).await;
+    assert!(frames.is_some(), "frames keep arriving");
+
+    // The source goes away: the stream ends.
+    drop(source);
+    wait_for(Duration::from_secs(10), || stream.is_ended().then_some(()))
+        .await
+        .expect("the stream ended with its source");
+
+    // It comes back: Caudal reconnects and publishes the name again.
+    let _source = Pipeline::start("320x240", 30, &format!("srt://:{port}"));
+    let again = wait_for(Duration::from_secs(40), || registry.get("remote").filter(|s| !s.is_ended()))
+        .await
+        .expect("republished after the source returned");
+    assert!(!Arc::ptr_eq(&again, &stream), "a new publish, not the old one");
+    pulls.reload(&registry, Vec::new());
+    wait_for(Duration::from_secs(5), || again.is_ended().then_some(()))
+        .await
+        .expect("removing the pull ends the stream");
+}
+
+/// A real SRT viewer is listed as a session with TS bytes counting; a kick
+/// stops the bytes, and the block refuses its next connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kicked_srt_viewer_stops_receiving_and_is_blocked() {
+    if !have("ffmpeg") || !have("srt-live-transmit") {
+        eprintln!("SKIP: ffmpeg/srt-live-transmit not installed");
+        return;
+    }
+    let server = TestServer::start(None).await;
+    let publish_url = format!("srt://127.0.0.1:{}?streamid=publish/kicked", server.port);
+    let publish_pipeline = Pipeline::start("320x240", 20, &publish_url);
+    wait_for(Duration::from_secs(10), || server.registry.get("kicked")).await.expect("publish never appeared");
+
+    let out_path = ts_output_path("kicked");
+    let play_url = format!("srt://127.0.0.1:{}?streamid=play/kicked", server.port);
+    let receiver = Guarded::spawn(&format!("srt-live-transmit -q \"{play_url}\" file://con > {}", out_path.display()));
+    let reg = server.registry.clone();
+    let session = wait_for(Duration::from_secs(10), || {
+        reg.sessions().list(Some("kicked")).into_iter().find(|s| s.protocol == "srt" && s.bytes_out > 0)
+    })
+    .await
+    .expect("the SRT viewer is listed with bytes going out");
+    let measured = wait_for(Duration::from_secs(5), || {
+        reg.sessions().list(Some("kicked")).into_iter().find(|s| s.rtt_ms.is_some() && s.loss.is_some())
+    })
+    .await
+    .expect("SRT reports RTT and loss within a few seconds");
+    assert!(measured.rtt_ms.unwrap() >= 0.0 && measured.rtt_ms.unwrap() < 1000.0, "{measured:?}");
+    assert!((0.0..=1.0).contains(&measured.loss.unwrap()), "{measured:?}");
+
+    assert_eq!(
+        reg.sessions().kick(session.id, Some(Duration::from_secs(60))),
+        caudal_core::KickResult::Kicked { blocked: true }
+    );
+    // The send loop ended (srt-live-transmit buffers its stdout, so the
+    // file size mid-run says nothing; the server's own view does).
+    wait_for(Duration::from_secs(5), || reg.sessions().list(Some("kicked")).is_empty().then_some(()))
+        .await
+        .expect("the session closes after the kick");
+    drop(receiver);
+
+    // Coming back from the same address: refused, no bytes.
+    let again_path = ts_output_path("kicked-again");
+    let again = Guarded::spawn(&format!("srt-live-transmit -q \"{play_url}\" file://con > {}", again_path.display()));
+    let reopened = wait_for(Duration::from_secs(3), || reg.sessions().list(Some("kicked")).into_iter().next()).await;
+    assert!(reopened.is_none(), "a blocked address never gets a session: {reopened:?}");
+    drop(again);
+    assert_eq!(std::fs::metadata(&again_path).map(|m| m.len()).unwrap_or(0), 0, "blocked after the kick");
+    drop(publish_pipeline);
+    let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(&again_path);
+}

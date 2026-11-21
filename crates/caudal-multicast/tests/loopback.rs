@@ -103,6 +103,12 @@ fn receiver(group: SocketAddr) -> UdpSocket {
     s
 }
 
+/// [`collect`] on a blocking thread, started now: call it before publishing
+/// so nothing waits in the socket buffer.
+fn collecting(sock: UdpSocket, quiet: Duration) -> tokio::task::JoinHandle<Vec<(Instant, Vec<u8>)>> {
+    tokio::task::spawn_blocking(move || collect(&sock, quiet, Duration::from_secs(10)))
+}
+
 /// Receives until `quiet` passes without a datagram (after at least one
 /// arrived) or `limit` elapses. Returns (arrival time, bytes).
 fn collect(sock: &UdpSocket, quiet: Duration, limit: Duration) -> Vec<(Instant, Vec<u8>)> {
@@ -185,14 +191,16 @@ async fn ts_over_udp_multicast() {
     let rx = receiver(group);
     let handle = caudal_multicast::start(registry.clone(), vec![target("tv1", group, Format::Ts)]);
 
+    // Read while publishing: datagrams left in the socket's receive buffer
+    // until afterwards overflow it (Linux caps it near 208 kB without root)
+    // and the kernel drops them, which reads as a continuity error.
+    let collector = collecting(rx, Duration::from_millis(600));
     let publisher = registry.publish("tv1", BufferConfig::default()).unwrap();
     publisher.set_tracks(tracks()).unwrap();
     publish(&publisher, 0, 2, true).await;
     drop(publisher); // the stream ends: the output flushes and stops.
 
-    let got = tokio::task::spawn_blocking(move || collect(&rx, Duration::from_millis(600), Duration::from_secs(10)))
-        .await
-        .unwrap();
+    let got = collector.await.unwrap();
     assert!(got.len() > 50, "received {} datagrams", got.len());
     let (last, full) = got.split_last().unwrap();
     assert!(full.iter().all(|(_, d)| d.len() == 1316), "every datagram but the last is 7 x 188 bytes");
@@ -226,11 +234,11 @@ async fn a_backlog_is_paced_to_its_own_timestamps() {
     // Give the output a moment to subscribe, then hand it 2 s of media in
     // one go: unpaced, it would all leave within milliseconds.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    // Arrival times are only arrival times if something is reading.
+    let collector = collecting(rx, Duration::from_millis(800));
     publish(&publisher, 0, 2, false).await;
 
-    let got = tokio::task::spawn_blocking(move || collect(&rx, Duration::from_millis(800), Duration::from_secs(10)))
-        .await
-        .unwrap();
+    let got = collector.await.unwrap();
     drop(publisher);
     assert!(got.len() > 50, "received {} datagrams", got.len());
     let spread = got.last().unwrap().0 - got.first().unwrap().0;
@@ -253,14 +261,13 @@ async fn rtp_mp2t_headers() {
     let rx = receiver(group);
     let _handle = caudal_multicast::start(registry.clone(), vec![target("tv3", group, Format::Rtp)]);
 
+    let collector = collecting(rx, Duration::from_millis(600));
     let publisher = registry.publish("tv3", BufferConfig::default()).unwrap();
     publisher.set_tracks(tracks()).unwrap();
     publish(&publisher, 0, 1, true).await;
     drop(publisher);
 
-    let got = tokio::task::spawn_blocking(move || collect(&rx, Duration::from_millis(600), Duration::from_secs(10)))
-        .await
-        .unwrap();
+    let got = collector.await.unwrap();
     assert!(got.len() > 20, "received {} datagrams", got.len());
     let ssrc = &got[0].1[8..12];
     let mut prev: Option<(u16, u32)> = None;
@@ -290,16 +297,12 @@ async fn rejoins_on_republish() {
     let handle = caudal_multicast::start(registry.clone(), vec![target("tv4", group, Format::Ts)]);
 
     for round in 0..2 {
+        let collector = collecting(rx.try_clone().unwrap(), Duration::from_millis(600));
         let publisher = registry.publish("tv4", BufferConfig::default()).unwrap();
         publisher.set_tracks(tracks()).unwrap();
         publish(&publisher, 0, 1, true).await;
         drop(publisher);
-        let got = tokio::task::spawn_blocking({
-            let rx = rx.try_clone().unwrap();
-            move || collect(&rx, Duration::from_millis(600), Duration::from_secs(10))
-        })
-        .await
-        .unwrap();
+        let got = collector.await.unwrap();
         assert!(got.len() > 10, "round {round}: received {} datagrams", got.len());
     }
     let mut body = String::new();

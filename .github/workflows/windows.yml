@@ -40,7 +40,7 @@ jobs:
           Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
           $bin = (Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
           Add-Content $env:GITHUB_PATH $bin
-      - name: Smoke test (UDP in, LL-HLS out, clean shutdown)
+      - name: Smoke test (UDP in, LL-HLS out; MPEG-2 + MP2 through [[udp.push]])
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -53,6 +53,16 @@ jobs:
           [[udp.pull]]
           stream = "tv"
           url = "udp://127.0.0.1:5000"
+
+          # Rolando's chain: VLC sends MPEG-2 + MP2 over UDP; Caudal passes
+          # it on untouched to the ATSC multiplexer's IP input.
+          [[udp.pull]]
+          stream = "catv"
+          url = "udp://127.0.0.1:5004"
+
+          [[udp.push]]
+          stream = "catv"
+          url = "udp://127.0.0.1:5006"
           "@ | Set-Content "$dir\caudal.toml"
           .\target\release\caudal.exe check "$dir\caudal.toml"
           if ($LASTEXITCODE -ne 0) { throw "caudal check failed" }
@@ -68,6 +78,13 @@ jobs:
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-c:a", "aac",
             "-t", "40", "-f", "mpegts", "udp://127.0.0.1:5000?pkt_size=1316"
+          ) -PassThru -NoNewWindow
+          $ff2 = Start-Process ffmpeg -ArgumentList @(
+            "-hide_banner", "-loglevel", "error", "-re",
+            "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=60000/1001",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+            "-c:v", "mpeg2video", "-b:v", "6M", "-g", "15", "-c:a", "mp2", "-b:a", "192k",
+            "-t", "40", "-f", "mpegts", "udp://127.0.0.1:5004?pkt_size=1316"
           ) -PassThru -NoNewWindow
           try {
             # The pull publishes H.264 + AAC.
@@ -92,8 +109,20 @@ jobs:
             $probe = ffprobe -v error -show_entries stream=codec_name -of csv=p=0 http://127.0.0.1:8080/hls/tv/index.m3u8
             Write-Host "ffprobe over LL-HLS: $probe"
             if (($probe -join ",") -notmatch "h264" -or ($probe -join ",") -notmatch "aac") { throw "LL-HLS does not carry H.264 + AAC" }
+
+            # MPEG-2 + MP2 in, published as such...
+            $s2 = Invoke-RestMethod http://127.0.0.1:8080/api/v1/streams/catv
+            $c2 = ($s2.tracks | ForEach-Object { $_.codec }) -join ","
+            Write-Host "catv published: $c2"
+            if ($c2 -notmatch "mpeg2video" -or $c2 -notmatch "mp2") { throw "catv is not MPEG-2 + MP2: $c2" }
+            # ...and out through [[udp.push]] untouched, as the multiplexer gets it.
+            $out = ffprobe -v error -analyzeduration 3000000 -show_entries stream=codec_name,width,height -of csv=p=0 "udp://127.0.0.1:5006?timeout=15000000"
+            Write-Host "ffprobe over [[udp.push]]: $out"
+            $o = $out -join ","
+            if ($o -notmatch "mpeg2video,1280,720" -or $o -notmatch "mp2") { throw "[[udp.push]] does not carry MPEG-2 1280x720 + MP2: $o" }
           } finally {
             if (-not $ff.HasExited) { Stop-Process -Id $ff.Id -Force }
+            if (-not $ff2.HasExited) { Stop-Process -Id $ff2.Id -Force }
             if (-not $caudal.HasExited) { Stop-Process -Id $caudal.Id -Force }
             Write-Host "--- caudal log ---"
             Get-Content "$dir\caudal.log", "$dir\caudal.err" -ErrorAction SilentlyContinue | Select-Object -Last 60

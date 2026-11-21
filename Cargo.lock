@@ -1190,7 +1190,9 @@ dependencies = [
  "bytes",
  "caudal-core",
  "caudal-scte35",
+ "caudal-tls",
  "parking_lot",
+ "rcgen 0.13.2",
  "scuffle-aac",
  "scuffle-amf0",
  "scuffle-av1",
@@ -1198,7 +1200,9 @@ dependencies = [
  "scuffle-h264",
  "scuffle-h265",
  "scuffle-rtmp",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

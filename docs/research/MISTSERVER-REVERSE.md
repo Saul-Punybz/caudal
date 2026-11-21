@@ -474,9 +474,9 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | MistServer | Caudal | Evidence (Caudal) |
 |---|---|---|
 | RTMP publish (incl. Enhanced RTMP HEVC/AV1) | has | `C:crates/caudal-rtmp/src/lib.rs:57`, `demux.rs` (av1) |
-| RTMPS publish | missing (rtmps exists only for restream *out*) | `C:crates/caudal-restream/src/url.rs` |
+| RTMPS publish | has: `[rtmp] tls_bind`, `[tls]`'s certificate (files or ACME) | `C:crates/caudal-rtmp/src/lib.rs` (`serve_tls`); `C:crates/caudal-tls/src/lib.rs` (`tls_acceptor`) |
 | SRT listener | has | `C:crates/caudal-srt/src/lib.rs:102` |
-| SRT caller pull / rendezvous | has: `[[srt.pull]]` caller (#34); rendezvous missing | `C:crates/caudal-srt/src/pull.rs` |
+| SRT caller pull / rendezvous | has: `[[srt.pull]]` caller (#34); rendezvous blocked: `rsrt` (0.3.6, 0.4.0) has no rendezvous handshake, so `mode=rendezvous` URLs are refused | `C:crates/caudal-srt/src/pull.rs`; `C:crates/caudal-srt/src/push.rs` (`check_caller_url`) |
 | SRT streamid routing | has | `C:crates/caudal-srt/src/connection.rs:102-108` |
 | WHIP | has | `C:crates/caudal-webrtc/src/ingest.rs` |
 | RTSP pull | has | `C:crates/caudal-rtsp/src/pull.rs` |

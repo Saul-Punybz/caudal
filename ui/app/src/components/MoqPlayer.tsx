@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type MoqWatchElement from '@moq/watch/element';
-import { buildMoqUrl, hexFingerprintToBytes } from '../moq';
+import { buildMoqUrl, hexFingerprintToBytes, withTimeout } from '../moq';
 
 interface Props {
   /** The relay's own base URL, from `GET /moq/fingerprint`'s `url` field. */
@@ -18,6 +18,17 @@ interface Props {
 
 type BroadcastStatus = 'offline' | 'loading' | 'live';
 
+/** How long the lazily loaded `@moq/watch` module may take before the
+ * player says so instead of sitting on "Connecting…". */
+const LOAD_TIMEOUT_MS = 15_000;
+
+/** One `[moq-ui]` debug line per setup step, so a player that never
+ * connects says which step it stopped at (tests/browser/moq.spec.ts
+ * forwards the page console). */
+function step(msg: string) {
+  console.debug(`[moq-ui] ${msg}`);
+}
+
 /** Media over QUIC playback via moq-dev's official `@moq/watch` player.
  * `<moq-watch>` renders to a nested `<canvas>` (there is no `MediaStream` or
  * `<video>` involved — WebCodecs decodes straight to frames). Lazily
@@ -26,6 +37,8 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
   const mountRef = useRef<HTMLDivElement>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [status, setStatus] = useState<BroadcastStatus>('loading');
+  // Bumped by the Retry button to run setup again from scratch.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +50,7 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
     onLatencyMs(null);
 
     if (typeof window === 'undefined' || !('WebTransport' in window)) {
+      step('no WebTransport in this browser');
       setPlaybackError('This browser has no WebTransport support.');
       return;
     }
@@ -48,13 +62,30 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
         url = buildMoqUrl(relayUrl, token);
         certHashes = fingerprint ? hexFingerprintToBytes(fingerprint) : null;
       } catch (err) {
+        step(`bad relay URL or fingerprint: ${(err as Error).message}`);
         setPlaybackError((err as Error).message);
         return;
       }
 
       // Side-effectful: registers the <moq-watch> custom element.
-      const { default: MoqWatch } = await import('@moq/watch/element');
-      if (cancelled || !mountRef.current) return;
+      step(`loading player module (attempt ${attempt + 1})`);
+      let MoqWatch: typeof MoqWatchElement;
+      try {
+        ({ default: MoqWatch } = await withTimeout(
+          import('@moq/watch/element'),
+          LOAD_TIMEOUT_MS,
+          'loading the MoQ player',
+        ));
+      } catch (err) {
+        step(`player module failed: ${(err as Error).message}`);
+        if (!cancelled) setPlaybackError((err as Error).message);
+        return;
+      }
+      if (cancelled || !mountRef.current) {
+        step(`player module loaded after unmount (cancelled=${cancelled}); not mounting`);
+        return;
+      }
+      step('player module loaded');
 
       const watch = new MoqWatch();
       if (certHashes) {
@@ -71,6 +102,7 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
       watch.appendChild(canvas);
 
       unsubscribeStatus = watch.broadcast.out.status.subscribe((s) => {
+        step(`broadcast status ${s}`);
         if (!cancelled) setStatus(s);
       });
 
@@ -80,6 +112,7 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
       mountRef.current.appendChild(watch);
       watch.url = url;
       el = watch;
+      step(`<moq-watch> mounted, url=${url.origin}${url.pathname} hashes=${certHashes ? 1 : 0} name=${broadcastName}`);
 
       statsTimer = setInterval(() => {
         if (cancelled) return;
@@ -88,7 +121,10 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
       }, 1000);
     }
 
-    void setup();
+    void setup().catch((err: unknown) => {
+      step(`setup threw: ${(err as Error)?.message ?? err}`);
+      if (!cancelled) setPlaybackError((err as Error)?.message ?? String(err));
+    });
 
     return () => {
       cancelled = true;
@@ -99,7 +135,7 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
       if (el?.parentNode) el.parentNode.removeChild(el);
       onLatencyMs(null);
     };
-  }, [relayUrl, broadcastName, fingerprint, token, onLatencyMs]);
+  }, [relayUrl, broadcastName, fingerprint, token, onLatencyMs, attempt]);
 
   return (
     <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-[#0b0d1b]">
@@ -115,9 +151,16 @@ export function MoqPlayer({ relayUrl, broadcastName, fingerprint, token, onLaten
       {playbackError && (
         <div
           role="alert"
-          className="absolute inset-0 flex items-center justify-center bg-black/70 p-4 text-center text-sm text-white"
+          className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 p-4 text-center text-sm text-white"
         >
-          MoQ error: {playbackError}
+          <span>MoQ error: {playbackError}</span>
+          <button
+            type="button"
+            onClick={() => setAttempt((n) => n + 1)}
+            className="state-layer h-10 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary"
+          >
+            Retry
+          </button>
         </div>
       )}
     </div>

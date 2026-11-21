@@ -1,6 +1,6 @@
 [package]
 name = "caudal-hls"
-description = "LL-HLS / CMAF and classic TS-segment HLS output for Caudal"
+description = "LL-HLS / CMAF, classic TS-segment HLS and continuous HTTP MPEG-TS output for Caudal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,12 +17,17 @@ tokio.workspace = true
 tracing.workspace = true
 mp4-atom = "0.15.0"
 bytes.workspace = true
+# `Body::from_stream` over the HTTP-TS output's bounded channel.
+tokio-stream = "0.1"
 
 [dev-dependencies]
+serde_json.workspace = true
 tokio = { version = "1", features = ["full", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
 ureq = { version = "3", default-features = false }
 roxmltree = "0.21"
+# tests/http_ts.rs: Caudal pulling its own HTTP-TS output.
+caudal-http-pull.workspace = true
 
 [[example]]
 name = "demo"

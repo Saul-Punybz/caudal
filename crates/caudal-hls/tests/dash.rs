@@ -205,14 +205,23 @@ async fn dash_family_plays_in_real_players() {
                 "-show_entries",
                 "stream=codec_type",
                 "-of",
-                "csv=p=0",
+                "json",
                 &mpd_url,
             ]),
             Duration::from_secs(60),
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && stderr.trim().is_empty(), "ffprobe MPD: {stderr}");
-        let mut kinds: Vec<_> = String::from_utf8_lossy(&out.stdout).lines().map(str::to_owned).collect();
+        // JSON, top-level `streams` only: ffmpeg's DASH demuxer makes one
+        // program per Representation, and the csv writer prints each
+        // program's streams again (plus an empty program line).
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("ffprobe json");
+        let mut kinds: Vec<String> = json["streams"]
+            .as_array()
+            .expect("streams")
+            .iter()
+            .map(|s| s["codec_type"].as_str().unwrap_or_default().to_owned())
+            .collect();
         kinds.sort();
         assert_eq!(kinds, ["audio", "video", "video"]);
 

@@ -44,6 +44,22 @@ Type 1's fallback was not touched, since fuzzing did not show it panicking
 and it is out of this pass's scope. Regression test
 `a_type2_delta_wraps_the_32_bit_timestamp_instead_of_panicking`. Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).
 
+A fourth patch, not a bug fix: RTMP play. Upstream's `ServerSession`
+answers `play` with `PlayNotSupported` and its read loop gives up after
+2.5 s of client silence, which is every player's normal state. Patch:
+`src/session/server/handler.rs` gains `PlayResponse`, `PlayMessage`, and
+two trait methods with defaults (`on_play`, refusing as upstream does, and
+`next_play_message`, pending forever), so existing handlers are unchanged.
+`src/session/server/mod.rs` hands `play` to the handler, sends
+`StreamBegin`, `NetStream.Play.Reset` and `NetStream.Play.Start` (or an
+error `onStatus` and a clean close) on the played stream's message stream
+id, and while playing races the socket read (no timeout) against
+`next_play_message`, writing and flushing one message at a time with a
+10 s write timeout; `StreamEOF` + `NetStream.Play.Stop` at the end.
+`deleteStream` stops playing. `tokio`'s `macros` feature is added for
+`select!`. Every change is marked `Caudal patch`; exercised by
+`crates/caudal-rtmp/tests/play.rs`. Not offered upstream.
+
 ## scuffle-amf0 0.2.4 (MIT OR Apache-2.0), patched
 
 Found the same day, by the same fuzzing pass, this time in

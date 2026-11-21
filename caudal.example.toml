@@ -19,6 +19,7 @@ http_bind = "127.0.0.1:8080"
 [rtmp]
 bind = "0.0.0.0:1935"  # RTMP server bind address
 app = "live"  # RTMP application name
+play = true  # viewers may play streams over RTMP too (rtmp://host/live/NAME); see docs/RTMP.md
 # tls_bind = "0.0.0.0:1936"  # RTMPS publish (rtmps://host:1936/live/<name>) with [tls]'s certificate; see docs/OBS.md
 
 [hls]
@@ -92,6 +93,7 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # secret = "whsec_..."
 # timeout_ms = 2000
 # on_error = "deny"
+# reply = "status"         # "mistserver": a 2xx must say true/1/yes (MistServer trigger handlers)
 
 # Ask your own service which stream a publish/play really goes to
 # (MistServer's PUSH_REWRITE / PLAY_REWRITE). See docs/REWRITE-HOOK.md.

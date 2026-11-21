@@ -78,6 +78,7 @@ async fn start(cert: &Path, key: &Path) -> Servers {
             bind: format!("127.0.0.1:{port}").parse().unwrap(),
             app: "live".into(),
             buffer: BufferConfig::default(),
+            play: true,
         };
         let acceptor = caudal_tls::tls_acceptor(&source).await.expect("tls acceptor");
         let (reg_a, reg_b) = (registry.clone(), registry.clone());

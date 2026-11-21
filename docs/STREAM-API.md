@@ -30,7 +30,7 @@ One edit runs at a time.
 | `POST /api/v1/pulls` `{"stream": "cam1", "url": "rtsp://10.0.0.5/live"}` | adds a `[[rtsp.pull]]` |
 | `DELETE /api/v1/pulls/{stream}[?url=...]` | removes the stream's pulls (only that url when given) |
 
-A pull can be `rtsp://`/`rtsps://` (`[[rtsp.pull]]`), `srt://` (`[[srt.pull]]`, Caudal calls the listener) or `udp://`/`rtp://` (`[[udp.pull]]`, MPEG-TS over UDP). A stream can have one pull, across all of them. See `docs/PULL-INPUTS.md`.
+A pull can be `rtsp://`/`rtsps://` (`[[rtsp.pull]]`), `srt://` (`[[srt.pull]]`, Caudal calls the listener) `udp://`/`rtp://` (`[[udp.pull]]`, MPEG-TS over UDP) or `http://`/`https://` (`[[http.pull]]`, MPEG-TS served over HTTP). A stream can have one pull, across all of them. See `docs/PULL-INPUTS.md`.
 
 ## Pushes
 

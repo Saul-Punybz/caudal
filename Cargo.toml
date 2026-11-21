@@ -48,6 +48,7 @@ caudal-cluster = { path = "crates/caudal-cluster", version = "0.1.0" }
 caudal-failover = { path = "crates/caudal-failover", version = "0.1.0" }
 caudal-multicast = { path = "crates/caudal-multicast", version = "0.1.0" }
 caudal-udp = { path = "crates/caudal-udp", version = "0.1.0" }
+caudal-http-pull = { path = "crates/caudal-http-pull", version = "0.1.0" }
 caudal-omt = { path = "crates/caudal-omt", version = "0.1.0" }
 # Our own OMT crates (MIT OR Apache-2.0), pinned to a pushed commit while M12
 # is developed; switch to crates.io 0.2.x before tagging (git dependencies

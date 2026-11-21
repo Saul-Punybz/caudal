@@ -29,6 +29,8 @@ pub enum Kind {
     SrtPull,
     /// `[[udp.pull]]`: Caudal listens for MPEG-TS over UDP (or RTP).
     UdpPull,
+    /// `[[http.pull]]`: Caudal GETs MPEG-TS served over HTTP(S).
+    HttpPull,
     /// `[[udp.push]]`: Caudal sends MPEG-TS over UDP (or RTP) to a receiver.
     UdpPush,
     /// `[[restream]]`: Caudal pushes the stream over RTMP(S).
@@ -42,6 +44,7 @@ impl Kind {
             Kind::SrtPush => &["srt", "push"],
             Kind::SrtPull => &["srt", "pull"],
             Kind::UdpPull => &["udp", "pull"],
+            Kind::HttpPull => &["http", "pull"],
             Kind::UdpPush => &["udp", "push"],
             Kind::Restream => &["restream"],
         }
@@ -54,6 +57,7 @@ impl Kind {
             Kind::SrtPush => "[[srt.push]]",
             Kind::SrtPull => "[[srt.pull]]",
             Kind::UdpPull => "[[udp.pull]]",
+            Kind::HttpPull => "[[http.pull]]",
             Kind::UdpPush => "[[udp.push]]",
             Kind::Restream => "[[restream]]",
         }
@@ -65,7 +69,10 @@ impl Kind {
             Some("rtsp" | "rtsps") => Ok(Kind::RtspPull),
             Some("srt") => Ok(Kind::SrtPull),
             Some("udp" | "rtp") => Ok(Kind::UdpPull),
-            _ => Err(format!("pull url {url:?}: expected rtsp://, rtsps://, srt://, udp:// or rtp://")),
+            Some("http" | "https") => Ok(Kind::HttpPull),
+            _ => Err(format!(
+                "pull url {url:?}: expected rtsp://, rtsps://, srt://, udp://, rtp://, http:// or https://"
+            )),
         }
     }
 
@@ -79,7 +86,7 @@ impl Kind {
         }
     }
 
-    pub const PULLS: [Kind; 3] = [Kind::RtspPull, Kind::SrtPull, Kind::UdpPull];
+    pub const PULLS: [Kind; 4] = [Kind::RtspPull, Kind::SrtPull, Kind::UdpPull, Kind::HttpPull];
     pub const PUSHES: [Kind; 3] = [Kind::SrtPush, Kind::UdpPush, Kind::Restream];
 }
 
@@ -143,6 +150,7 @@ pub fn list(cfg: &Config, kinds: &[Kind]) -> Vec<EntryJson> {
             Kind::SrtPush => cfg.srt.push.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::SrtPull => cfg.srt.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::UdpPull => cfg.udp.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
+            Kind::HttpPull => cfg.http.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::UdpPush => cfg.udp.push.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::Restream => cfg.restream.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
         };
@@ -299,10 +307,12 @@ mod tests {
     #[test]
     fn kinds_from_urls() {
         assert_eq!(Kind::for_pull("rtsp://h/x"), Ok(Kind::RtspPull));
-        assert!(Kind::for_pull("http://h/x").is_err());
+        assert!(Kind::for_pull("ftp://h/x").is_err());
         assert_eq!(Kind::for_pull("srt://h:9000?streamid=play/x"), Ok(Kind::SrtPull));
         assert_eq!(Kind::for_pull("udp://239.1.1.1:5000"), Ok(Kind::UdpPull));
         assert_eq!(Kind::for_pull("rtp://:5004"), Ok(Kind::UdpPull));
+        assert_eq!(Kind::for_pull("http://10.0.0.5:8080/stream.ts"), Ok(Kind::HttpPull));
+        assert_eq!(Kind::for_pull("https://encoder.example/live"), Ok(Kind::HttpPull));
         assert_eq!(Kind::for_push("rtmp://h/a/k"), Ok(Kind::Restream));
         assert_eq!(Kind::for_push("srt://h:1"), Ok(Kind::SrtPush));
         assert_eq!(Kind::for_push("udp://10.0.0.20:5000"), Ok(Kind::UdpPush));

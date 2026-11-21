@@ -1,8 +1,8 @@
-# Pulling streams in: SRT caller and MPEG-TS over UDP
+# Pulling streams in: SRT caller, MPEG-TS over UDP, MPEG-TS over HTTP
 
 Besides receiving publishers (RTMP, SRT listener, WHIP, MoQ) and pulling
-cameras (`[[rtsp.pull]]`), Caudal can go and get a stream two more ways.
-Both can be added from the API too (`POST /api/v1/pulls`, see
+cameras (`[[rtsp.pull]]`), Caudal can go and get a stream three more ways.
+All can be added from the API too (`POST /api/v1/pulls`, see
 `docs/STREAM-API.md`).
 
 ## `[[srt.pull]]`: call a remote SRT listener
@@ -89,6 +89,30 @@ video_kbps = 3000
 - One video and one audio: the first of each that the PMT lists. A second
   audio PID (an SAP) is ignored, logged once.
 
+## `[[http.pull]]`: MPEG-TS served over HTTP(S)
+
+Some sources serve their transport stream as one endless HTTP response
+instead of sending it: VLC with `#standard{access=http,mux=ts,dst=...}`,
+ffmpeg with `-listen 1 http://...`, encoders and IRDs with an "HTTP TS"
+output, and what MistServer calls an `http-ts://` input.
+
+```toml
+[[http.pull]]
+stream = "web"
+url = "http://10.0.0.5:8080/stream.ts"   # or https://
+```
+
+- Caudal sends a GET and demuxes the body with the same code as SRT and
+  UDP, so the same codecs work (H.264, H.265, AAC, MPEG-2, MP2/MP3,
+  SCTE-35).
+- The stream is published when the first bytes arrive: a source that is
+  down leaves no empty stream. 5 s without bytes, or the response ending,
+  ends the stream; the pull reconnects with backoff (1 s, doubling to 30 s,
+  back to 1 s once data flowed).
+- An HLS playlist (`.m3u8`) is refused at config check: it is not a TS
+  body, and HLS pulls are not built yet.
+- From the API: `POST /api/v1/pulls` with an `http://` or `https://` URL.
+
 ## Tested with
 
 - SRT: `srt-live-transmit` listening (`srt://:PORT`), fed by ffmpeg; the
@@ -103,3 +127,8 @@ video_kbps = 3000
   `mpeg2video` 1280x720 60000/1001 + `mp2` and decodes with `ffmpeg
   -xerror`. Not tested: a real ATSC multiplexer (Technalogix TP1000) on
   the receiving end.
+- HTTP: ffmpeg serving `-f mpegts -listen 1 http://127.0.0.1:PORT/...`
+  (what VLC's `access=http,mux=ts` serves): H.264 + AAC published, the
+  stream ends when the source goes away and is republished when it comes
+  back; an MPEG-2 + MP2 source publishes both tracks. Not tested: VLC
+  itself, HTTPS, a source behind a redirect.

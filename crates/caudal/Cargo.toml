@@ -46,6 +46,7 @@ url = "2"
 caudal-failover.workspace = true
 caudal-multicast.workspace = true
 caudal-udp.workspace = true
+caudal-http-pull.workspace = true
 caudal-omt.workspace = true
 open-media-transport.workspace = true
 axum.workspace = true

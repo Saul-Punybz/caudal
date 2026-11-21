@@ -130,8 +130,21 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
 - Live: Caudal starts three segments from the newest, as players do, and
   reloads the media playlist every target duration (half of one when
   nothing was new, RFC 8216 §6.3.4). Each segment is fetched once, in
-  media-sequence order, and demuxed with the same code as SRT, UDP and
-  HTTP-TS (H.264, H.265, AAC, MPEG-2, MP2/MP3, SCTE-35).
+  media-sequence order.
+- MPEG-TS segments are demuxed with the same code as SRT, UDP and HTTP-TS
+  (H.264, H.265, AAC, MPEG-2, MP2/MP3, SCTE-35).
+- fMP4/CMAF segments (`EXT-X-MAP` + `.m4s`, what Caudal's own LL-HLS,
+  Apple's LL-HLS examples and most modern packagers write) are read with
+  `caudal_cmaf::demux`: the init segment announces the tracks (H.264,
+  H.265 `hvc1`/`hev1`, AV1, AAC, Opus) when the stream is published, and
+  each segment's `moof`/`mdat` pairs become frames on each track's own
+  timescale (`tfdt`, `trun` durations, sizes, composition offsets and
+  sync flags, with `tfhd`/`trex` defaults). So one Caudal can pull
+  another's `/hls/<stream>/master.m3u8`. A new `EXT-X-MAP` mid-playlist
+  (the source republished with other settings) is fetched, its tracks
+  are announced again, and the timeline is spliced as at a
+  discontinuity. Timed text and metadata tracks in the init segment are
+  left out.
 - LL-HLS playlists are read like plain ones: whole segments only, no
   parts and no blocking reload, so the delay is that of plain HLS (a few
   target durations behind the source).
@@ -140,8 +153,9 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
 - `EXT-X-DISCONTINUITY` (an ad splice, another encoder), and a media
   sequence that starts over (the source restarted), are spliced: the
   frames after it continue the timeline where the previous ones ended, so
-  viewers see one monotonic stream. Codec parameters that change across a
-  discontinuity (a new resolution) are not announced again.
+  viewers see one monotonic stream. With TS segments, codec parameters
+  that change across a discontinuity (a new resolution) are not announced
+  again; with fMP4 they come with the new `EXT-X-MAP`.
 - The stream is published on the first segment: a source that is down
   leaves no empty stream. It ends after three target durations (at least
   4 s) without a new segment; the pull then retries with backoff (1 s,
@@ -150,10 +164,11 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
   most two target durations ahead of real time, so a finished playlist is
   not dumped at once), then the stream ends. Caudal keeps checking the
   playlist and resumes only if it goes live again; it is not replayed.
-- MPEG-TS segments only. fMP4/CMAF segments (`EXT-X-MAP`, what Apple's
-  LL-HLS examples and Caudal's own HLS output use), encrypted segments
-  (`EXT-X-KEY` with a method) and packed-audio segments (`.aac` with ID3)
-  are refused with a log line, retried every 30 s.
+- Encrypted segments (`EXT-X-KEY` with a method), packed-audio segments
+  (`.aac` with ID3), fMP4 segments without an `EXT-X-MAP`, and an init
+  segment with no track Caudal reads are refused with a log line, retried
+  every 30 s. A playlist that switches between TS and fMP4 segments
+  starts a new session (the stream ends and is published again).
 - From the API: `POST /api/v1/pulls` with an `http://` or `https://` URL
   whose path ends in `.m3u8` adds an `[[hls.pull]]`. A playlist at a path
   without `.m3u8` can still be pulled by writing `[[hls.pull]]` by hand.
@@ -184,7 +199,20 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
   + MP2 (the lower one does not exist): both tracks published. Two
   finished encodes joined by `EXT-X-DISCONTINUITY` with `EXT-X-ENDLIST`:
   played paced, on one monotonic timeline, the stream ends and is not
-  replayed. Not tested: a real CDN, HTTPS, LL-HLS from a real LL-HLS
-  server (only the parser sees `EXT-X-PART`), H.265 segments, a master
-  playlist with alternate audio renditions (`EXT-X-MEDIA`, not used: the
-  variant's own audio is what is pulled).
+  replayed.
+- HLS fMP4, Caudal pulling Caudal: 12 s of H.264 (B-frames) + AAC
+  published into one registry and served by Caudal's own LL-HLS router
+  over a local HTTP listener; `[[hls.pull]]` on its `master.m3u8` into a
+  second registry gets H.264 + AAC with the same codec records and
+  timescales, and every frame with the same decode times, composition
+  offsets, keyframe flags and payloads. ffmpeg's fMP4 HLS (`-f hls
+  -hls_segment_type fmp4`): live H.264 + AAC (frames keep arriving,
+  monotonic, 25 fps on the track's timescale) and finished H.265 (`hvc1`)
+  + Opus (both announced, played to the end). Unit tests cover the box
+  parsing (tfhd/trex defaults, a missing `tfdt`, 2-byte NAL lengths,
+  truncated boxes).
+- Not tested: a real CDN, HTTPS, LL-HLS parts and blocking reload (not
+  used: whole segments only), an fMP4 init change from a real source
+  (only the playlist side is unit-tested), AV1 in fMP4, a master playlist
+  with alternate audio renditions (`EXT-X-MEDIA`, not used: the variant's
+  own audio is what is pulled).

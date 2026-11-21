@@ -565,6 +565,12 @@ impl Supervisor {
         self.auto_push.rules()
     }
 
+    /// Overrides `[[push.auto]]` rule `index`'s `enabled` at runtime;
+    /// `false` when there is no such rule.
+    pub fn set_auto_push_enabled(&self, index: usize, enabled: bool) -> bool {
+        self.auto_push.set_enabled(index, enabled)
+    }
+
     pub fn reload(&self, new_cfg: Config) -> Result<ReloadReport, String> {
         new_cfg.validate()?;
 

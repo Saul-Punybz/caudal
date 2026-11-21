@@ -542,6 +542,36 @@ pub struct AutoPushEntry {
     /// `udp://` / `rtp://` only: as `[[udp.push]]` `pacing` (default on).
     #[serde(default)]
     pub pacing: Option<bool>,
+    /// Schedule, one-off: RFC 3339 instant from which the rule pushes
+    /// (MistServer's `scheduletime`). Without `stop`/`duration_secs` the
+    /// window never closes.
+    #[serde(default)]
+    pub start: Option<String>,
+    /// Schedule, one-off: RFC 3339 instant at which the rule stops pushing
+    /// (MistServer's `completetime`). Without `start` the window is open
+    /// from now until then.
+    #[serde(default)]
+    pub stop: Option<String>,
+    /// Schedule, recurring: a 5-field crontab (`min hour dom month dow`),
+    /// as in `[[record.schedule]]`; each window is `duration_secs` long.
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// IANA zone for `cron` (default UTC).
+    #[serde(default)]
+    pub tz: Option<String>,
+    /// Window length: required with `cron`, or with `start` instead of
+    /// `stop`.
+    #[serde(default)]
+    pub duration_secs: Option<u32>,
+    /// `false` keeps the rule in the file but pushes nothing. The API can
+    /// override it at runtime (`POST /api/v1/auto-pushes/{index}/enable`).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Stream patterns (as `streams`): while any live stream matches one,
+    /// the rule pushes nothing. E.g. a backup feed pushed only while the
+    /// main one is down.
+    #[serde(default)]
+    pub inhibit: Vec<String>,
 }
 
 /// Which push engine an auto-push URL goes to.
@@ -606,6 +636,29 @@ impl AutoPushEntry {
         self.streams.iter().any(|p| stream_pattern_matches(p, name))
     }
 
+    /// The first live stream in `live` that inhibits this rule.
+    pub fn inhibited_by<'a>(&self, live: &'a [String]) -> Option<&'a String> {
+        live.iter().find(|n| self.inhibit.iter().any(|p| stream_pattern_matches(p, n)))
+    }
+
+    /// The rule's time window, `None` when it has none (always on).
+    pub fn timetable(&self) -> Result<Option<caudal_record::Timetable>, String> {
+        let spec = caudal_record::TimetableConfig {
+            start: self.start.clone(),
+            stop: self.stop.clone(),
+            cron: self.cron.clone(),
+            tz: self.tz.clone(),
+            duration_secs: self.duration_secs,
+        };
+        if spec == caudal_record::TimetableConfig::default() {
+            return Ok(None);
+        }
+        if spec.tz.is_some() && spec.cron.is_none() {
+            return Err(self.ctx("`tz` only applies to `cron` (`start`/`stop` carry their own offset)"));
+        }
+        caudal_record::Timetable::parse(&spec).map(Some).map_err(|e| self.ctx(e))
+    }
+
     /// The UDP/RTP target for `stream`, through the same checks as
     /// `[[udp.push]]`.
     pub fn udp_target(&self, stream: &str) -> Result<caudal_multicast::MulticastTarget, String> {
@@ -627,7 +680,8 @@ impl AutoPushEntry {
         if self.streams.is_empty() {
             return Err(self.ctx("`streams` is empty"));
         }
-        for p in &self.streams {
+        self.timetable()?;
+        for p in self.streams.iter().chain(&self.inhibit) {
             let concrete = p.strip_suffix('*').unwrap_or(p);
             if p != "*" && (concrete.contains('*') || !caudal_core::media::valid_stream_name(concrete)) {
                 return Err(self.ctx(format!(
@@ -2612,6 +2666,52 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         .validate()
         .unwrap_err();
         assert!(err.contains("one stream per destination"), "{err}");
+    }
+
+    #[test]
+    fn auto_push_schedules_and_conditions() {
+        let cfg: Config = toml::from_str(
+            "[[push.auto]]\nstreams = [\"main\"]\nurl = \"srt://h:1\"\n\
+             start = \"2026-12-24T20:00:00-04:00\"\nstop = \"2026-12-24T23:00:00-04:00\"\n\
+             [[push.auto]]\nstreams = [\"backup\"]\nurl = \"srt://h:2\"\ninhibit = [\"main\", \"cam*\"]\n\
+             enabled = false\ncron = \"0 18 * * MON-FRI\"\ntz = \"America/Puerto_Rico\"\nduration_secs = 3600\n\
+             [[push.auto]]\nstreams = [\"x\"]\nurl = \"srt://h:3\"\nstop = \"2026-12-31T00:00:00Z\"\n\
+             [[push.auto]]\nstreams = [\"y\"]\nurl = \"srt://h:4\"\nstart = \"2026-12-31T00:00:00Z\"\nduration_secs = 60\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let r = &cfg.push.auto;
+        assert!(r[0].enabled && !r[1].enabled, "enabled defaults to true");
+        assert!(r[0].timetable().unwrap().is_some());
+        assert_eq!(r[1].inhibited_by(&["cam2".into()]).map(String::as_str), Some("cam2"));
+        assert!(r[1].inhibited_by(&["backup".into(), "main+720p".into()]).is_none());
+
+        let bad = |rule: &str| {
+            toml::from_str::<Config>(&format!("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\n{rule}"))
+                .unwrap()
+                .validate()
+                .unwrap_err()
+        };
+        assert!(bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T19:00:00Z\"\n").contains("after `start`"));
+        assert!(bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T20:00:00Z\"\n").contains("after `start`"));
+        assert!(bad("start = \"tomorrow\"\n").contains("bad `start`"));
+        assert!(bad("stop = \"2026-12-24 20:00\"\n").contains("bad `stop`"));
+        assert!(bad("cron = \"every day\"\nduration_secs = 60\n").contains("bad `cron`"));
+        assert!(bad("cron = \"0 18 * * *\"\n").contains("needs `duration_secs`"));
+        assert!(
+            bad("cron = \"0 18 * * *\"\nduration_secs = 60\nstart = \"2026-12-24T20:00:00Z\"\n").contains("not both")
+        );
+        assert!(bad("cron = \"0 18 * * *\"\nduration_secs = 60\ntz = \"Mars/Base\"\n").contains("bad `tz`"));
+        assert!(bad("cron = \"0 18 * * *\"\nduration_secs = 0\n").contains("at least 1"));
+        assert!(bad("tz = \"UTC\"\nstart = \"2026-12-24T20:00:00Z\"\n").contains("only applies to `cron`"));
+        assert!(bad("duration_secs = 60\n").contains("needs `start` or `cron`"));
+        assert!(
+            bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T21:00:00Z\"\nduration_secs = 60\n")
+                .contains("not both")
+        );
+        assert!(bad("inhibit = [\"c*m\"]\n").contains("pattern"));
+        // An unknown key is still refused.
+        assert!(toml::from_str::<Config>("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\nwhen = 1\n").is_err());
     }
 
     #[test]

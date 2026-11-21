@@ -222,6 +222,10 @@ pub struct Config {
     pub cluster: Option<ClusterSection>,
     /// Open Media Transport: `[omt]`, `[[omt.pull]]`, `[[omt.output]]`.
     pub omt: OmtSection,
+    /// Automatic pushes: `[[push.auto]]` rules, each a stream pattern and a
+    /// target URL template, started for every matching stream while it is
+    /// live (see `crate::auto_push`).
+    pub push: PushSection,
 }
 
 /// `[cluster]`: this node's part in an origin-edge cluster (see
@@ -427,6 +431,176 @@ impl UdpSection {
 pub struct RestreamEntry {
     pub stream: String,
     pub url: String,
+}
+
+/// `[push]`: `[[push.auto]]` rules.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct PushSection {
+    pub auto: Vec<AutoPushEntry>,
+}
+
+/// One `[[push.auto]]` rule (MistServer's "automatic push"): whenever a
+/// stream matching one of `streams` goes live, push it to `url` with
+/// `$stream` replaced by its name; stop when it ends. The URL's scheme
+/// picks the engine, the same ones the static pushes use: `rtmp://` /
+/// `rtmps://` (`[[restream]]`), `srt://` (`[[srt.push]]`), `udp://` /
+/// `rtp://` (`[[udp.push]]`).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AutoPushEntry {
+    /// Stream names or patterns: exact (`main`), `prefix*` or `*`. Names
+    /// with `+` (transcode renditions) never match, as in `[transcode]`.
+    pub streams: Vec<String>,
+    /// Target URL template. Variables: `$stream` / `${stream}` (the
+    /// stream's name) and `$basename` / `${basename}` (the same, since
+    /// `name+rendition` streams never match).
+    pub url: String,
+    /// `udp://` / `rtp://` only: as `[[udp.push]]` `ttl` (default 64).
+    #[serde(default)]
+    pub ttl: Option<u32>,
+    /// `udp://` / `rtp://` only: as `[[udp.push]]` `interface`.
+    #[serde(default)]
+    pub interface: Option<std::net::Ipv4Addr>,
+    /// `udp://` / `rtp://` only: as `[[udp.push]]` `pacing` (default on).
+    #[serde(default)]
+    pub pacing: Option<bool>,
+}
+
+/// Which push engine an auto-push URL goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoPushKind {
+    Restream,
+    Srt,
+    Udp,
+}
+
+impl AutoPushKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AutoPushKind::Restream => "rtmp",
+            AutoPushKind::Srt => "srt",
+            AutoPushKind::Udp => "udp",
+        }
+    }
+}
+
+/// Does `pattern` (exact, `prefix*` or `*`) select stream `name`? Names
+/// with `+` are renditions and never match (the rule
+/// `caudal-transcode` uses for its ladders).
+pub fn stream_pattern_matches(pattern: &str, name: &str) -> bool {
+    if name.contains('+') {
+        return false;
+    }
+    match pattern.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => pattern == name,
+    }
+}
+
+/// Replaces MistServer-style target variables in `template` for `stream`.
+/// Unknown `$names` are left as they are (a stream key may contain `$`).
+pub fn expand_push_template(template: &str, stream: &str) -> String {
+    // `name+rendition` streams never match an auto-push rule, so the
+    // basename is the whole name.
+    let basename = stream.split_once('+').map_or(stream, |(b, _)| b);
+    template
+        .replace("${stream}", stream)
+        .replace("${basename}", basename)
+        .replace("$stream", stream)
+        .replace("$basename", basename)
+}
+
+impl AutoPushEntry {
+    fn ctx(&self, e: impl std::fmt::Display) -> String {
+        format!("[[push.auto]] {:?}: {e}", self.url)
+    }
+
+    pub fn kind(&self) -> Result<AutoPushKind, String> {
+        match self.url.split_once("://").map(|(s, _)| s) {
+            Some("rtmp" | "rtmps") => Ok(AutoPushKind::Restream),
+            Some("srt") => Ok(AutoPushKind::Srt),
+            Some("udp" | "rtp") => Ok(AutoPushKind::Udp),
+            _ => Err(self.ctx("expected an rtmp://, rtmps://, srt://, udp:// or rtp:// url")),
+        }
+    }
+
+    pub fn matches(&self, name: &str) -> bool {
+        self.streams.iter().any(|p| stream_pattern_matches(p, name))
+    }
+
+    /// The UDP/RTP target for `stream`, through the same checks as
+    /// `[[udp.push]]`.
+    pub fn udp_target(&self, stream: &str) -> Result<caudal_multicast::MulticastTarget, String> {
+        UdpPushEntry {
+            stream: stream.to_owned(),
+            url: expand_push_template(&self.url, stream),
+            ttl: self.ttl.unwrap_or_else(default_udp_push_ttl),
+            interface: self.interface,
+            pacing: self.pacing.unwrap_or(true),
+        }
+        .to_target()
+        .map_err(|e| self.ctx(e))
+    }
+
+    /// Checks the rule as far as possible without a live stream: valid
+    /// patterns, a known scheme, and a template that expands to a usable
+    /// URL for a sample stream name.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.streams.is_empty() {
+            return Err(self.ctx("`streams` is empty"));
+        }
+        for p in &self.streams {
+            let concrete = p.strip_suffix('*').unwrap_or(p);
+            if p != "*" && (concrete.contains('*') || !caudal_core::media::valid_stream_name(concrete)) {
+                return Err(self.ctx(format!(
+                    "stream pattern {p:?}: expected a stream name, `prefix*` or `*` \
+                     (A-Z a-z 0-9 _ - ., at most 128)"
+                )));
+            }
+            if concrete.contains('+') {
+                return Err(
+                    self.ctx(format!("stream pattern {p:?}: `name+rendition` streams never match an auto push"))
+                );
+            }
+        }
+        let kind = self.kind()?;
+        if kind != AutoPushKind::Udp && (self.ttl.is_some() || self.interface.is_some() || self.pacing.is_some()) {
+            return Err(self.ctx("`ttl`, `interface` and `pacing` only apply to udp:// and rtp:// targets"));
+        }
+        let sample = self.sample_stream();
+        let url = expand_push_template(&self.url, &sample);
+        match kind {
+            AutoPushKind::Udp => {
+                if url != self.url {
+                    return Err(
+                        self.ctx("a udp:// or rtp:// target is an IP address and a port; it takes no variables")
+                    );
+                }
+                self.udp_target(&sample)?;
+            }
+            AutoPushKind::Restream | AutoPushKind::Srt => {
+                let parsed = url::Url::parse(&url).map_err(|e| self.ctx(format!("expands to {url:?}: {e}")))?;
+                if parsed.host_str().is_none_or(str::is_empty) {
+                    return Err(self.ctx(format!("expands to {url:?}, which has no host")));
+                }
+                if kind == AutoPushKind::Srt && parsed.port().is_none() {
+                    return Err(self.ctx(format!("expands to {url:?}: an srt:// target needs a port")));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A stream name the rule matches, for checking the template.
+    fn sample_stream(&self) -> String {
+        let p = &self.streams[0];
+        match p.strip_suffix('*') {
+            Some("") => "stream".into(),
+            Some(prefix) => format!("{prefix}1"),
+            None => p.clone(),
+        }
+    }
 }
 
 /// One multicast output: send `stream` to `group` (`239.1.1.1:5000`, or
@@ -1600,8 +1774,30 @@ impl Config {
             }
         }
         self.failovers()?;
-        self.multicast_targets()?;
+        let static_udp = self.multicast_targets()?;
+        self.validate_auto_pushes(&static_udp)?;
         self.omt.validate(&self.omt_taken_streams())?;
+        Ok(())
+    }
+
+    /// `[[push.auto]]`: each rule on its own, then UDP destinations: an
+    /// auto rule may not send to a destination a `[[multicast]]`,
+    /// `[[udp.push]]` or another rule already sends to (one stream per
+    /// destination).
+    fn validate_auto_pushes(&self, static_udp: &[caudal_multicast::MulticastTarget]) -> Result<(), String> {
+        let mut seen: std::collections::HashSet<std::net::SocketAddr> = static_udp.iter().map(|t| t.group).collect();
+        for rule in &self.push.auto {
+            rule.validate()?;
+            if rule.kind()? == AutoPushKind::Udp {
+                let group = rule.udp_target(&rule.sample_stream())?.group;
+                if !seen.insert(group) {
+                    return Err(rule.ctx(format!(
+                        "UDP destination {group} is already used by [[multicast]], [[udp.push]] or another \
+                         [[push.auto]] rule: one stream per destination"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2126,6 +2322,46 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(err("[auth.hook]\nurl = \"auth.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
         assert!(err("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"hunter2\"\n").contains("whsec_"));
+    }
+
+    #[test]
+    fn auto_push_rules() {
+        let cfg: Config = toml::from_str(
+            "[[push.auto]]\nstreams = [\"cam*\", \"main\"]\nurl = \"srt://203.0.113.4:9000?streamid=$stream\"\n\
+             [[push.auto]]\nstreams = [\"*\"]\nurl = \"rtmps://live.example/app/${stream}-key\"\n\
+             [[push.auto]]\nstreams = [\"tv\"]\nurl = \"rtp://10.0.0.20:5004\"\nttl = 4\npacing = false\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let r = &cfg.push.auto;
+        assert_eq!(r[0].kind().unwrap(), AutoPushKind::Srt);
+        assert!(r[0].matches("cam7") && r[0].matches("main") && !r[0].matches("cam7+720p") && !r[0].matches("x"));
+        assert!(r[1].matches("anything") && !r[1].matches("a+b"));
+        assert_eq!(expand_push_template(&r[1].url, "show"), "rtmps://live.example/app/show-key");
+        assert_eq!(expand_push_template("srt://h:1?streamid=$basename/$stream", "a"), "srt://h:1?streamid=a/a");
+        let t = r[2].udp_target("tv").unwrap();
+        assert_eq!((t.format, t.ttl, t.pacing), (caudal_multicast::Format::Rtp, 4, false));
+
+        let bad =
+            |rule: &str| toml::from_str::<Config>(&format!("[[push.auto]]\n{rule}")).unwrap().validate().unwrap_err();
+        assert!(bad("streams = []\nurl = \"srt://h:1\"\n").contains("empty"));
+        assert!(bad("streams = [\"c*m\"]\nurl = \"srt://h:1\"\n").contains("pattern"));
+        assert!(bad("streams = [\"cam+720p\"]\nurl = \"srt://h:1\"\n").contains("never match"));
+        assert!(bad("streams = [\"a\"]\nurl = \"http://h/x\"\n").contains("rtmp://"));
+        assert!(bad("streams = [\"a\"]\nurl = \"srt://h\"\n").contains("port"));
+        assert!(bad("streams = [\"a\"]\nurl = \"rtmp:///live/$stream\"\n").contains("host"));
+        assert!(bad("streams = [\"a\"]\nurl = \"udp://$stream:5000\"\n").contains("no variables"));
+        assert!(bad("streams = [\"a\"]\nurl = \"udp://0.0.0.0:5000\"\n").contains("not an address"));
+        assert!(bad("streams = [\"a\"]\nurl = \"srt://h:1\"\nttl = 3\n").contains("only apply"));
+        // One stream per UDP destination, across static entries and rules.
+        let err = toml::from_str::<Config>(
+            "[[udp.push]]\nstream = \"tv\"\nurl = \"udp://10.0.0.20:5000\"\n\
+             [[push.auto]]\nstreams = [\"*\"]\nurl = \"udp://10.0.0.20:5000\"\n",
+        )
+        .unwrap()
+        .validate()
+        .unwrap_err();
+        assert!(err.contains("one stream per destination"), "{err}");
     }
 
     #[test]

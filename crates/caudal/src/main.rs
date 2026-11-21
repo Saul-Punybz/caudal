@@ -5,6 +5,7 @@
 
 mod admin;
 mod api;
+mod auto_push;
 mod captions;
 mod config;
 mod config_edit;

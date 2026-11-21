@@ -159,6 +159,19 @@ pub fn list(cfg: &Config, kinds: &[Kind]) -> Vec<EntryJson> {
     v
 }
 
+/// `[[push.auto]]` rules in the same row shape as [`list`]: one row per
+/// stream pattern, `url` the template (secrets masked). Read-only here:
+/// `DELETE /api/v1/pushes/{stream}` does not remove them; edit the file.
+pub fn list_auto_pushes(cfg: &Config) -> Vec<EntryJson> {
+    cfg.push
+        .auto
+        .iter()
+        .flat_map(|r| {
+            r.streams.iter().map(|p| EntryJson { stream: p.clone(), url: redact(&r.url), section: "[[push.auto]]" })
+        })
+        .collect()
+}
+
 fn array(doc: &mut DocumentMut, kind: Kind, create: bool) -> Result<Option<&mut ArrayOfTables>, String> {
     let path = kind.path();
     let mut table: &mut Table = doc.as_table_mut();

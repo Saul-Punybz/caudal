@@ -209,6 +209,21 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # url = "udp://10.0.0.20:5000"   # or rtp://; an IP address
 # interface = "10.0.0.5"         # source address on the video network
 
+# Automatic pushes (MistServer's "auto push"): every stream matching one of
+# `streams` (exact, `prefix*` or `*`; `name+rendition` streams never match)
+# is pushed to `url` while it is live, and stops when it ends. `$stream` (or
+# `${stream}`) is replaced by the stream's name. The scheme picks the engine:
+# rtmp:// / rtmps://, srt://, udp:// / rtp:// (a fixed IP address and port,
+# one stream at a time). A push that a static entry above already makes runs
+# once. Hot-reloadable; GET /api/v1/auto-pushes lists what each rule runs.
+# docs/AUTO-PUSH.md.
+# [[push.auto]]
+# streams = ["cam*", "main"]
+# url = "srt://203.0.113.4:9000?streamid=$stream"
+# [[push.auto]]
+# streams = ["*"]
+# url = "rtmp://backup.example/live/$stream"
+
 # Admin login for the web UI and every /api/v1 route (not for players and
 # encoders: /hls, /play, /vod, /whip, /whep and /moq keep their own [auth]
 # tokens). Without [admin], the HTTP listeners must be on loopback.

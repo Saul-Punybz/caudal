@@ -467,7 +467,7 @@ variant is what MistUtilLoad polls.
 
 States: **has** = I found the code. **partial** = code exists but is narrower (the gap is
 named). **missing** = grep found nothing. **won't** = deliberately out of scope (PLAN).
-Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
+Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-21 for what merged since (PR numbers in the rows).
 
 ### 6.1 Ingest
 
@@ -476,14 +476,14 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
 | RTMP publish (incl. Enhanced RTMP HEVC/AV1) | has | `C:crates/caudal-rtmp/src/lib.rs:57`, `demux.rs` (av1) |
 | RTMPS publish | missing (rtmps exists only for restream *out*) | `C:crates/caudal-restream/src/url.rs` |
 | SRT listener | has | `C:crates/caudal-srt/src/lib.rs:102` |
-| SRT caller pull / rendezvous | missing (caller is used for push out only) | `C:crates/caudal-srt/src/lib.rs:10-13` |
+| SRT caller pull / rendezvous | has: `[[srt.pull]]` caller (#34); rendezvous missing | `C:crates/caudal-srt/src/pull.rs` |
 | SRT streamid routing | has | `C:crates/caudal-srt/src/connection.rs:102-108` |
 | WHIP | has | `C:crates/caudal-webrtc/src/ingest.rs` |
 | RTSP pull | has | `C:crates/caudal-rtsp/src/pull.rs` |
 | RTSP publish (ANNOUNCE/RECORD into the server) | not verified (server exists; I did not confirm RECORD) | `C:crates/caudal-rtsp/src/server.rs` |
 | RIST | missing | grep "rist" hits only `caudal-captions` (an unrelated word match) |
-| TS over UDP/multicast in | missing | `udp://` hits only `caudal-multicast` (output) |
-| HLS pull input | missing | no m3u8 reader outside the hls/record crates |
+| TS over UDP/multicast in | has: `[[udp.pull]]` unicast/multicast, plain or RTP (#34) | `C:crates/caudal-udp` |
+| HLS pull input | has: `[[hls.pull]]`, MPEG-TS segments (#47); fMP4 in progress | `C:crates/caudal-hls-pull` |
 | DTSC origin/edge pull | different approach: MoQ edge pull | `C:crates/caudal-cluster/src/pull.rs` |
 | File inputs MP4/TS (VoD play, channels) | partial: MP4/MOV + TS via channels; MKV mentioned only in transcode | `C:crates/caudal-channel/src/source.rs:1-10` |
 | MKV/FLV/OGG/MP3/AAC/FLAC/WAV files | missing | — |
@@ -510,9 +510,9 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
 | SRT play / SRT push out | has | `C:crates/caudal-srt/src/play.rs`, `push.rs` |
 | RTSP server | has (TCP, UDP unicast, RTSPS, multicast) | `C:crates/caudal-rtsp/src/server.rs`, `udp.rs` |
 | TS UDP/RTP multicast out | has | `C:crates/caudal-multicast/src/lib.rs` |
-| HTTP-TS `/x.ts`, raw TS TCP | missing | — |
+| HTTP-TS `/x.ts`, raw TS TCP | input has: `[[http.pull]]` (#43); output in progress | `C:crates/caudal-http-pull` |
 | Progressive MP4/fMP4/MKV/WebM over HTTP | missing (clips export MP4 files only) | `C:crates/caudal/src/api.rs` `/api/v1/clips` |
-| JPG thumbnails | missing (backlog) | no jpeg |
+| JPG thumbnails | has: `GET /api/v1/streams/{name}/thumbnail.jpg` (#45) | `C:crates/caudal/src/thumbnail.rs` |
 | JSON metadata / WebVTT / SRT subtitles | partial: WebVTT rendition in LL-HLS | `C:crates/caudal-hls/src/lib.rs:92` |
 | MoQ | Caudal only | `C:crates/caudal-moq` |
 | OMT | Caudal only | `C:crates/caudal-omt` |
@@ -525,13 +525,13 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
 | MistServer | Caudal | Evidence |
 |---|---|---|
 | JSON config + API editing | different: TOML, file is the source of truth; edits via file + reload | `C:crates/caudal/src/config.rs:176-211`, `reload.rs:1` |
-| Add/remove stream or protocol via API | missing (read-only `/api/v1/streams`) | `C:crates/caudal/src/api.rs:434-436` |
-| Atomic config write | has (per PLAN; I did not read the write path) | not verified in code |
+| Add/remove stream or protocol via API | has: `/api/v1/pulls`, `/api/v1/pushes` edit the config atomically (#32) | `C:crates/caudal/src/config_edit.rs` |
+| Atomic config write | has: temp file, fsync, rename, directory fsync (#32) | `C:crates/caudal/src/config_edit.rs` `write_atomic` |
 | Hot reload | has (SIGHUP + POST) | `C:crates/caudal/src/reload.rs:1-44` |
 | Admin auth | has, stronger (argon2id, OIDC, API tokens) | `C:crates/caudal-admin` |
 | `/ws` live log/stream feed | not verified (UI says WebSocket/SSE in PLAN; not grepped) | — |
 | Triggers (33, blocking) | **partial, small**: 2 non-blocking events, Standard Webhooks signing | `C:crates/caudal-auth/src/lib.rs:152-167`; `hooks_delivery.rs` |
-| Blocking play/publish auth hook (`USER_NEW`/`STREAM_PUSH`) | missing (the only `/hook` route is a test receiver) | `C:crates/caudal-auth/tests/hooks.rs:37` |
+| Blocking play/publish auth hook (`USER_NEW`/`STREAM_PUSH`) | has: `[auth.hook]`, cached, single-flight (#29) | `C:crates/caudal-auth/src/gate_hook.rs` |
 | Rewrite hooks (`PUSH_REWRITE`, `PLAY_REWRITE`, `STREAM_SOURCE`) | missing | — |
 | Health alerts (`STREAM_BUFFER`-like) | has | `C:crates/caudal-health` |
 | JWT with JWKS | has (HS256 secret; RS256/ES256/EdDSA via JWKS; `exp` required) | `C:crates/caudal-auth/src/lib.rs:64, 111-114`; `claims.rs:14` |
@@ -539,9 +539,9 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
 | Auto-push rules with schedules and conditions | partial: `[[push.auto]]` (stream patterns + `$stream` URL template, RTMP(S)/SRT/UDP/RTP; no schedule, conditions or `inhibit`), `[[record.schedule]]` cron | `C:crates/caudal/src/config.rs:294, 895-905` |
 | Recording via push + target variables | partial: `[record]` dir/segments/retention/upload; no `$datetime`-style templates | `C:crates/caudal/src/config.rs:911-923` |
 | Load balancer (MistUtilLoad) | partial: origin-edge cluster with `/api/v1/cluster/locate/{name}`; no weighted CPU/RAM/BW/geo scoring | `C:crates/caudal-cluster` |
-| Sessions (`clients`, per-viewer bytes, kick by session/tag) | missing: only viewer counts | metric `caudal_viewers` |
+| Sessions (`clients`, per-viewer bytes, kick by session/tag) | has: list/kick/block, bytes, RTT/loss, tags (#30, #31) | `C:crates/caudal-core/src/session.rs` |
 | Prometheus | partial: streams, viewers, bytes/frames in, plus subsystem metrics; no bytes-out, sessions, RTT, packet loss, CPU/mem | metrics name list from grep |
-| Stream tags | missing | — |
+| Stream tags | partial: session tags (#31); no stream-level tags | `C:crates/caudal-core/src/session.rs` |
 | Custom variables, external writers | missing | — |
 | Transcoding processes | has (ffmpeg ladder, rusty_h264) | `C:crates/caudal-transcode` |
 | Livepeer, Composer | missing | — |
@@ -551,16 +551,21 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
 
 ### 6.4 Biggest gaps, ranked for migrating MistServer users
 
-1. **Blocking triggers.** `USER_NEW`, `STREAM_PUSH`, `PUSH_REWRITE`, `PLAY_REWRITE` and
-   `STREAM_SOURCE` are how MistServer deployments do auth and routing. Caudal has 2 async
-   events.
-2. **Session accounting.** Per-viewer `clients`, `stop_sessions`, `USER_END` billing data,
-   bytes-out metrics.
-3. **API-driven stream CRUD.** Panels built on MistServer call `addstream`/`deletestream`/
-   `push_start` at runtime.
-4. **Pull inputs beyond RTSP:** SRT caller, HLS, TS/UDP, RTMP pull.
-5. **TS-HLS and DASH** for legacy players; progressive MP4; thumbnails.
-6. **Auto-push with schedules and conditions**, and push target templates.
+Status on 2026-11-21 (the ranking is the 19 Nov one):
+
+1. **Blocking triggers.** Done for auth: `[auth.hook]` before publish/play (#29). Still missing:
+   the rewrite hooks (`PUSH_REWRITE`, `PLAY_REWRITE`, `STREAM_SOURCE`).
+2. **Session accounting.** Done: list/kick/block, bytes out, RTT/loss, tags (#30, #31).
+3. **API-driven stream CRUD.** Done for pulls and pushes (#32); auto-push rules are config only.
+4. **Pull inputs beyond RTSP.** Done: SRT caller (#34), TS over UDP (#34), TS over HTTP (#43),
+   HLS with TS segments (#47). In progress: HLS with fMP4 segments, RTMP pull.
+5. **TS-HLS and DASH; progressive MP4; thumbnails.** Done: TS-HLS (#46), thumbnails (#45).
+   In progress: HTTP-TS output. Missing: DASH, progressive MP4.
+6. **Auto-push with schedules and conditions, push target templates.** Partial: `[[push.auto]]`
+   with patterns and `$stream` templates (#44); no schedules or conditions.
+
+Also added for the ATSC use case: MPEG-2 video + MP2 pass-through (#38), `[[udp.push]]` to one
+receiver (#39), an H.264 copy of an MPEG-2 feed for browsers (#40), Windows builds (#41).
 
 ---
 

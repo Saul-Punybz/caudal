@@ -71,6 +71,31 @@ source switches, so the group keeps flowing.
 - **Firewalls**: open UDP to the group's port on receivers, and IGMP (IP
   protocol 2) wherever joins must pass.
 
+## One receiver: `[[udp.push]]`
+
+The same sender, to one receiver's own address instead of a group: an
+ATSC/DVB multiplexer's IP input, an IRD, a playout server or another
+Caudal. Same wire format (seven TS packets per datagram, or RTP/MP2T),
+same pacing and PSI/PCR cadence; no IGMP, so it also crosses a router.
+
+```toml
+[[udp.push]]
+stream = "tv1"
+url = "udp://10.0.0.20:5000"   # or rtp://10.0.0.20:5004
+interface = "10.0.0.5"         # source address: picks the NIC on the video network
+ttl = 64                       # default 64 (IP_TTL)
+pacing = true                  # default true
+```
+
+The address must be an IP literal (no DNS lookup on the send path). A
+subnet broadcast address works too (`SO_BROADCAST` is set). Each
+destination takes one stream across `[[multicast]]` and `[[udp.push]]`.
+It is also `POST /api/v1/pushes` with a `udp://` or `rtp://` URL, and its
+counters are under `GET /api/v1/multicast` and `caudal_multicast_*`.
+
+MPEG-2 video and MP2 audio (an ATSC 1.0 feed) pass through unchanged once
+`caudal-ts` demuxes them; see `docs/PULL-INPUTS.md`.
+
 ## Why not over the internet
 
 The public internet does not route multicast. ISPs don't run inter-domain

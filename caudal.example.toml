@@ -199,6 +199,13 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # loopback = false              # also deliver to receivers on this host
 # pacing = true                 # default true: switches drop bursts
 
+# MPEG-TS over UDP to one receiver (an ATSC multiplexer's IP input, an
+# IRD, another server). docs/MULTICAST.md.
+# [[udp.push]]
+# stream = "main"
+# url = "udp://10.0.0.20:5000"   # or rtp://; an IP address
+# interface = "10.0.0.5"         # source address on the video network
+
 # Admin login for the web UI and every /api/v1 route (not for players and
 # encoders: /hls, /play, /vod, /whip, /whep and /moq keep their own [auth]
 # tokens). Without [admin], the HTTP listeners must be on loopback.

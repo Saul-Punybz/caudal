@@ -1,6 +1,7 @@
 //! The sending socket: a plain UDP socket with the multicast options set
 //! through `socket2` (std and tokio expose TTL and loop, but not the
-//! outgoing interface).
+//! outgoing interface), or, for a unicast destination, its TTL and source
+//! address.
 
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -14,6 +15,42 @@ use crate::{Interface, MulticastTarget};
 const SEND_BUFFER: usize = 1 << 20;
 
 pub(crate) fn open(target: &MulticastTarget) -> io::Result<tokio::net::UdpSocket> {
+    let socket = if target.group.ip().is_multicast() { open_multicast(target)? } else { open_unicast(target)? };
+    if let Err(err) = socket.set_send_buffer_size(SEND_BUFFER) {
+        tracing::debug!(%err, "multicast: could not raise the send buffer");
+    }
+    socket.set_nonblocking(true)?;
+    tokio::net::UdpSocket::from_std(socket.into())
+}
+
+/// One receiver (`[[udp.push]]`): the TTL is the unicast `IP_TTL` /
+/// hop limit; an IPv4 interface address is the source address (picks the
+/// NIC on a machine with a separate video network). `SO_BROADCAST` is on,
+/// so a subnet broadcast address works too.
+fn open_unicast(target: &MulticastTarget) -> io::Result<Socket> {
+    Ok(match target.group {
+        SocketAddr::V4(_) => {
+            let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+            s.set_ttl_v4(target.ttl)?;
+            s.set_broadcast(true)?;
+            let source = match target.interface {
+                Interface::V4(addr) => addr,
+                _ => Ipv4Addr::UNSPECIFIED,
+            };
+            s.bind(&SocketAddr::from((source, 0)).into())?;
+            s
+        }
+        SocketAddr::V6(_) => {
+            let s = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+            s.set_only_v6(true)?;
+            s.set_unicast_hops_v6(target.ttl)?;
+            s.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)).into())?;
+            s
+        }
+    })
+}
+
+fn open_multicast(target: &MulticastTarget) -> io::Result<Socket> {
     let socket = match target.group {
         SocketAddr::V4(_) => {
             let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
@@ -43,11 +80,7 @@ pub(crate) fn open(target: &MulticastTarget) -> io::Result<tokio::net::UdpSocket
             s
         }
     };
-    if let Err(err) = socket.set_send_buffer_size(SEND_BUFFER) {
-        tracing::debug!(%err, "multicast: could not raise the send buffer");
-    }
-    socket.set_nonblocking(true)?;
-    tokio::net::UdpSocket::from_std(socket.into())
+    Ok(socket)
 }
 
 #[cfg(test)]

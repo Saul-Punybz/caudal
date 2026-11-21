@@ -801,6 +801,7 @@ mod tests {
                 secret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw".into(),
                 timeout: std::time::Duration::from_millis(500),
                 on_error: caudal_auth::OnError::Deny,
+                reply: caudal_auth::ReplyMode::Status,
                 publish: true,
                 play: false,
                 allow_cache: std::time::Duration::from_secs(30),
@@ -830,6 +831,61 @@ mod tests {
         assert!(matches!(gate.check(Access::Publish, "cam", Some(&token), ip).await, Err(Denied::Refused(_))));
         assert_eq!(calls.load(Ordering::SeqCst), 1, "a valid token still goes to the hook");
         assert_eq!(gate.check(Access::Play, "cam", None, ip).await, Ok(()), "play is not guarded here");
+    }
+
+    /// A handler moved over from MistServer answers `200 true` / `200
+    /// false`. With `reply = "mistserver"` the registry lets the `true`s
+    /// publish and play and refuses the `false`s (and the empty answers).
+    #[tokio::test]
+    async fn a_mistserver_style_hook_allows_and_denies_through_the_registry() {
+        let app = axum::Router::new().route(
+            "/gate",
+            axum::routing::post(|body: axum::body::Bytes| async move {
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                match v["data"]["stream"].as_str().unwrap() {
+                    "open" => "true\n",
+                    "empty" => "",
+                    _ => "false",
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/gate", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let hook = caudal_auth::GateHook::new(
+            caudal_auth::GateHookConfig {
+                url,
+                secret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw".into(),
+                timeout: std::time::Duration::from_millis(500),
+                on_error: caudal_auth::OnError::Allow,
+                reply: caudal_auth::ReplyMode::MistServer,
+                publish: true,
+                play: true,
+                allow_cache: std::time::Duration::from_secs(30),
+                deny_cache: std::time::Duration::from_secs(5),
+            },
+            Arc::default(),
+        )
+        .unwrap();
+        let gate = CombinedGate {
+            auth: caudal_auth::Authorizer::new(caudal_auth::AuthConfig { keys: None, publish: false, play: false }),
+            access: caudal_access::AccessConfig { rules: Vec::new(), geoip_db: None }.checker().unwrap(),
+            cluster: None,
+            hook: Some(Arc::new(hook)),
+        };
+        let reg = caudal_core::Registry::new();
+        reg.set_gate(Arc::new(gate));
+        let ip = Some("198.51.100.4".parse().unwrap());
+        for (access, protocol) in [(Access::Publish, "rtmp"), (Access::Play, "hls")] {
+            assert_eq!(reg.resolve(access, protocol, "open", None, ip).await, Ok("open".into()), "{access:?}");
+            for denied in ["closed", "empty"] {
+                assert!(
+                    matches!(reg.resolve(access, protocol, denied, None, ip).await, Err(Denied::Refused(_))),
+                    "{access:?} {denied}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

@@ -44,6 +44,8 @@ pub struct AppState {
     /// Set once at startup: `/api/v1/omt/sources`, the `omt` fields of the
     /// stream inventory, `caudal_omt_*`.
     omt: std::sync::OnceLock<Arc<crate::omt::OmtRuntime>>,
+    /// `GET /api/v1/streams/{name}/thumbnail.jpg`.
+    pub thumbnails: crate::thumbnail::Thumbnailer,
 }
 
 impl AppState {
@@ -60,6 +62,7 @@ impl AppState {
             edge: std::sync::OnceLock::new(),
             multicast: std::sync::OnceLock::new(),
             omt: std::sync::OnceLock::new(),
+            thumbnails: Default::default(),
         })
     }
 
@@ -264,6 +267,31 @@ async fn get_stream(State(state): State<Arc<AppState>>, Path(name): Path<String>
     match state.registry.get(&name) {
         Some(s) => Json(StreamJson::from_stream(&s, state.omt.get().map(|o| o.as_ref()))).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ThumbnailQuery {
+    width: Option<u32>,
+}
+
+/// `GET /api/v1/streams/{name}/thumbnail.jpg[?width=N]`: a JPEG of the
+/// stream's newest video keyframe (see `crate::thumbnail`).
+async fn get_thumbnail(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(q): Query<ThumbnailQuery>,
+) -> Response {
+    let width = match crate::thumbnail::parse_width(q.width) {
+        Ok(w) => w,
+        Err(e) => return bad_request(&e),
+    };
+    let Some(stream) = state.registry.get(&name) else {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "no such stream" }))).into_response();
+    };
+    match state.thumbnails.thumbnail(&stream, width).await {
+        Ok(jpeg) => crate::thumbnail::jpeg_response(jpeg),
+        Err(e) => e.into_response(),
     }
 }
 
@@ -549,6 +577,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/streams", get(list_streams))
         .route("/api/v1/streams/{name}", get(get_stream))
         .route("/api/v1/streams/{name}/cues", post(post_cue))
+        .route("/api/v1/streams/{name}/thumbnail.jpg", get(get_thumbnail))
         .route("/api/v1/omt/sources", get(omt_sources))
         .route("/api/v1/sessions", get(list_sessions).delete(kick_sessions))
         .route("/api/v1/sessions/{id}", delete(kick_session))

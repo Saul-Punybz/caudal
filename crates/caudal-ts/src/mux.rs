@@ -342,6 +342,26 @@ impl TsMux {
         self.psi_written = false;
     }
 
+    /// Whether the last [`TsMux::set_tracks`] found a video track this
+    /// muxer can write (H.264/H.265 whose config parsed, or MPEG-2).
+    pub fn has_video(&self) -> bool {
+        self.video.is_some()
+    }
+
+    /// Whether the last [`TsMux::set_tracks`] found an audio track this
+    /// muxer can write (AAC whose config parsed, MP2 or MP3).
+    pub fn has_audio(&self) -> bool {
+        self.audio.is_some()
+    }
+
+    /// Makes the next frame (or cue) go out after a fresh PAT/PMT, whatever
+    /// the cadence says. For outputs that cut the stream into files which
+    /// must each start with PSI (TS segments of an HLS playlist); a video
+    /// keyframe already gets PSI in front of it.
+    pub fn force_psi(&mut self) {
+        self.psi_written = false;
+    }
+
     /// Muxes one frame. A frame on a track this muxer doesn't recognize
     /// (Opus, or a video codec whose init hasn't parsed yet) is dropped.
     pub fn push_frame(&mut self, info: &TrackInfo, frame: &Frame) {

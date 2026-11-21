@@ -33,6 +33,8 @@ caudal-rtsp.workspace = true
 caudal-channel.workspace = true
 caudal-restream.workspace = true
 caudal-transcode.workspace = true
+# Thumbnails: a keyframe muxed to MPEG-TS for ffmpeg.
+caudal-ts.workspace = true
 caudal-scte35.workspace = true
 caudal-admin.workspace = true
 caudal-health.workspace = true

@@ -6,7 +6,8 @@ people actually use in 2026. It is a rewrite of
 drops its crash classes.
 
 **Status:** pre-release, v0.1 in progress. Every core protocol is wired up and
-tested: RTMP/E-RTMP, SRT, WHIP, RTSP and MoQ ingest; LL-HLS, WHEP, MoQ, SRT and
+tested: RTMP/E-RTMP, SRT, WHIP, RTSP and MoQ ingest; LL-HLS, classic TS-segment
+HLS ([docs/HLS.md](docs/HLS.md)), WHEP, MoQ, SRT and
 RTSP output, plus IP multicast; recording/VOD/clips, transcoding ladders, 24/7
 channels from files, origin-edge clustering, admin login, and live captions.
 See [PLAN.md](PLAN.md) for the full milestone list and [STATUS.md](STATUS.md)

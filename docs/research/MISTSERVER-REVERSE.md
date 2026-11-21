@@ -536,7 +536,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19.
 | Health alerts (`STREAM_BUFFER`-like) | has | `C:crates/caudal-health` |
 | JWT with JWKS | has (HS256 secret; RS256/ES256/EdDSA via JWKS; `exp` required) | `C:crates/caudal-auth/src/lib.rs:64, 111-114`; `claims.rs:14` |
 | JWT per-key permissions, `ipa` claim | missing (not found) | — |
-| Auto-push rules with schedules and conditions | partial: `[[restream]]` (always), `[[record.schedule]]` cron | `C:crates/caudal/src/config.rs:294, 895-905` |
+| Auto-push rules with schedules and conditions | partial: `[[push.auto]]` (stream patterns + `$stream` URL template, RTMP(S)/SRT/UDP/RTP; no schedule, conditions or `inhibit`), `[[record.schedule]]` cron | `C:crates/caudal/src/config.rs:294, 895-905` |
 | Recording via push + target variables | partial: `[record]` dir/segments/retention/upload; no `$datetime`-style templates | `C:crates/caudal/src/config.rs:911-923` |
 | Load balancer (MistUtilLoad) | partial: origin-edge cluster with `/api/v1/cluster/locate/{name}`; no weighted CPU/RAM/BW/geo scoring | `C:crates/caudal-cluster` |
 | Sessions (`clients`, per-viewer bytes, kick by session/tag) | missing: only viewer counts | metric `caudal_viewers` |

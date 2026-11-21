@@ -134,7 +134,14 @@ async fn list_pulls(State(state): State<ReloadState>) -> Json<Vec<config_edit::E
 }
 
 async fn list_pushes(State(state): State<ReloadState>) -> Json<Vec<config_edit::EntryJson>> {
-    Json(config_edit::list(&current(&state), &Kind::PUSHES))
+    let cfg = current(&state);
+    let mut rows = config_edit::list(&cfg, &Kind::PUSHES);
+    rows.extend(config_edit::list_auto_pushes(&cfg));
+    Json(rows)
+}
+
+async fn list_auto_pushes(State(state): State<ReloadState>) -> Json<Vec<crate::auto_push::RuleJson>> {
+    Json(state.supervisor.auto_pushes())
 }
 
 async fn add_pull(State(state): State<ReloadState>, Json(b): Json<EntryBody>) -> Response {
@@ -196,6 +203,7 @@ pub fn router(state: ReloadState) -> Router {
         .route("/api/v1/pulls/{stream}", delete(remove_pull))
         .route("/api/v1/pushes", get(list_pushes).post(add_push))
         .route("/api/v1/pushes/{stream}", delete(remove_push))
+        .route("/api/v1/auto-pushes", get(list_auto_pushes))
         .with_state(state)
 }
 
@@ -351,6 +359,49 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(crate::config_edit::check(&text).unwrap().srt.push.is_empty());
         assert!(text.starts_with("# production box\n"));
+    }
+
+    /// `[[push.auto]]` arrives by reload, shows in `GET /api/v1/pushes` in
+    /// the same row shape (masked), and `GET /api/v1/auto-pushes` lists the
+    /// push it runs for a live matching stream.
+    #[tokio::test]
+    async fn auto_push_rules_reload_and_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("caudal.toml");
+        let base = "[rtmp]\nbind = \"127.0.0.1:0\"\n[srt]\nbind = \"127.0.0.1:0\"\n";
+        std::fs::write(&path, base).unwrap();
+        let registry = caudal_core::Registry::new();
+        let started = Supervisor::start(&crate::config::load(&path).unwrap(), registry.clone());
+        let app = router(ReloadState {
+            supervisor: started.supervisor,
+            config_path: Some(path.clone()),
+            edits: Default::default(),
+        });
+        let _live = registry.publish("cam1", caudal_core::BufferConfig::default()).unwrap();
+
+        std::fs::write(
+            &path,
+            format!("{base}[[push.auto]]\nstreams = [\"cam*\"]\nurl = \"rtmp://127.0.0.1:9/live/$stream\"\n"),
+        )
+        .unwrap();
+        let (st, body) = call(&app, "POST", "/api/v1/config/reload", None).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert!(body["applied"].as_array().unwrap().iter().any(|a| a == "push.auto"), "{body}");
+
+        let (_, list) = call(&app, "GET", "/api/v1/pushes", None).await;
+        assert_eq!(
+            list,
+            serde_json::json!([{"stream": "cam*", "url": "rtmp://127.0.0.1:9/live/****", "section": "[[push.auto]]"}])
+        );
+        let (st, rules) = call(&app, "GET", "/api/v1/auto-pushes", None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(rules[0]["kind"], "rtmp");
+        assert_eq!(rules[0]["active"], serde_json::json!([{"stream": "cam1", "url": "rtmp://127.0.0.1:9/live/****"}]));
+
+        std::fs::write(&path, base).unwrap();
+        let (st, _) = call(&app, "POST", "/api/v1/config/reload", None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(call(&app, "GET", "/api/v1/auto-pushes", None).await.1, serde_json::json!([]));
     }
 
     #[tokio::test]

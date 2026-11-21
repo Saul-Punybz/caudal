@@ -42,6 +42,12 @@ A pull can be `rtsp://`/`rtsps://` (`[[rtsp.pull]]`), `srt://` (`[[srt.pull]]`, 
 
 A push starts when its stream is live and keeps retrying while it is.
 
+Automatic pushes (`[[push.auto]]`, one rule for every stream matching a
+pattern) are listed too, one row per pattern with `"section": "[[push.auto]]"`
+and the URL template, but are not added or removed here. `GET
+/api/v1/auto-pushes` shows each rule with the pushes it runs now. See
+`docs/AUTO-PUSH.md`.
+
 ## Answers
 
 - `200 {"applied": [...], "restarted": [...], "requires_restart": [...]}`:

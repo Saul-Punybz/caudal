@@ -3,7 +3,7 @@
 //! smallest correct change per section:
 //!
 //! - **Hot, no restart:** `[[restream]]`, `[[multicast]]`, `[[channel]]`,
-//!   `[[failover]]`, `[[srt.push]]`, `[[rtsp.pull]]`, `[[omt.pull]]`,
+//!   `[[failover]]`, `[[srt.push]]`, `[[push.auto]]`, `[[rtsp.pull]]`, `[[omt.pull]]`,
 //!   `[[omt.output]]` (and `[omt] ffmpeg`) are each their own subsystem with a `reload` that
 //!   diffs by identity — unchanged entries keep their task untouched, so
 //!   a reload never drops an unrelated viewer or publisher. `[auth]` and
@@ -318,11 +318,11 @@ pub struct Supervisor {
     srt_listen: Mutex<SrtListener>,
     rtsp_listen: Mutex<RtspListener>,
 
-    restream: caudal_restream::RestreamHandle,
-    multicast: caudal_multicast::MulticastHandle,
     channel: caudal_channel::ChannelHandle,
     failover: caudal_failover::FailoverHandle,
-    srt_push: caudal_srt::PushHandle,
+    /// Owns the target lists of `[[restream]]`, `[[srt.push]]` and
+    /// `[[multicast]]`/`[[udp.push]]`, plus `[[push.auto]]`'s expansions.
+    auto_push: crate::auto_push::AutoPush,
     srt_pull: caudal_srt::PullHandle,
     udp_pull: caudal_udp::UdpPullHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
@@ -406,6 +406,16 @@ impl Supervisor {
         let multicast = caudal_multicast::start(registry.clone(), cfg.multicast_targets().expect("validated"));
         let multicast_router = caudal_multicast::router(multicast.clone());
 
+        // From here on the three push engines get their target lists only
+        // through `auto_push` (static entries + live `[[push.auto]]` matches).
+        let auto_push = crate::auto_push::AutoPush::start(
+            registry.clone(),
+            crate::auto_push::PushSet::from_config(cfg),
+            restream.clone(),
+            srt_push,
+            multicast.clone(),
+        );
+
         let channel = caudal_channel::start(
             registry.clone(),
             caudal_channel::ChannelConfig {
@@ -433,11 +443,9 @@ impl Supervisor {
             rtmp,
             srt_listen,
             rtsp_listen,
-            restream,
-            multicast: multicast.clone(),
             channel,
             failover: failover.clone(),
-            srt_push,
+            auto_push,
             srt_pull,
             udp_pull,
             rtsp_pull,
@@ -472,6 +480,11 @@ impl Supervisor {
         self.current.lock().clone()
     }
 
+    /// `[[push.auto]]` rules with the pushes each runs now.
+    pub fn auto_pushes(&self) -> Vec<crate::auto_push::RuleJson> {
+        self.auto_push.rules()
+    }
+
     pub fn reload(&self, new_cfg: Config) -> Result<ReloadReport, String> {
         new_cfg.validate()?;
 
@@ -481,14 +494,19 @@ impl Supervisor {
         let old = current.clone();
         let mut report = ReloadReport::default();
 
-        if old.restream != new_cfg.restream {
-            self.restream.reload(&self.registry, new_cfg.restream_targets());
-            report.applied.push("restream".into());
-        }
-        // One sender runs both [[multicast]] and [[udp.push]].
-        if old.multicast != new_cfg.multicast || old.udp.push != new_cfg.udp.push {
-            self.multicast.reload(&self.registry, new_cfg.multicast_targets().expect("validated"));
-            report.applied.push(if old.multicast != new_cfg.multicast { "multicast" } else { "udp.push" }.into());
+        // [[restream]], [[srt.push]], [[multicast]], [[udp.push]] and
+        // [[push.auto]] all reach their engines through `auto_push`, which
+        // diffs by target: unchanged pushes keep running.
+        let push_sections = [
+            ("restream", old.restream != new_cfg.restream),
+            ("srt.push", old.srt.push != new_cfg.srt.push),
+            ("multicast", old.multicast != new_cfg.multicast),
+            ("udp.push", old.udp.push != new_cfg.udp.push),
+            ("push.auto", old.push != new_cfg.push),
+        ];
+        if push_sections.iter().any(|(_, changed)| *changed) {
+            self.auto_push.configure(crate::auto_push::PushSet::from_config(&new_cfg));
+            report.applied.extend(push_sections.iter().filter(|(_, c)| *c).map(|(n, _)| n.to_string()));
         }
         if old.channel != new_cfg.channel {
             self.channel.reload(caudal_channel::ChannelConfig {
@@ -505,10 +523,6 @@ impl Supervisor {
                 trusted_proxies: self.trusted_proxies.clone(),
             });
             report.applied.push("failover".into());
-        }
-        if old.srt.push != new_cfg.srt.push {
-            self.srt_push.reload(&self.registry, new_cfg.srt.push_targets());
-            report.applied.push("srt.push".into());
         }
         if old.udp.pull != new_cfg.udp.pull {
             self.udp_pull.reload(&self.registry, new_cfg.udp.pull_targets());

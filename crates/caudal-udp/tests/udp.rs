@@ -2,6 +2,10 @@
 //! (unicast, RTP, multicast), the way an encoder or VLC feeds a playout
 //! chain.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;

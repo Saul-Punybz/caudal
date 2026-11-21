@@ -1,6 +1,10 @@
 //! The ffmpeg engine end to end: a real ffmpeg transcoding a live source
 //! published into a registry. Run one at a time (`--test-threads=1`).
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 mod support;
 
 use std::sync::Arc;

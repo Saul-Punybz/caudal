@@ -6,6 +6,10 @@
 //! fast. It is red until batch 1 lands; that is the point. Batch 1 is not
 //! done while this is red.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 mod support;
 
 use std::time::{Duration, Instant};

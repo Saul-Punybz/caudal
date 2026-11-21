@@ -554,7 +554,11 @@ impl Ctx {
         };
         let _rt = self.rt.enter();
         let (proc, stdin, stdout) = FfmpegProcess::spawn(ffmpeg, args, &self.name)?;
-        Ok((proc, File::from(stdin.into_owned_fd()?), File::from(stdout.into_owned_fd()?)))
+        #[cfg(unix)]
+        let (stdin, stdout) = (File::from(stdin.into_owned_fd()?), File::from(stdout.into_owned_fd()?));
+        #[cfg(windows)]
+        let (stdin, stdout) = (File::from(stdin.into_owned_handle()?), File::from(stdout.into_owned_handle()?));
+        Ok((proc, stdin, stdout))
     }
 }
 

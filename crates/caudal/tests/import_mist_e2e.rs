@@ -8,6 +8,10 @@
 //! Every port is picked free at run time: nothing here binds a MistServer
 //! or Caudal default port, so it is safe next to other agents' runs.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 mod support;
 
 use std::process::{Command, Stdio};

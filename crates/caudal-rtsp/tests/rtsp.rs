@@ -3,6 +3,10 @@
 //! `caudal_rtsp::run` pull that connects to that same server as if it were
 //! a camera.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 #[path = "../../caudal-hls/src/mp4demux.rs"]
 mod mp4demux;
 

@@ -9,6 +9,10 @@
 //! Uses the default multicast interface (the default route): GitHub's Linux
 //! runners deliver looped-back multicast on it, as does a Mac.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 mod support;
 
 use std::net::UdpSocket;

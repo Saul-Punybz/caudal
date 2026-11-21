@@ -70,7 +70,6 @@ rustls-pki-types = "1"
 # Certificate expiry and SAN inspection for `doctor`'s TLS check; already
 # in the dependency tree via rustls-acme and moq-native.
 x509-parser = "0.18"
-rustix.workspace = true
 # Config edits from the API: keep the operator's comments and layout, and
 # replace the file atomically (both already in the dependency tree).
 toml_edit = "0.25"
@@ -95,3 +94,6 @@ moq-native = { version = "=0.19.19", default-features = false, features = ["quin
 bytes.workspace = true
 url = "2"
 mp4-atom = "0.15.0"
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true

@@ -1,12 +1,13 @@
 //! LL-HLS / CMAF output, classic HLS with MPEG-TS segments (`tsseg`, on
-//! demand), and the `/play/{name}` page. Entry point fixed by the
-//! orchestrator.
+//! demand), the `/play/{name}` page, and continuous MPEG-TS over HTTP
+//! (`/ts/{name}.ts`, [`http_ts`]). Entry point fixed by the orchestrator.
 //!
 //! One packager task per published stream turns frames into CMAF parts as
 //! they arrive, so parts exist before the first viewer asks. HTTP handlers
 //! only read the packager state; blocking playlist reloads and requests for
 //! the preload-hinted part wait on a `watch` channel bumped by the packager.
 
+pub mod http_ts;
 mod packager;
 mod tsseg;
 mod vtt;

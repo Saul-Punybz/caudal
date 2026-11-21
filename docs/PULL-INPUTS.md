@@ -94,7 +94,11 @@ video_kbps = 3000
 Some sources serve their transport stream as one endless HTTP response
 instead of sending it: VLC with `#standard{access=http,mux=ts,dst=...}`,
 ffmpeg with `-listen 1 http://...`, encoders and IRDs with an "HTTP TS"
-output, and what MistServer calls an `http-ts://` input.
+output, MistServer's `/{name}.ts`, and what MistServer calls an
+`http-ts://` input. Another Caudal serves exactly this at
+`/ts/{name}.ts` (see [HLS.md](HLS.md#http-ts-one-endless-mpeg-ts-response)),
+so one Caudal can pull a stream from another:
+`url = "http://origin:8080/ts/cam.ts?token=JWT"`.
 
 ```toml
 [[http.pull]]
@@ -132,3 +136,5 @@ url = "http://10.0.0.5:8080/stream.ts"   # or https://
   stream ends when the source goes away and is republished when it comes
   back; an MPEG-2 + MP2 source publishes both tracks. Not tested: VLC
   itself, HTTPS, a source behind a redirect.
+- Caudal to Caudal: a pull of another registry's `/ts/{name}.ts` publishes
+  H.264 + AAC (`crates/caudal-hls/tests/http_ts.rs`).

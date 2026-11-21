@@ -85,13 +85,19 @@ impl SessionHandler for Handler {
 
         // OBS and ffmpeg carry credentials in the stream key:
         // rtmp://host/live/<name>?token=<jwt>
-        let (stream_name, token) = split_token(stream_name);
-        if let Err(denied) =
-            self.registry.authorize(caudal_core::Access::Publish, stream_name, token, Some(self.peer_ip)).await
+        let (requested, token) = split_token(stream_name);
+        let stream_name = match self
+            .registry
+            .resolve(caudal_core::Access::Publish, "rtmp", requested, token, Some(self.peer_ip))
+            .await
         {
-            tracing::info!(app = %app_name, stream = %stream_name, reason = ?denied, "rtmp publish rejected");
-            return Err(reject_error());
-        }
+            Ok(name) => name,
+            Err(denied) => {
+                tracing::info!(app = %app_name, stream = %requested, reason = ?denied, "rtmp publish rejected");
+                return Err(reject_error());
+            }
+        };
+        let stream_name = stream_name.as_str();
 
         match self.registry.publish(stream_name, self.buffer) {
             Ok(publisher) => {
@@ -134,10 +140,15 @@ impl SessionHandler for Handler {
             tracing::info!(app = %app_name, stream = %name, reason = "wrong_app", "rtmp play rejected");
             return Ok(reject(PLAY_NOT_FOUND, "no such application"));
         }
-        if let Err(denied) = self.registry.authorize(Access::Play, name, token, Some(self.peer_ip)).await {
-            tracing::info!(stream = %name, reason = ?denied, "rtmp play rejected");
-            return Ok(reject(PLAY_FAILED, "access denied"));
-        }
+        // The rewrite hook (if any) picks the real name; the gate judges it.
+        let name = match self.registry.resolve(Access::Play, "rtmp", name, token, Some(self.peer_ip)).await {
+            Ok(resolved) => resolved,
+            Err(denied) => {
+                tracing::info!(stream = %name, reason = ?denied, "rtmp play rejected");
+                return Ok(reject(PLAY_FAILED, "access denied"));
+            }
+        };
+        let name = name.as_str();
         // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
         let Some(stream) = self.registry.get_or_demand(name).await.filter(|s| !s.is_ended()) else {
             tracing::info!(stream = %name, reason = "not_found", "rtmp play rejected");

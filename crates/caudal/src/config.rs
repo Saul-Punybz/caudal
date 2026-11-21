@@ -1474,6 +1474,8 @@ pub struct AuthSection {
     pub play: bool,
     /// Blocking authorization webhook, asked after the token check.
     pub hook: Option<AuthHookSection>,
+    /// Blocking routing webhook, asked before everything else.
+    pub rewrite: Option<AuthRewriteSection>,
 }
 
 impl Default for AuthSection {
@@ -1485,6 +1487,7 @@ impl Default for AuthSection {
             publish: true,
             play: false,
             hook: None,
+            rewrite: None,
         }
     }
 }
@@ -1564,6 +1567,77 @@ impl AuthHookSection {
     }
 }
 
+/// `[auth.rewrite]`: before a publish or a play, POST it (signed, Standard
+/// Webhooks) to `url` and use the stream name the answer gives (MistServer's
+/// `PUSH_REWRITE` / `PLAY_REWRITE`). An empty answer or 401/403 refuses; a
+/// timeout or any other answer is decided by `on_error` (`allow` keeps the
+/// requested name). See `caudal_auth::RewriteHook` and `docs/REWRITE-HOOK.md`.
+///
+/// It sits under `[auth]` rather than `[hooks]` because it behaves like
+/// `[auth.hook]` (blocking, fail-closed by default, reloaded with `[auth]`),
+/// while `[hooks]` only notifies, after the fact, and never blocks.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthRewriteSection {
+    pub url: String,
+    /// `whsec_...`, as in `[hooks]`.
+    pub secret: String,
+    /// One attempt, no retries. 100..=10000.
+    #[serde(default = "default_auth_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// `"deny"` (default) or `"allow"` (keep the requested name) when the
+    /// service fails.
+    #[serde(default = "default_auth_hook_on_error")]
+    pub on_error: String,
+    /// Route publishes (`PUSH_REWRITE`).
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    /// Route plays (`PLAY_REWRITE`).
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// How long an answer is remembered for the same protocol, stream, IP
+    /// and token; the service's `cache_secs` can only lower it.
+    #[serde(default = "default_auth_hook_allow_cache_secs")]
+    pub cache_secs: u64,
+    /// How long a denial or a failure is remembered.
+    #[serde(default = "default_auth_hook_deny_cache_secs")]
+    pub deny_cache_secs: u64,
+}
+
+impl AuthRewriteSection {
+    pub fn to_config(&self) -> Result<caudal_auth::RewriteHookConfig, String> {
+        let url = reqwest_url_ok(&self.url)
+            .ok_or_else(|| format!("[auth.rewrite] url {:?}: expected http(s)://", self.url))?;
+        if !self.secret.starts_with("whsec_") {
+            return Err("[auth.rewrite] `secret` must be a Standard Webhooks secret (whsec_...)".into());
+        }
+        if !(100..=10_000).contains(&self.timeout_ms) {
+            return Err(format!("[auth.rewrite] timeout_ms {} is outside 100..=10000", self.timeout_ms));
+        }
+        let on_error = match self.on_error.as_str() {
+            "deny" => caudal_auth::OnError::Deny,
+            "allow" => caudal_auth::OnError::Allow,
+            other => return Err(format!("[auth.rewrite] on_error {other:?}: expected \"deny\" or \"allow\"")),
+        };
+        if !self.publish && !self.play {
+            return Err("[auth.rewrite] `publish` and `play` are both false; remove the section instead".into());
+        }
+        if self.cache_secs > 3600 || self.deny_cache_secs > 3600 {
+            return Err("[auth.rewrite] cache times are at most 3600 s".into());
+        }
+        Ok(caudal_auth::RewriteHookConfig {
+            url,
+            secret: self.secret.clone(),
+            timeout: Duration::from_millis(self.timeout_ms),
+            on_error,
+            publish: self.publish,
+            play: self.play,
+            cache: Duration::from_secs(self.cache_secs),
+            deny_cache: Duration::from_secs(self.deny_cache_secs),
+        })
+    }
+}
+
 /// `Some(url)` for an absolute http(s) URL with a host.
 fn reqwest_url_ok(s: &str) -> Option<String> {
     let rest = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://"))?;
@@ -1589,6 +1663,11 @@ impl AuthSection {
     /// `[auth.hook]` as the runtime config, `None` when absent.
     pub fn hook_config(&self) -> Result<Option<caudal_auth::GateHookConfig>, String> {
         self.hook.as_ref().map(AuthHookSection::to_config).transpose()
+    }
+
+    /// `[auth.rewrite]` as the runtime config, `None` when absent.
+    pub fn rewrite_config(&self) -> Result<Option<caudal_auth::RewriteHookConfig>, String> {
+        self.rewrite.as_ref().map(AuthRewriteSection::to_config).transpose()
     }
 }
 
@@ -1815,6 +1894,7 @@ impl Config {
         self.tls.to_tls_config()?;
         self.auth.to_auth_config()?;
         self.auth.hook_config()?;
+        self.auth.rewrite_config()?;
         self.access.to_access_config()?;
         self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
@@ -2431,6 +2511,34 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(err("[auth.hook]\nurl = \"auth.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
         assert!(err("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"hunter2\"\n").contains("whsec_"));
+    }
+
+    #[test]
+    fn auth_rewrite_section() {
+        let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+        let ok: Config =
+            toml::from_str(&format!("[auth.rewrite]\nurl = \"https://route.example/r\"\nsecret = \"{secret}\"\n"))
+                .unwrap();
+        ok.validate().unwrap();
+        let r = ok.auth.rewrite_config().unwrap().unwrap();
+        assert_eq!(r.timeout, Duration::from_millis(2000));
+        assert_eq!(r.on_error, caudal_auth::OnError::Deny, "fails closed by default");
+        assert!(r.publish && r.play);
+        assert_eq!((r.cache, r.deny_cache), (Duration::from_secs(30), Duration::from_secs(5)));
+        assert!(Config::default().auth.rewrite_config().unwrap().is_none());
+        let bad = |extra: &str| {
+            toml::from_str::<Config>(&format!("[auth.rewrite]\nurl = \"https://a/r\"\nsecret = \"{secret}\"\n{extra}"))
+                .unwrap()
+                .validate()
+                .unwrap_err()
+        };
+        assert!(bad("timeout_ms = 50\n").contains("[auth.rewrite] timeout_ms"));
+        assert!(bad("on_error = \"maybe\"\n").contains("on_error"));
+        assert!(bad("publish = false\nplay = false\n").contains("both false"));
+        assert!(bad("cache_secs = 86400\n").contains("3600"));
+        let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(err("[auth.rewrite]\nurl = \"route.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
+        assert!(err("[auth.rewrite]\nurl = \"https://a/r\"\nsecret = \"hunter2\"\n").contains("whsec_"));
     }
 
     #[test]

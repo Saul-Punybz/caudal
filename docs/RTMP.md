@@ -31,7 +31,9 @@ ffmpeg -i rtmp://caudal.example:1935/live/cam -c copy cam.flv
 vlc rtmp://caudal.example:1935/live/cam
 ```
 
-- **Auth**: the same `[auth]` check as every other output (`Access::Play`).
+- **Auth**: the same path as every other output: `[auth.rewrite]` may
+  route the name, then `[auth]`/`[[access]]` judge the final one
+  (`Access::Play`).
   The token goes in the stream key's query, as for publishing:
   `rtmp://host/live/cam?token=<jwt>`. A refused viewer gets
   `onStatus` `NetStream.Play.Failed` (level `error`) and the connection

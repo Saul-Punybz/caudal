@@ -532,7 +532,8 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | `/ws` live log/stream feed | not verified (UI says WebSocket/SSE in PLAN; not grepped) | — |
 | Triggers (33, blocking) | **partial, small**: 2 non-blocking events, Standard Webhooks signing | `C:crates/caudal-auth/src/lib.rs:152-167`; `hooks_delivery.rs` |
 | Blocking play/publish auth hook (`USER_NEW`/`STREAM_PUSH`) | has: `[auth.hook]`, cached, single-flight (#29) | `C:crates/caudal-auth/src/gate_hook.rs` |
-| Rewrite hooks (`PUSH_REWRITE`, `PLAY_REWRITE`, `STREAM_SOURCE`) | missing | — |
+| Rewrite hooks (`PUSH_REWRITE`, `PLAY_REWRITE`) | has: `[auth.rewrite]`, cached per viewer, every protocol through `Registry::resolve` (MoQ play refuses a renamed stream) | `C:crates/caudal-auth/src/rewrite_hook.rs`; `docs/REWRITE-HOOK.md` |
+| `STREAM_SOURCE` | missing (no on-demand input start; see `docs/REWRITE-HOOK.md`) | — |
 | Health alerts (`STREAM_BUFFER`-like) | has | `C:crates/caudal-health` |
 | JWT with JWKS | has (HS256 secret; RS256/ES256/EdDSA via JWKS; `exp` required) | `C:crates/caudal-auth/src/lib.rs:64, 111-114`; `claims.rs:14` |
 | JWT per-key permissions, `ipa` claim | missing (not found) | — |
@@ -553,8 +554,8 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 
 Status on 2026-11-21 (the ranking is the 19 Nov one):
 
-1. **Blocking triggers.** Done for auth: `[auth.hook]` before publish/play (#29). Still missing:
-   the rewrite hooks (`PUSH_REWRITE`, `PLAY_REWRITE`, `STREAM_SOURCE`).
+1. **Blocking triggers.** Done for auth: `[auth.hook]` before publish/play (#29), and for
+   routing: `[auth.rewrite]` (`PUSH_REWRITE`, `PLAY_REWRITE`). Still missing: `STREAM_SOURCE`.
 2. **Session accounting.** Done: list/kick/block, bytes out, RTT/loss, tags (#30, #31).
 3. **API-driven stream CRUD.** Done for pulls and pushes (#32); auto-push rules are config only.
 4. **Pull inputs beyond RTSP.** Done: SRT caller (#34), TS over UDP (#34), TS over HTTP (#43),

@@ -299,15 +299,48 @@ where
                     object.insert(key, value);
                 }
 
-                // There might be an object end marker after the last key
-                if self.has_remaining()? && self.peek_marker()? == Amf0Marker::ObjectEnd {
-                    // Clear the next marker buffer
-                    self.next_marker = None;
-                }
+                self.skip_ecma_array_end()?;
 
                 Ok(object)
             }
         }
+    }
+
+    /// Caudal patch: consumes what follows the last entry of an ECMA array.
+    ///
+    /// The AMF0 spec ends an ECMA array with the object-end sequence
+    /// `00 00 09` (an empty key, then the end marker), exactly like an
+    /// object. Upstream only looked for a bare `09` marker, so the `00 00`
+    /// was left in the stream and read as the start of a Number value: the
+    /// decode of every `onMetaData` an encoder sends as an ECMA array (OBS,
+    /// FFmpeg, most others) then failed, and the publisher's framerate,
+    /// size and bitrates were lost.
+    ///
+    /// A bare `09`, or no bytes at all, is still accepted. A value following
+    /// the array is left alone unless it starts `00 00`, which as a Number
+    /// marker followed by a double whose first byte is zero is not something
+    /// a real message contains right after an ECMA array.
+    pub(crate) fn skip_ecma_array_end(&mut self) -> Result<(), Amf0Error> {
+        if !self.has_remaining()? {
+            return Ok(());
+        }
+        match self.peek_marker()? {
+            Amf0Marker::ObjectEnd => self.next_marker = None,
+            // `00` is both the Number marker and the first byte of the empty key.
+            Amf0Marker::Number => {
+                self.next_marker = None;
+                let second = self.reader.as_std().read_u8()?;
+                let third = self.reader.as_std().read_u8()?;
+                if second != 0 || third != Amf0Marker::ObjectEnd as u8 {
+                    return Err(Amf0Error::UnexpectedType {
+                        expected: &[Amf0Marker::ObjectEnd],
+                        got: Amf0Marker::Number,
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     // --- Strict array ---
@@ -404,6 +437,31 @@ mod tests {
         assert_eq!(object.len(), 2);
         assert_eq!(*object.get(&"abc".into()).unwrap(), Amf0Value::String("val".into()));
         assert_eq!(*object.get(&"defg".into()).unwrap(), Amf0Value::Boolean(true));
+    }
+
+    /// Caudal patch regression: an ECMA array ends with `00 00 09`, as OBS
+    /// and FFmpeg send `onMetaData`. The `00 00` used to be left behind and
+    /// failed the next decode.
+    #[test]
+    fn ecma_array_with_the_spec_end_marker() {
+        #[rustfmt::skip]
+        let bytes = [
+            Amf0Marker::EcmaArray as u8,
+            0, 0, 0, 1, // size
+            0, 3, b'a', b'b', b'c', // key
+            Amf0Marker::Boolean as u8,
+            1, // value
+            0, 0, Amf0Marker::ObjectEnd as u8, // end of the array
+            Amf0Marker::Boolean as u8,
+            0, // a following value
+        ];
+
+        let mut decoder = Amf0Decoder::from_slice(&bytes);
+        let values = decoder.decode_all().unwrap();
+        assert_eq!(values.len(), 2);
+        let Amf0Value::Object(object) = &values[0] else { panic!("not an object: {:?}", values[0]) };
+        assert_eq!(*object.get(&"abc".into()).unwrap(), Amf0Value::Boolean(true));
+        assert_eq!(values[1], Amf0Value::Boolean(false));
     }
 
     #[test]

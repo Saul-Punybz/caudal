@@ -13,6 +13,7 @@ mod doctor;
 mod import_mist;
 mod metrics;
 mod omt;
+mod process_metrics;
 mod reload;
 mod shutdown;
 mod subsystems;

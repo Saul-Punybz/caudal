@@ -60,3 +60,32 @@ and the URL template, but are not added or removed here. `GET
 Listings mask secrets: an RTMP stream key shows as `****`, so do SRT
 `passphrase` / `streamid` values and an RTSP camera's password. The file
 itself keeps them; protect it like a password (the server keeps its mode).
+
+## Thumbnails
+
+`GET /api/v1/streams/{name}/thumbnail.jpg[?width=N]` returns a JPEG of the
+stream's newest video keyframe, for dashboards and operators. Unlike the
+routes above it changes nothing; it is under `/api/` and so needs the admin
+login like the rest of the API.
+
+- `width`: 16 to 1280 pixels, default 320. The height keeps the aspect
+  ratio (rounded to an even number). A picture is never scaled up past the
+  source's own size.
+- Video codecs: H.264, H.265 and MPEG-2 video. The keyframe is muxed to
+  MPEG-TS with its parameter sets and decoded by ffmpeg: the one from
+  `[transcode] ffmpeg` (default `ffmpeg` on `PATH`; read at startup, a
+  reload does not change it). No new config keys.
+- Caching: one picture per stream and width, reused for 3 s, and for as
+  long as the newest keyframe is still the one it shows. Requests that
+  arrive while a picture is being made wait for it, so many dashboards cost
+  one ffmpeg; at most 2 ffmpeg run at once for all streams, each with an
+  8 s limit. Answers carry `Cache-Control: private, max-age=2`.
+
+| Answer | When |
+|---|---|
+| `200 image/jpeg` | the picture |
+| `400` | `width` out of range |
+| `404` | no such stream |
+| `409` | no video track, or a video codec other than the three above |
+| `503` + `Retry-After: 1` | video, but no keyframe yet |
+| `503 {"error": ...}` | ffmpeg missing, failed or timed out, or too busy |

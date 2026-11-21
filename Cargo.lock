@@ -805,6 +805,7 @@ dependencies = [
  "caudal-srt",
  "caudal-tls",
  "caudal-transcode",
+ "caudal-ts",
  "caudal-udp",
  "caudal-ui",
  "caudal-webrtc",

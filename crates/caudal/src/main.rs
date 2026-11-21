@@ -16,6 +16,7 @@ mod omt;
 mod reload;
 mod shutdown;
 mod subsystems;
+mod thumbnail;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -241,6 +242,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     }
     state.set_multicast(started.multicast.clone());
     state.set_omt(started.omt.clone());
+    state.thumbnails.set_ffmpeg(cfg.transcode.ffmpeg.clone());
     let webrtc_router = caudal_webrtc::router(
         registry.clone(),
         caudal_webrtc::WebRtcConfig {

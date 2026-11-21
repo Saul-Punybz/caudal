@@ -551,6 +551,55 @@ async fn master_aggregates_the_family_and_playlists_report_each_other_never_self
     drop(low);
 }
 
+/// A broadcast feed (MPEG-2, which the packager does not carry) never
+/// becomes a variant itself; its transcoded `+` rendition is what its
+/// master offers, so `/play/{root}` works instead of a 404.
+#[tokio::test]
+async fn master_of_an_unplayable_root_lists_its_renditions() {
+    use caudal_core::{Codec, Frame, TrackId, TrackInfo, VideoParams};
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router(reg.clone(), CFG, Vec::new());
+    let root = reg.publish("atsc", BufferConfig::default()).unwrap();
+    let mpeg2 = vec![TrackInfo {
+        id: TrackId(0),
+        codec: Codec::Mpeg2Video,
+        timescale: 90_000,
+        init: bytes::Bytes::from_static(&[0, 0, 1, 0xB3, 0x28, 0x01, 0x68, 0x14]),
+        lang: None,
+        video: Some(VideoParams { width: 640, height: 360, fps: None }),
+        audio: None,
+    }];
+    root.set_tracks(mpeg2.clone()).unwrap();
+    for i in 0..60 {
+        let dts = i * 3003;
+        let _ = root.push(Frame {
+            track: TrackId(0),
+            dts,
+            pts: dts,
+            keyframe: i % 15 == 0,
+            data: bytes::Bytes::from_static(&[0, 0, 1, 0]),
+        });
+    }
+    let low = publish(&reg, "atsc+360p", &fx, BufferConfig::default()).await;
+    push_loops(&low, &fx, 0..3);
+    wait_playlist(&app, "atsc+360p", |pl| pl.contains("#EXTINF")).await;
+
+    let master = get(&app, "/hls/atsc/master.m3u8").await;
+    assert_eq!(master.status, StatusCode::OK);
+    let text = master.text();
+    assert_eq!(tag_values(&text, "#EXT-X-STREAM-INF:").len(), 1, "{text}");
+    assert!(text.contains("../atsc+360p/index.m3u8"), "{text}");
+    assert!(!text.contains("../atsc/index.m3u8"), "the MPEG-2 root is not a variant: {text}");
+
+    // Without a rendition, an unplayable root is still a 404 (after the wait).
+    drop(low);
+    let other = reg.publish("atsc2", BufferConfig::default()).unwrap();
+    other.set_tracks(mpeg2).unwrap();
+    assert_eq!(get(&app, "/hls/atsc2/master.m3u8").await.status, StatusCode::NOT_FOUND);
+    drop(root);
+}
+
 #[test]
 fn codec_strings() {
     use bytes::Bytes;

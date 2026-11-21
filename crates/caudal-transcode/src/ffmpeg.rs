@@ -79,15 +79,16 @@ pub(crate) async fn run(registry: &Arc<Registry>, mut sub: Subscriber, mut src: 
     }
 }
 
-/// The source audio track ffmpeg gets, if any: AAC over TS, Opus over MKV.
+/// The source audio track ffmpeg gets, if any: AAC and MPEG audio (MP2 /
+/// MP3, from a broadcast feed) over TS, Opus over MKV.
 fn audio_input(src: &Source) -> Option<&TrackInfo> {
-    src.audio.as_ref().filter(|a| matches!(a.codec, Codec::Aac | Codec::Opus))
+    src.audio.as_ref().filter(|a| matches!(a.codec, Codec::Aac | Codec::Opus | Codec::Mp2 | Codec::Mp3))
 }
 
 /// Refreshes the source's video/audio track descriptions. Returns true if
 /// the codec configuration changed.
 fn refresh_tracks(src: &mut Source, tracks: &[TrackInfo]) -> bool {
-    let video = tracks.iter().find(|t| matches!(t.codec, Codec::H264 | Codec::H265)).cloned();
+    let video = tracks.iter().find(|t| crate::is_source_video(t.codec)).cloned();
     let audio = tracks.iter().find(|t| t.kind() == TrackKind::Audio).cloned();
     let changed = video.as_ref().is_some_and(|v| v.codec != src.video.codec || v.init != src.video.init)
         || audio.as_ref().map(|a| (a.codec, &a.init)) != src.audio.as_ref().map(|a| (a.codec, &a.init));
@@ -161,6 +162,12 @@ fn args(src: &Source, fps: f64, mkv: bool) -> Vec<String> {
             filter.push_str(&format!("[s{i}]"));
         }
         filter.push(';');
+    }
+    // Broadcast MPEG-2 is often interlaced (1080i): deinterlace the frames
+    // flagged as such, once, before the split; progressive frames pass.
+    if src.video.codec == Codec::Mpeg2Video {
+        // "[0:v:0]" + "scale..." or "[0:v:0]split=..": the comma chains it.
+        filter = filter.replacen("[0:v:0]", "[0:v:0]bwdif=mode=send_frame:deint=interlaced,", 1);
     }
     for (i, r) in src.renditions.iter().enumerate() {
         if n > 1 {
@@ -352,4 +359,56 @@ async fn session(
         tracing::warn!(stream = %src.name, stderr = ?tail, "ffmpeg stopped while the source is live");
     }
     end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Rendition;
+    use bytes::Bytes;
+    use caudal_core::{TrackId, VideoParams};
+
+    fn source(codec: Codec, n: usize) -> Source {
+        Source {
+            name: "atsc".into(),
+            video: TrackInfo {
+                id: TrackId(0),
+                codec,
+                timescale: 90_000,
+                init: Bytes::new(),
+                lang: None,
+                video: Some(VideoParams { width: 1280, height: 720, fps: Some(59.94) }),
+                audio: None,
+            },
+            audio: None,
+            renditions: (0..n)
+                .map(|i| Rendition {
+                    label: format!("r{i}"),
+                    height: 720 - 240 * i as u32,
+                    video_kbps: 3000,
+                    audio_kbps: 128,
+                })
+                .collect(),
+        }
+    }
+
+    fn filter(src: &Source) -> String {
+        let a = args(src, 59.94, false);
+        let i = a.iter().position(|s| s == "-filter_complex").unwrap();
+        a[i + 1].clone()
+    }
+
+    #[test]
+    fn mpeg2_is_deinterlaced_once_before_the_split() {
+        assert_eq!(
+            filter(&source(Codec::Mpeg2Video, 1)),
+            "[0:v:0]bwdif=mode=send_frame:deint=interlaced,scale=-2:720,format=yuv420p[v0]"
+        );
+        assert_eq!(
+            filter(&source(Codec::Mpeg2Video, 2)),
+            "[0:v:0]bwdif=mode=send_frame:deint=interlaced,split=2[s0][s1];\
+             [s0]scale=-2:720,format=yuv420p[v0];[s1]scale=-2:480,format=yuv420p[v1]"
+        );
+        assert_eq!(filter(&source(Codec::H264, 1)), "[0:v:0]scale=-2:720,format=yuv420p[v0]", "H.264 is untouched");
+    }
 }

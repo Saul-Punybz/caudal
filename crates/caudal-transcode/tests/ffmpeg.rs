@@ -210,3 +210,38 @@ async fn opus_source_gets_aac_renditions() {
     assert_monotonic(&c);
     wait_no_ffmpeg("tc_opus").await;
 }
+
+/// A broadcast feed (interlaced MPEG-2 + MP2, which no browser plays)
+/// gets an H.264 + AAC rendition at its own height: the transcode changes
+/// the codec, not the size, so the feed can be watched in a browser.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mpeg2_feed_gets_a_same_height_h264_rendition() {
+    init_logs();
+    let dir = scratch("mpeg2");
+    let clip = Arc::new(mpeg2_clip(&dir, 8));
+    assert!(clip.tracks.iter().any(|t| t.codec == Codec::Mpeg2Video), "the clip is MPEG-2");
+    assert!(clip.tracks.iter().any(|t| t.codec == Codec::Mp2), "the clip is MP2");
+    let registry = Registry::new();
+    caudal_transcode::start(registry.clone(), config(&["tc_atsc"], &[("360p", 360), ("720p", 720)])).unwrap();
+    let source = publish(&registry, "tc_atsc", clip.clone(), 0);
+
+    let found = wait_for(Duration::from_secs(15), || registry.get("tc_atsc+360p")).await;
+    assert!(found.is_some(), "tc_atsc+360p never appeared");
+    assert!(registry.get("tc_atsc+720p").is_none(), "a rung taller than the source is still skipped");
+    let c = collect(&registry, "tc_atsc+360p", Duration::from_secs(20)).await;
+    source.await.unwrap();
+    assert!(c.ended, "rendition did not end with the source");
+
+    let video = c.tracks.iter().find(|t| t.codec == Codec::H264).expect("h264 track");
+    assert_eq!((video.video.unwrap().width, video.video.unwrap().height), (640, 360));
+    let audio = c.tracks.iter().find(|t| t.codec == Codec::Aac).expect("aac track from MP2");
+    let video_frames = c.frames.iter().filter(|f| f.track == video.id).count();
+    let audio_frames = c.frames.iter().filter(|f| f.track == audio.id).count();
+    // ~8 s at 29.97 fps (the start waits for the first keyframe).
+    assert!(video_frames > 150, "only {video_frames} video frames");
+    assert!(audio_frames > 200, "only {audio_frames} audio frames");
+    assert_monotonic(&c);
+
+    wait_no_ffmpeg("tc_atsc").await;
+    let _ = std::fs::remove_dir_all(dir);
+}

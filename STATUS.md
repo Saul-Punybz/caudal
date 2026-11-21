@@ -1,11 +1,46 @@
 # STATUS — Caudal
 
-**Last updated:** 21 Nov 2026 (Rolando's MPEG-2 chain merged; Windows port in review; v0.1.0 tag still blocked by per-churn RSS growth)
+**Last updated:** 22 Nov 2026 (MistServer gap batch: 14 PRs merged; v0.1.0 tag still blocked by per-churn RSS growth)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (21 Nov 2026) — read this block first
+## RESUME HERE (22 Nov 2026) — read this block first
+
+**Batch of 21-22 Nov: the remaining MistServer gaps, by parallel agents** (each in its own clone and
+CARGO_TARGET_DIR, one heavy build at a time). Merged, every one with CI green (Windows included) and
+re-checked (merge with main, compile, `cargo test -p caudal --bins`) right before its merge:
+
+| PR | What |
+|---|---|
+| #49 | dashboard: thumbnails, viewers tab (kick), pulls / pushes / auto-push lists, `liveDurationInfinity` |
+| #50 | `[[rtmp.pull]]` (RTMP/RTMPS play from a remote server); RTMP client moved into `caudal-rtmp` |
+| #51 | audio-only HTTP outputs `/audio/{name}.aac` and `.mp3` (MP2/MP3 passed through; internet radio) |
+| #52 | `[[hls.pull]]` with fMP4/CMAF segments (`caudal-cmaf::demux`): Caudal can pull Caudal's LL-HLS |
+| #53 | `[auth.rewrite]` (PUSH_REWRITE / PLAY_REWRITE) through one `Registry::resolve` |
+| #54 | HTTP-TS output `/ts/{name}.ts` |
+| #55 | Firefox MoQ flake: the MoQ radio moved under the click when the icon font loaded; fixed widths, setup logging, retry |
+| #56 | RTMPS publish (`[rtmp] tls_bind`); SRT `mode=rendezvous` refused (rsrt has no rendezvous) |
+| #57 | `[[push.auto]]` schedules (`start`/`stop`, `cron`+`tz`), `enabled`, `inhibit`, idle reasons in the API |
+| #59 | RTMP play for viewers (`[rtmp] play`) |
+| #60 | progressive fMP4 output `/mp4/{name}.mp4` |
+| #61 | `[[webrtc.push]]` WHIP push out (also as an auto-push target) |
+| #62 | `import-mist` maps pulls, blocking/rewrite triggers (`reply = "mistserver"`), scheduled auto-pushes |
+| #64 | `[auth.hook] reply = "mistserver"`: a 2xx allows only if the body is true (MistServer's `stringToBool`) |
+
+**Open:** #58 DASH (`/hls/{name}/manifest.mpd`, `/dash/{name}/index.mpd`; CI now installs GStreamer for its
+dashdemux test). Agents running: soak RSS leak (v0.1.0 blocker, soaks on GitHub only), WebKit stall after an
+LL-HLS reconnect (new mode: `ended` is fixed, but 0.50 s of progress in 3 s right after the seam once),
+RTMP `onMetaData` ECMA-array framerate, on-demand pulls / STREAM_SOURCE, process + bytes-out metrics.
+
+**Still missing vs MistServer:** RIST, WebRTC data channel, SRT rendezvous (library), LL-DASH, JWT `ipa`
+claim / per-key permissions, stream keys table, weighted load balancer, `start_rule`/`end_rule` conditions.
+
+**Notes for whoever continues:** worktrees fail in this checkout (Google Drive hard-links files in
+`~/Downloads/.../.git`): use plain clones outside Downloads. `target/` is a link to `~/.cargo-target/caudal`
+(it once grew to 168 GB). `gh pr merge N --merge -R Saul-Punybz/caudal` is allowed by a settings rule.
+
+## 21 Nov 2026 (Rolando's MPEG-2 chain, Windows port)
 
 **Goal of this batch: Rolando's ATSC chain on Caudal.** At CAtv, VLC sends MPEG-2 720p59.94 + MPEG
 audio over UDP to a Technalogix TP1000 multiplexer (ASI to the exciter), on a **Windows 10** tower PC.

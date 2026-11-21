@@ -8,7 +8,9 @@
 //! converts back to Annex B, re-injecting the avcC/hvcC's SPS/PPS/VPS
 //! before every keyframe and an Access Unit Delimiter before every access
 //! unit. AAC frames are raw access units, wrapped in an ADTS header built
-//! from the `AudioSpecificConfig`. Opus has no standard TS mapping we can
+//! from the `AudioSpecificConfig`. MPEG-2 video and MPEG audio (Layer
+//! II/III) pass through as they are, with stream_type 0x02 and 0x03/0x04
+//! (ATSC and DVB chains). Opus has no standard TS mapping we can
 //! build in scope; it is dropped with a one-time warning per stream.
 //!
 //! PAT/PMT are (re-)written at start, on every video keyframe, and at least
@@ -63,6 +65,10 @@ struct VideoTrack {
     vps: Vec<u8>,
     sps: Vec<u8>,
     pps: Vec<u8>,
+    /// MPEG-2 video: its sequence header (the track's `init`). Frames are
+    /// written as they are, with this put back in front of a keyframe that
+    /// arrives without one.
+    mpeg2: Option<Vec<u8>>,
 }
 
 impl VideoTrack {
@@ -73,7 +79,7 @@ impl VideoTrack {
         let avcc = Avcc::decode_body(&mut buf).ok()?;
         let sps = avcc.sequence_parameter_sets.first()?.clone();
         let pps = avcc.picture_parameter_sets.first()?.clone();
-        Some(Self { h265: false, vps: Vec::new(), sps, pps })
+        Some(Self { h265: false, vps: Vec::new(), sps, pps, mpeg2: None })
     }
 
     /// Decodes an `hvcC` body back into its VPS/SPS/PPS.
@@ -83,7 +89,17 @@ impl VideoTrack {
         let find = |nal_type: u8| {
             hvcc.arrays.iter().find(|a| a.nal_unit_type == nal_type).and_then(|a| a.nalus.first()).cloned()
         };
-        Some(Self { h265: true, vps: find(32)?, sps: find(33)?, pps: find(34)? })
+        Some(Self { h265: true, vps: find(32)?, sps: find(33)?, pps: find(34)?, mpeg2: None })
+    }
+
+    fn from_mpeg2(init: &Bytes) -> Option<Self> {
+        crate::mpeg::mpeg2_has_sequence_header(init).then(|| Self {
+            h265: false,
+            vps: Vec::new(),
+            sps: Vec::new(),
+            pps: Vec::new(),
+            mpeg2: Some(init.to_vec()),
+        })
     }
 }
 
@@ -96,6 +112,10 @@ struct AudioTrack {
     profile: u8,
     sampling_freq_idx: u8,
     channel_config: u8,
+    /// MPEG audio (Layer II/III): frames already carry their header and are
+    /// written as they are. `true` for MPEG-1 sample rates (stream_type
+    /// 0x03), `false` for the MPEG-2 low rates (0x04).
+    mpeg: Option<bool>,
 }
 
 impl AudioTrack {
@@ -108,7 +128,15 @@ impl AudioTrack {
         let sampling_freq_idx = ((n >> 7) & 0x0F) as u8;
         let channel_config = ((n >> 3) & 0x0F) as u8;
         let profile = audio_object_type.checked_sub(1)?.min(3) as u8;
-        Some(Self { profile, sampling_freq_idx, channel_config })
+        Some(Self { profile, sampling_freq_idx, channel_config, mpeg: None })
+    }
+
+    /// From the MPEG audio track's `init` (a frame header). An init that is
+    /// not one (an MP3 track from another protocol) is still carried, as
+    /// MPEG-1 audio: decoders find the real version in each frame.
+    fn from_mpeg_audio(init: &Bytes) -> Self {
+        let mpeg1 = init.len() < 2 || init[0] != 0xFF || (init[1] >> 3) & 0x03 == 3;
+        Self { profile: 0, sampling_freq_idx: 0, channel_config: 0, mpeg: Some(mpeg1) }
     }
 }
 
@@ -297,7 +325,9 @@ impl TsMux {
             match t.codec {
                 Codec::H264 => video = VideoTrack::from_avcc(&t.init).or(video),
                 Codec::H265 => video = VideoTrack::from_hvcc(&t.init).or(video),
+                Codec::Mpeg2Video => video = VideoTrack::from_mpeg2(&t.init).or(video),
                 Codec::Aac => audio = AudioTrack::from_asc(&t.init).or(audio),
+                Codec::Mp2 | Codec::Mp3 => audio = Some(AudioTrack::from_mpeg_audio(&t.init)),
                 Codec::Opus if !self.warned_opus => {
                     tracing::warn!(
                         "srt out: Opus has no MPEG-TS mapping in this build; dropping audio for this stream"
@@ -322,7 +352,9 @@ impl TsMux {
         let pcr = if self.is_pcr_track(info.kind()) { self.due_pcr(to_90k(frame.dts, info.timescale)) } else { None };
         match info.kind() {
             TrackKind::Video => self.write_video(info, frame, pcr),
-            TrackKind::Audio if info.codec == Codec::Aac => self.write_audio(info, frame, pcr),
+            TrackKind::Audio if matches!(info.codec, Codec::Aac | Codec::Mp2 | Codec::Mp3) => {
+                self.write_audio(info, frame, pcr)
+            }
             _ => {}
         }
     }
@@ -391,14 +423,22 @@ impl TsMux {
         let mut es_info = Vec::new();
         if let Some(video) = &self.video {
             es_info.push(EsInfo {
-                stream_type: if video.h265 { StreamType::H265 } else { StreamType::H264 },
+                stream_type: match (video.mpeg2.is_some(), video.h265) {
+                    (true, _) => StreamType::Mpeg2Video,
+                    (false, true) => StreamType::H265,
+                    (false, false) => StreamType::H264,
+                },
                 elementary_pid: Pid::new(VIDEO_PID).expect("in range"),
                 descriptors: Vec::new(),
             });
         }
-        if self.audio.is_some() {
+        if let Some(audio) = &self.audio {
             es_info.push(EsInfo {
-                stream_type: StreamType::AdtsAac,
+                stream_type: match audio.mpeg {
+                    None => StreamType::AdtsAac,
+                    Some(true) => StreamType::Mpeg1Audio,
+                    Some(false) => StreamType::Mpeg2HalvedSampleRateAudio,
+                },
                 elementary_pid: Pid::new(AUDIO_PID).expect("in range"),
                 descriptors: Vec::new(),
             });
@@ -450,6 +490,13 @@ impl TsMux {
 
     fn write_video(&mut self, info: &TrackInfo, frame: &Frame, pcr_27mhz: Option<u64>) {
         let Some(video) = &self.video else { return };
+        if info.codec == Codec::Mpeg2Video {
+            let Some(seq) = video.mpeg2.clone() else { return };
+            return self.write_mpeg2_video(info, frame, &seq, pcr_27mhz);
+        }
+        if video.mpeg2.is_some() {
+            return; // an AVC/HEVC frame while the track is MPEG-2: a track change in flight
+        }
         let (h265, vps, sps, pps) = (video.h265, video.vps.clone(), video.sps.clone(), video.pps.clone());
 
         let mut payload = Vec::with_capacity(frame.data.len() + 64);
@@ -500,12 +547,46 @@ impl TsMux {
         self.write_pes(VIDEO_PID, header, pes_packet_len, &payload, frame.keyframe, pcr_27mhz);
     }
 
+    /// MPEG-2 video is written as it came in. A keyframe without its own
+    /// sequence header gets the track's in front, so a viewer joining there
+    /// can decode it (most encoders repeat it on every GOP anyway).
+    fn write_mpeg2_video(&mut self, info: &TrackInfo, frame: &Frame, seq: &[u8], pcr_27mhz: Option<u64>) {
+        let prepend = frame.keyframe && !crate::mpeg::mpeg2_has_sequence_header(&frame.data);
+        let mut payload = Vec::with_capacity(frame.data.len() + if prepend { seq.len() } else { 0 });
+        if prepend {
+            payload.extend_from_slice(seq);
+        }
+        payload.extend_from_slice(&frame.data);
+        let pts90 = self.pes_ts(frame.pts, info.timescale);
+        let dts90 = self.pes_ts(frame.dts, info.timescale);
+        let header = PesHeader {
+            stream_id: StreamId::new(0xE0),
+            priority: false,
+            data_alignment_indicator: true,
+            copyright: false,
+            original_or_copy: false,
+            pts: MpegTimestamp::new(pts90).ok(),
+            dts: if dts90 != pts90 { MpegTimestamp::new(dts90).ok() } else { None },
+            escr: None,
+        };
+        let total_len = pes_optional_header_len(&header) as usize + payload.len();
+        let pes_packet_len = u16::try_from(total_len).unwrap_or(0);
+        self.write_pes(VIDEO_PID, header, pes_packet_len, &payload, frame.keyframe, pcr_27mhz);
+    }
+
     fn write_audio(&mut self, info: &TrackInfo, frame: &Frame, pcr_27mhz: Option<u64>) {
         let Some(audio) = &self.audio else { return };
+        // The track and the frame must agree: an AAC frame on an MPEG audio
+        // track (or the reverse) is a track change still in flight.
+        if audio.mpeg.is_some() != matches!(info.codec, Codec::Mp2 | Codec::Mp3) {
+            return;
+        }
         let (profile, sfi, chan) = (audio.profile, audio.sampling_freq_idx, audio.channel_config);
 
         let mut payload = Vec::with_capacity(frame.data.len() + 7);
-        payload.extend_from_slice(&adts_header(frame.data.len(), profile, sfi, chan));
+        if audio.mpeg.is_none() {
+            payload.extend_from_slice(&adts_header(frame.data.len(), profile, sfi, chan));
+        }
         payload.extend_from_slice(&frame.data);
 
         let pts90 = self.pes_ts(frame.pts, info.timescale);

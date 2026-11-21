@@ -26,9 +26,18 @@ pub enum Codec {
     Av1,
     Vp8,
     Vp9,
+    /// MPEG-2 video (ISO/IEC 13818-2), as broadcast TS carries it. Frames are
+    /// the raw elementary stream (sequence headers in band); `init` is the
+    /// sequence header plus its extensions. Only TS outputs carry it.
+    Mpeg2Video,
     Aac,
     Opus,
     Mp3,
+    /// MPEG-1/2 Audio Layer II. Frames are whole MPEG audio frames (header
+    /// included); `init` is the first frame's 4-byte header with the
+    /// per-frame fields (bitrate, padding, mode extension) zeroed. Only TS
+    /// outputs carry it. Layer III is [`Codec::Mp3`], framed the same way.
+    Mp2,
     Ac3,
     Eac3,
     Flac,
@@ -60,9 +69,11 @@ impl Codec {
             Av1 => "av1",
             Vp8 => "vp8",
             Vp9 => "vp9",
+            Mpeg2Video => "mpeg2video",
             Aac => "aac",
             Opus => "opus",
             Mp3 => "mp3",
+            Mp2 => "mp2",
             Ac3 => "ac3",
             Eac3 => "eac3",
             Flac => "flac",
@@ -76,8 +87,8 @@ impl Codec {
     pub fn kind(self) -> TrackKind {
         use Codec::*;
         match self {
-            H264 | H265 | Av1 | Vp8 | Vp9 => TrackKind::Video,
-            Aac | Opus | Mp3 | Ac3 | Eac3 | Flac | Pcm => TrackKind::Audio,
+            H264 | H265 | Av1 | Vp8 | Vp9 | Mpeg2Video => TrackKind::Video,
+            Aac | Opus | Mp3 | Mp2 | Ac3 | Eac3 | Flac | Pcm => TrackKind::Audio,
             WebVtt => TrackKind::Subtitle,
             Scte35 | Json => TrackKind::Data,
         }

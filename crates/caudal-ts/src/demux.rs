@@ -1,5 +1,5 @@
 //! Turns reassembled elementary-stream access units (Annex-B H.264/HEVC,
-//! ADTS AAC) from [`crate::ts`] into [`caudal_core::Frame`]s, building the
+//! ADTS AAC, and MPEG-2 video / MPEG audio passed through as they are) from [`crate::ts`] into [`caudal_core::Frame`]s, building the
 //! `avcC` / `hvcC` / `AudioSpecificConfig` init records along the way.
 //!
 //! Timestamps: TS PTS/DTS are 90 kHz, 33-bit wire values that wrap
@@ -15,6 +15,7 @@ use bytes::Bytes;
 use caudal_core::{AudioParams, Codec, Cue, Frame, TrackId, TrackInfo, VideoParams};
 use mp4_atom::{Atom, Avcc, HvcCArray, Hvcc};
 
+use crate::mpeg::{self, MpegAudioHeader};
 use crate::ts::{EsKind, EsUnit};
 
 const VIDEO_TRACK: TrackId = TrackId(0);
@@ -77,12 +78,29 @@ struct AudioState {
     asc: Option<Vec<u8>>,
 }
 
+/// An MPEG audio track: its codec (Layer II or III) and the header bytes
+/// that identify its format ([`MpegAudioHeader::stable_bytes`]).
+struct MpegAudioState {
+    sample_rate: u32,
+    format: [u8; 4],
+    /// Where the frame after the last one starts, on the sample clock.
+    next_ts: Option<i64>,
+}
+
+/// A PES PTS within this many samples of where the previous frames end is
+/// the same continuous stream, rounded to 90 kHz (24 kHz does not divide
+/// it): keep the sample-exact timeline instead of a one-sample jitter.
+const AUDIO_SNAP_SAMPLES: i64 = 2;
+
 pub struct Demuxer {
     zero_point: Option<i64>,
     video_clock: TsClock,
     audio_clock: TsClock,
     video: Option<VideoState>,
     audio: Option<AudioState>,
+    /// MPEG-2 video: the sequence header last announced.
+    mpeg2_seq: Option<Vec<u8>>,
+    mpeg_audio: Option<MpegAudioState>,
 }
 
 impl Default for Demuxer {
@@ -99,13 +117,17 @@ impl Demuxer {
             audio_clock: TsClock::default(),
             video: None,
             audio: None,
+            mpeg2_seq: None,
+            mpeg_audio: None,
         }
     }
 
     pub fn consume(&mut self, unit: EsUnit, out: &mut Vec<DemuxEvent>) {
         match unit.kind {
             EsKind::H264 | EsKind::H265 => self.consume_video(unit, out),
+            EsKind::Mpeg2Video => self.consume_mpeg2_video(unit, out),
             EsKind::Aac => self.consume_audio(unit, out),
+            EsKind::MpegAudio => self.consume_mpeg_audio(unit, out),
             EsKind::Scte35 => self.consume_cue(unit, out),
         }
     }
@@ -289,6 +311,88 @@ impl Demuxer {
 
             offset = frame_end;
             frame_index += 1;
+        }
+    }
+}
+
+impl Demuxer {
+    /// MPEG-2 video passes through as its elementary stream: one PES is one
+    /// picture (what VLC, ffmpeg and broadcast encoders send). The track is
+    /// announced on the first sequence header and again whenever it
+    /// changes; pictures before the first one are dropped (no decoder can
+    /// start without it).
+    fn consume_mpeg2_video(&mut self, unit: EsUnit, out: &mut Vec<DemuxEvent>) {
+        let (dts, pts) = self.video_timestamps(&unit);
+        if let Some(seq) = mpeg::mpeg2_sequence(&unit.data)
+            && self.mpeg2_seq.as_deref() != Some(&seq.header[..])
+        {
+            self.mpeg2_seq = Some(seq.header.clone());
+            out.push(DemuxEvent::VideoInit(TrackInfo {
+                id: VIDEO_TRACK,
+                codec: Codec::Mpeg2Video,
+                timescale: 90_000,
+                init: Bytes::from(seq.header),
+                lang: None,
+                video: Some(VideoParams { width: seq.width, height: seq.height, fps: seq.fps }),
+                audio: None,
+            }));
+        }
+        if self.mpeg2_seq.is_none() || unit.data.is_empty() {
+            return;
+        }
+        let keyframe = mpeg::mpeg2_is_intra(&unit.data);
+        out.push(DemuxEvent::VideoFrame(Frame { track: VIDEO_TRACK, dts, pts, keyframe, data: Bytes::from(unit.data) }));
+    }
+
+    /// MPEG audio (Layer II or III): each frame of the PES becomes one
+    /// [`Frame`], header included, timestamped from the PES PTS plus the
+    /// samples of the frames before it. Bytes that do not start a frame are
+    /// skipped up to the next header, so a PES that does not begin on a
+    /// frame boundary loses its leading partial frame, not the whole PES.
+    fn consume_mpeg_audio(&mut self, unit: EsUnit, out: &mut Vec<DemuxEvent>) {
+        let base_ts = self.audio_timestamp_90k(&unit);
+        let data = &unit.data;
+        let mut offset = 0usize;
+        let mut samples_before: i64 = 0;
+        while offset + 4 <= data.len() {
+            let Some(h) = MpegAudioHeader::parse(&data[offset..]) else {
+                offset += 1;
+                continue;
+            };
+            let end = offset + h.frame_len;
+            if end > data.len() {
+                break;
+            }
+            let format = MpegAudioHeader::stable_bytes(&data[offset..]);
+            if self.mpeg_audio.as_ref().is_none_or(|a| a.format != format) {
+                self.mpeg_audio = Some(MpegAudioState { sample_rate: h.sample_rate, format, next_ts: None });
+                out.push(DemuxEvent::AudioInit(TrackInfo {
+                    id: AUDIO_TRACK,
+                    codec: if h.layer == 3 { Codec::Mp3 } else { Codec::Mp2 },
+                    timescale: h.sample_rate,
+                    init: Bytes::copy_from_slice(&format),
+                    lang: None,
+                    video: None,
+                    audio: Some(AudioParams { sample_rate: h.sample_rate, channels: h.channels }),
+                }));
+            }
+            let state = self.mpeg_audio.as_mut().expect("set above");
+            let mut ts = (i128::from(base_ts) * i128::from(state.sample_rate) / 90_000) as i64 + samples_before;
+            if let Some(next) = state.next_ts
+                && (ts - next).abs() <= AUDIO_SNAP_SAMPLES
+            {
+                ts = next;
+            }
+            state.next_ts = Some(ts + i64::from(h.samples));
+            out.push(DemuxEvent::AudioFrame(Frame {
+                track: AUDIO_TRACK,
+                dts: ts,
+                pts: ts,
+                keyframe: true,
+                data: Bytes::copy_from_slice(&data[offset..end]),
+            }));
+            samples_before += i64::from(h.samples);
+            offset = end;
         }
     }
 }

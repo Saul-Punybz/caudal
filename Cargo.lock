@@ -797,6 +797,7 @@ dependencies = [
  "caudal-hls-pull",
  "caudal-http-pull",
  "caudal-moq",
+ "caudal-mp4",
  "caudal-multicast",
  "caudal-omt",
  "caudal-record",
@@ -1106,6 +1107,21 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "caudal-mp4"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-cmaf",
+ "caudal-core",
+ "caudal-ts",
+ "futures-util",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

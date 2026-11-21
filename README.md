@@ -9,7 +9,8 @@ drops its crash classes.
 tested: RTMP/E-RTMP, SRT, WHIP, RTSP and MoQ ingest; LL-HLS, classic TS-segment
 HLS ([docs/HLS.md](docs/HLS.md)), WHEP, MoQ, SRT, RTSP and RTMP
 ([docs/RTMP.md](docs/RTMP.md)) output, audio-only internet radio URLs
-([docs/AUDIO.md](docs/AUDIO.md)), plus IP multicast; recording/VOD/clips, transcoding ladders, 24/7
+([docs/AUDIO.md](docs/AUDIO.md)), progressive fMP4 over HTTP
+([docs/MP4.md](docs/MP4.md)), plus IP multicast; recording/VOD/clips, transcoding ladders, 24/7
 channels from files, origin-edge clustering, admin login, and live captions.
 See [PLAN.md](PLAN.md) for the full milestone list and [STATUS.md](STATUS.md)
 for exactly where things stand. A side-by-side benchmark against MediaMTX

@@ -23,6 +23,7 @@ caudal-core.workspace = true
 caudal-rtmp.workspace = true
 caudal-hls.workspace = true
 caudal-audio.workspace = true
+caudal-mp4.workspace = true
 caudal-srt.workspace = true
 caudal-ui.workspace = true
 caudal-tls.workspace = true

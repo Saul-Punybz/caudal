@@ -13,6 +13,10 @@
 //! Runs only with `CAUDAL_E2E=1` and ffmpeg on PATH, so unit test runs stay
 //! fast.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 mod support;
 
 #[path = "../../caudal-hls/src/mp4demux.rs"]

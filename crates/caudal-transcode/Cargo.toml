@@ -8,7 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rustix.workspace = true
 arc-swap.workspace = true
 caudal-core.workspace = true
 caudal-ts.workspace = true
@@ -22,3 +21,6 @@ rusty_h264 = { version = "=0.16.0", default-features = false, features = ["std"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true

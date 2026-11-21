@@ -9,6 +9,10 @@
 //! Every test that needs `ffmpeg` or `srt-live-transmit` checks for them
 //! first and prints "SKIP" instead of failing when either is missing.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;

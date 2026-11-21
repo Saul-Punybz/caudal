@@ -5,6 +5,10 @@
 //!
 //! Runs only with `CAUDAL_E2E=1` and ffmpeg on PATH.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 mod support;
 
 use std::io::Read;

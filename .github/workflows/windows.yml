@@ -1,0 +1,102 @@
+name: Windows
+
+# Caudal on Windows (Rolando's tower PC runs Windows 10): the release binary
+# builds with MSVC, the unit tests pass, and a smoke test drives the real
+# caudal.exe with a real ffmpeg. The integration tests that steer processes
+# through Unix process groups stay Linux-only (`#![cfg(unix)]`); this smoke
+# test is what covers the Windows binary end to end.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # aws-lc-sys (rustls, quinn, str0m's DTLS) assembles with NASM on
+      # x86_64 Windows.
+      - uses: ilammy/setup-nasm@v1
+      - name: Build caudal.exe (release)
+        run: cargo build --release -p caudal
+      - name: Unit tests
+        run: cargo test --workspace --lib --bins --no-fail-fast
+      - name: Install ffmpeg 8
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          Invoke-WebRequest -Uri https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip -OutFile $zip
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
+          $bin = (Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          Add-Content $env:GITHUB_PATH $bin
+      - name: Smoke test (UDP in, LL-HLS out, clean shutdown)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir = "$env:RUNNER_TEMP\caudal-smoke"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          @"
+          [server]
+          http_bind = "127.0.0.1:8080"
+
+          [[udp.pull]]
+          stream = "tv"
+          url = "udp://127.0.0.1:5000"
+          "@ | Set-Content "$dir\caudal.toml"
+          .\target\release\caudal.exe check "$dir\caudal.toml"
+          if ($LASTEXITCODE -ne 0) { throw "caudal check failed" }
+          # doctor: 0 all OK, 2 only warnings (no admin login, low limits..).
+          .\target\release\caudal.exe doctor --config "$dir\caudal.toml"
+          if ($LASTEXITCODE -eq 1) { throw "caudal doctor reported a FAIL" }
+          $caudal = Start-Process .\target\release\caudal.exe -ArgumentList "--config", "$dir\caudal.toml" `
+            -RedirectStandardOutput "$dir\caudal.log" -RedirectStandardError "$dir\caudal.err" -PassThru -NoNewWindow
+          Start-Sleep -Seconds 2
+          $ff = Start-Process ffmpeg -ArgumentList @(
+            "-hide_banner", "-loglevel", "error", "-re",
+            "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+            "-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-c:a", "aac",
+            "-t", "40", "-f", "mpegts", "udp://127.0.0.1:5000?pkt_size=1316"
+          ) -PassThru -NoNewWindow
+          try {
+            # The pull publishes H.264 + AAC.
+            $ok = $false
+            for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $s = Invoke-RestMethod http://127.0.0.1:8080/api/v1/streams/tv
+                $codecs = ($s.tracks | ForEach-Object { $_.codec }) -join ","
+                $ok = $codecs -match "h264" -and $codecs -match "aac"
+              } catch {}
+            }
+            if (-not $ok) { throw "stream tv never published H.264 + AAC" }
+            Write-Host "published: $codecs"
+            # LL-HLS answers, and ffprobe reads it back as the same codecs.
+            Start-Sleep -Seconds 6
+            $master = Invoke-WebRequest http://127.0.0.1:8080/hls/tv/master.m3u8 -UseBasicParsing
+            if ($master.StatusCode -ne 200 -or $master.Content -notmatch "EXT-X-STREAM-INF") { throw "no LL-HLS master" }
+            $probe = ffprobe -v error -show_entries stream=codec_name -of csv=p=0 http://127.0.0.1:8080/hls/tv/index.m3u8
+            Write-Host "ffprobe over LL-HLS: $probe"
+            if (($probe -join ",") -notmatch "h264" -or ($probe -join ",") -notmatch "aac") { throw "LL-HLS does not carry H.264 + AAC" }
+          } finally {
+            if (-not $ff.HasExited) { Stop-Process -Id $ff.Id -Force }
+            if (-not $caudal.HasExited) { Stop-Process -Id $caudal.Id -Force }
+            Write-Host "--- caudal log ---"
+            Get-Content "$dir\caudal.log", "$dir\caudal.err" -ErrorAction SilentlyContinue | Select-Object -Last 60
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caudal-windows-x86_64
+          path: target/release/caudal.exe
+          if-no-files-found: error

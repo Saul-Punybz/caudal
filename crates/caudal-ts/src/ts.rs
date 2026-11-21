@@ -71,7 +71,11 @@ impl Read for SharedQueue {
 pub enum EsKind {
     H264,
     H265,
+    /// MPEG-2 video (stream_type 0x02).
+    Mpeg2Video,
     Aac,
+    /// MPEG-1/2 audio, Layer II or III (stream_type 0x03, 0x04).
+    MpegAudio,
     /// An SCTE-35 `splice_info_section` (stream_type 0x86). Carried as PSI
     /// sections, not PES: `data` is one whole section and `pts`/`dts` are
     /// `None` (the splice time lives inside the section).
@@ -86,9 +90,22 @@ fn es_kind(stream_type: StreamType) -> Option<EsKind> {
     match stream_type {
         StreamType::H264 => Some(EsKind::H264),
         StreamType::H265 => Some(EsKind::H265),
+        StreamType::Mpeg2Video => Some(EsKind::Mpeg2Video),
         StreamType::AdtsAac => Some(EsKind::Aac),
+        StreamType::Mpeg1Audio | StreamType::Mpeg2HalvedSampleRateAudio => Some(EsKind::MpegAudio),
         st if st as u8 == STREAM_TYPE_SCTE35 => Some(EsKind::Scte35),
         _ => None,
+    }
+}
+
+impl EsKind {
+    /// Video, audio, or neither (cues): one PID of each is used.
+    fn media(self) -> Option<bool> {
+        match self {
+            EsKind::H264 | EsKind::H265 | EsKind::Mpeg2Video => Some(true),
+            EsKind::Aac | EsKind::MpegAudio => Some(false),
+            EsKind::Scte35 => None,
+        }
     }
 }
 
@@ -142,6 +159,8 @@ pub struct TsDemux {
     /// until a section start is seen). These packets never reach `mpeg2ts`,
     /// which would try to parse them as PES.
     sections: HashMap<u16, Option<Vec<u8>>>,
+    /// Elementary PIDs skipped as extra video/audio (logged once each).
+    ignored: std::collections::HashSet<u16>,
 }
 
 /// Longest section a `section_length` can declare (12 bits) plus header.
@@ -158,7 +177,14 @@ impl TsDemux {
     pub fn new() -> Self {
         let queue = SharedQueue::new();
         let reader = TsPacketReader::new(queue.clone());
-        Self { queue, reader, es_pids: HashMap::new(), partial: HashMap::new(), sections: HashMap::new() }
+        Self {
+            queue,
+            reader,
+            es_pids: HashMap::new(),
+            partial: HashMap::new(),
+            sections: HashMap::new(),
+            ignored: Default::default(),
+        }
     }
 
     /// Buffers newly received bytes: a live-mode SRT message is some whole
@@ -218,6 +244,22 @@ impl TsDemux {
                     self.sections.entry(es.elementary_pid.as_u16()).or_insert(None);
                 }
                 Some(kind) => {
+                    // One video and one audio PID: the demuxer has one track
+                    // of each, so a second audio (an SAP or a commentary
+                    // track) would interleave into the first. The first one
+                    // the PMT lists wins, as with ffmpeg's default pick.
+                    let taken =
+                        self.es_pids.iter().any(|(pid, k)| *pid != es.elementary_pid && k.media() == kind.media());
+                    if taken {
+                        if self.ignored.insert(es.elementary_pid.as_u16()) {
+                            tracing::info!(
+                                pid = es.elementary_pid.as_u16(),
+                                ?kind,
+                                "ts: extra elementary stream ignored (one video and one audio are used)"
+                            );
+                        }
+                        continue;
+                    }
                     self.es_pids.insert(es.elementary_pid, kind);
                 }
                 None => {}

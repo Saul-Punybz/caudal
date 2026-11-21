@@ -7,11 +7,16 @@
 //! or after a 2 s grace period with whatever showed up (an audio-only or
 //! video-only stream is valid). Dropping the `TsIngest` drops the
 //! publisher, ending the stream.
+//!
+//! [`TsIngest::discontinuity`] marks a splice in the source (an HLS
+//! `EXT-X-DISCONTINUITY`: another encoder, a restarted one): the frames
+//! after it are moved onto the timeline where the previous ones stopped,
+//! so the published stream stays monotonic whatever the new clock says.
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use caudal_core::{Publisher, TrackInfo};
+use caudal_core::{Frame, Publisher, TrackId, TrackInfo};
 use parking_lot::Mutex;
 
 use crate::demux::{DemuxEvent, Demuxer};
@@ -94,6 +99,53 @@ fn spawn_announce_deadline(shared: &Arc<Shared>) {
     });
 }
 
+/// Keeps the timeline continuous across [`TsIngest::discontinuity`].
+#[derive(Default)]
+struct Rebase {
+    /// Added to every frame (and cue) time, microseconds.
+    offset_us: i64,
+    /// Set by a discontinuity: the next frame decides the new offset.
+    pending: bool,
+    /// Per track: timescale, last DTS pushed (µs, offset applied), and the
+    /// step between its last two frames (µs).
+    tracks: Vec<(TrackId, u32, i64, i64)>,
+}
+
+impl Rebase {
+    fn timescale(&mut self, info: &TrackInfo) {
+        match self.tracks.iter_mut().find(|t| t.0 == info.id) {
+            Some(t) => t.1 = info.timescale,
+            None => self.tracks.push((info.id, info.timescale, i64::MIN, 0)),
+        }
+    }
+
+    /// Where the previous frames stopped: the end of the latest one.
+    fn continue_at(&self) -> Option<i64> {
+        self.tracks.iter().filter(|t| t.2 != i64::MIN).map(|t| t.2 + t.3.max(0)).max()
+    }
+
+    fn apply(&mut self, frame: &mut Frame) {
+        let Some(idx) = self.tracks.iter().position(|t| t.0 == frame.track) else { return };
+        let scale = i128::from(self.tracks[idx].1.max(1));
+        let to_us = |ticks: i64| (i128::from(ticks) * 1_000_000 / scale) as i64;
+        if self.pending {
+            self.pending = false;
+            if let Some(at) = self.continue_at() {
+                self.offset_us = at - to_us(frame.dts);
+            }
+        }
+        let shift = (i128::from(self.offset_us) * scale / 1_000_000) as i64;
+        frame.dts += shift;
+        frame.pts += shift;
+        let t = &mut self.tracks[idx];
+        let now = to_us(frame.dts);
+        if t.2 != i64::MIN && now > t.2 {
+            t.3 = now - t.2;
+        }
+        t.2 = now;
+    }
+}
+
 /// One live MPEG-TS input feeding one publisher. Must be created inside a
 /// tokio runtime (it starts the track-announce timer).
 pub struct TsIngest {
@@ -102,13 +154,21 @@ pub struct TsIngest {
     demuxer: Demuxer,
     units: Vec<EsUnit>,
     events: Vec<DemuxEvent>,
+    rebase: Rebase,
 }
 
 impl TsIngest {
     pub fn new(publisher: Publisher) -> Self {
         let shared = Arc::new(Shared { publisher, pending: Mutex::new(Pending::default()) });
         spawn_announce_deadline(&shared);
-        Self { shared, ts: TsDemux::new(), demuxer: Demuxer::new(), units: Vec::new(), events: Vec::new() }
+        Self {
+            shared,
+            ts: TsDemux::new(),
+            demuxer: Demuxer::new(),
+            units: Vec::new(),
+            events: Vec::new(),
+            rebase: Rebase::default(),
+        }
     }
 
     pub fn publisher(&self) -> &Publisher {
@@ -120,19 +180,44 @@ impl TsIngest {
         self.ts.feed(payload);
         self.units.clear();
         self.ts.drain(&mut self.units);
-        for unit in self.units.drain(..) {
+        self.consume_units();
+    }
+
+    /// The source is spliced here: hands out the access units still being
+    /// assembled (they belong to the old side), then shifts whatever comes
+    /// next to continue where the last frame ended. Codec parameters that
+    /// change across the splice are not re-announced.
+    pub fn discontinuity(&mut self) {
+        self.units.clear();
+        self.ts.drain(&mut self.units);
+        self.ts.flush(&mut self.units);
+        self.consume_units();
+        self.rebase.pending = true;
+    }
+
+    fn consume_units(&mut self) {
+        let mut units = std::mem::take(&mut self.units);
+        for unit in units.drain(..) {
             self.events.clear();
             self.demuxer.consume(unit, &mut self.events);
             for event in self.events.drain(..) {
                 match event {
-                    DemuxEvent::VideoInit(info) => self.shared.update_video(info),
-                    DemuxEvent::AudioInit(info) => self.shared.update_audio(info),
-                    DemuxEvent::VideoFrame(frame) | DemuxEvent::AudioFrame(frame) => {
+                    DemuxEvent::VideoInit(info) => {
+                        self.rebase.timescale(&info);
+                        self.shared.update_video(info);
+                    }
+                    DemuxEvent::AudioInit(info) => {
+                        self.rebase.timescale(&info);
+                        self.shared.update_audio(info);
+                    }
+                    DemuxEvent::VideoFrame(mut frame) | DemuxEvent::AudioFrame(mut frame) => {
+                        self.rebase.apply(&mut frame);
                         if let Err(err) = self.shared.publisher.push(frame) {
                             tracing::trace!(%err, "dropped frame");
                         }
                     }
-                    DemuxEvent::Cue(cue) => {
+                    DemuxEvent::Cue(mut cue) => {
+                        cue.at_us += self.rebase.offset_us;
                         tracing::debug!(
                             stream = %self.shared.publisher.stream().name(),
                             at_us = cue.at_us,
@@ -146,5 +231,51 @@ impl TsIngest {
                 }
             }
         }
+        self.units = units;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use caudal_core::Codec;
+
+    fn info(id: u32, codec: Codec, timescale: u32) -> TrackInfo {
+        TrackInfo { id: TrackId(id), codec, timescale, init: Bytes::new(), lang: None, video: None, audio: None }
+    }
+
+    fn frame(track: u32, dts: i64) -> Frame {
+        Frame { track: TrackId(track), dts, pts: dts + 3000, keyframe: true, data: Bytes::new() }
+    }
+
+    #[test]
+    fn a_discontinuity_continues_the_timeline() {
+        let mut r = Rebase::default();
+        r.timescale(&info(0, Codec::H264, 90_000));
+        r.timescale(&info(1, Codec::Aac, 48_000));
+        // Old side: video at 25 fps up to 10 s, audio 1024-sample frames.
+        for i in 0..=250 {
+            let mut f = frame(0, i * 3600);
+            r.apply(&mut f);
+            assert_eq!(f.dts, i * 3600, "untouched before any discontinuity");
+        }
+        for i in 0..=468 {
+            r.apply(&mut frame(1, i * 1024));
+        }
+        // New side: an encoder restarted at t = 0.
+        r.pending = true;
+        let mut v = frame(0, 0);
+        r.apply(&mut v);
+        // The latest frame ended at 10 s + 40 ms (video) vs 468*1024/48k + 21.3 ms
+        // = 9.984 + 0.021 s (audio): video wins.
+        assert_eq!(v.dts, 10_040_000 * 90 / 1000);
+        assert_eq!(v.pts - v.dts, 3000, "composition offset kept");
+        let mut a = frame(1, 0);
+        r.apply(&mut a);
+        assert_eq!(a.dts, 10_040_000 * 48 / 1000, "both tracks shift by the same time");
+        let mut later = frame(0, 3600);
+        r.apply(&mut later);
+        assert_eq!(later.dts, v.dts + 3600, "the offset stays");
     }
 }

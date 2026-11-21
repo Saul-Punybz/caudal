@@ -131,7 +131,7 @@ license re-checked by hand with `gh api` and crates.io. Tiers match
 | WebVTT/TTML → HLS | fishloa/rust-broadcast, subtitle-rs | 0.1.x / 2.7.1 | Apache-2.0 | 1 / 3 | 2026 | write ourselves; thin glue over WebVTT segments |
 | Audio-only HLS (AAC/Opus) | compose mp4-atom + our packager | — | — | — | — | no extra crate needed |
 | RTMP push out (YouTube/Twitch) | KallDrexx/rust-media-libs (`rml_rtmp`) client side; xiu's RTMP client as reference | 0.8.0 | MIT | 242 | Apr 2023 (stale) | depend for primitives, write the push wrapper; check scuffle-rtmp client mode first |
-| HLS pull input | sile/hls_m3u8 + aschey/stream-download-rs | 0.7.0 / 0.24.4 | Apache-2.0 | 66 / 114 | 2026 | depend; write the live-edge polling loop |
+| HLS pull input | sile/hls_m3u8 + aschey/stream-download-rs | 0.7.0 / 0.24.4 | Apache-2.0 | 66 / 114 | 2026 | written in `caudal-hls-pull` (Nov 2026) without them: the pull reads eight tags, a ~130-line parser (plus tests) and reqwest (already in the tree) covered it; `hls_m3u8` stays the candidate if more of the spec is needed |
 
 ### Tier A (table stakes)
 

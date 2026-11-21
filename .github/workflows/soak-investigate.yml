@@ -1,0 +1,83 @@
+name: Soak investigation (Linux)
+
+# Short, targeted soaks for the RSS-growth investigation, run on push to a
+# `fix/soak-*` branch so they need neither the weekly soak.yml (which stays
+# disabled) nor a manual dispatch. Same steps as soak.yml; each matrix
+# entry below is one run, and the entries run in parallel on separate
+# runners. Edit the matrix to change what runs; keep it to a handful.
+on:
+  push:
+    branches: ["fix/soak-*"]
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Which half of a churn event grows RSS, on the old allocator
+          # (glibc malloc). Compare run 35622240566: both halves, same
+          # length and churn rate, +56.0 MB/h.
+          - name: glibc-publisher-30m
+            features: system-alloc
+            minutes: 30
+            churn_minutes: 2
+            churn_kind: publisher
+          - name: glibc-viewers-30m
+            features: system-alloc
+            minutes: 30
+            churn_minutes: 2
+            churn_kind: viewers
+          # The fix: mimalloc, both halves, 60 min after the 10-min warm-up.
+          - name: mimalloc-both-70m
+            features: ""
+            minutes: 70
+            churn_minutes: 2
+            churn_kind: both
+    name: soak ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+          workspaces: |
+            .
+            bench/client
+      - name: Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg python3-matplotlib
+          nproc; free -g; uname -a
+      - name: Build
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --release -p caudal --features "${{ matrix.features }}"
+          else
+            cargo build --release -p caudal
+          fi
+          (cd bench/client && cargo build --release)
+      - name: Soak
+        run: |
+          set -o pipefail
+          ulimit -n 65536 || true
+          echo "${{ matrix.name }}: ${{ matrix.minutes }} min, churn (${{ matrix.churn_kind }}) every ${{ matrix.churn_minutes }} min"
+          csv="$(python3 bench/soak.py run --minutes "${{ matrix.minutes }}" \
+            --churn-minutes "${{ matrix.churn_minutes }}" --churn-kind "${{ matrix.churn_kind }}")"
+          echo "SOAK_CSV=$csv" >> "$GITHUB_ENV"
+      - name: Verdict
+        if: always() && env.SOAK_CSV != ''
+        run: |
+          set -o pipefail
+          python3 bench/soak.py verdict "$SOAK_CSV" | tee soak-summary.md
+          status=${PIPESTATUS[0]}
+          { echo "## ${{ matrix.name }}"; cat soak-summary.md; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-results-${{ matrix.name }}
+          path: |
+            bench/results/soak-*
+            soak-summary.md

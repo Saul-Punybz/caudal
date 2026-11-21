@@ -3,6 +3,7 @@
 
     python3 bench/soak.py run [--minutes 120] [--churn-minutes 15]
                                [--sample-s 30] [--streams 3] [--viewers 10]
+                               [--churn-kind both|publisher|viewers]
     python3 bench/soak.py verdict RESULTS.csv [RESULTS.meta.json]
 
 `run` starts Caudal (bench/caudal-soak.toml: recording on, everything else
@@ -10,7 +11,7 @@ loopback), 2-3 RTMP publishers, and long-lived viewers on LL-HLS, RTSP and
 WHEP (bench/client, one process per stream x protocol, held open for
 ~the whole run). Every `--churn-minutes` it restarts one publisher
 (disconnect + republish) and starts a short-lived extra batch of viewers
-(join, watch, leave); once each, early in the run, it does one
+(join, watch, leave); `--churn-kind` keeps only one of the two halves. Once each, early in the run, it does one
 `POST /api/v1/config/reload` and one clip. Every `--sample-s` it samples the
 server's RSS/fd/thread/CPU (from /proc) and /metrics (streams, viewers,
 bytes) plus the viewers' own error/timeout counts (bench/client
@@ -239,6 +240,10 @@ def try_clip(stream):
 
 def run(argv):
     minutes, churn_minutes, sample_s, streams_n, viewers_n = 120, 15, 30, 3, 10
+    # What one churn event does: restart a publisher, start a batch of
+    # short-lived viewers, or both (the default). Splitting them tells
+    # which half of an event moves memory.
+    churn_kind = "both"
     it = iter(argv)
     for a in it:
         if a == "--minutes":
@@ -251,6 +256,10 @@ def run(argv):
             streams_n = int(next(it))
         elif a == "--viewers":
             viewers_n = int(next(it))
+        elif a == "--churn-kind":
+            churn_kind = next(it)
+            if churn_kind not in ("publisher", "viewers", "both"):
+                sys.exit(f"--churn-kind must be publisher, viewers or both, got {churn_kind}")
         else:
             sys.exit(f"unknown option {a}")
 
@@ -358,14 +367,16 @@ def run(argv):
 
             if elapsed >= next_churn:
                 cycle += 1
-                target = stream_names[cycle % len(stream_names)]
-                log(f"churn #{cycle}: restarting publisher {target}")
-                bench.stop(publishers[target], grace=2.0)
-                time.sleep(1.0)
-                publishers[target] = spawn_publisher(target, logf)
-                ok = wait_playlist(target, timeout=20)
-                churn_events.append({"t_s": round(elapsed, 1), "action": "publisher_restart",
-                                      "stream": target, "reconnected": ok})
+                if churn_kind in ("publisher", "both"):
+                    target = stream_names[cycle % len(stream_names)]
+                    log(f"churn #{cycle}: restarting publisher {target}")
+                    bench.stop(publishers[target], grace=2.0)
+                    time.sleep(1.0)
+                    publishers[target] = spawn_publisher(target, logf)
+                    ok = wait_playlist(target, timeout=20)
+                    churn_events.append({"t_s": round(elapsed, 1), "action": "publisher_restart",
+                                          "stream": target, "reconnected": ok})
+            if elapsed >= next_churn and churn_kind in ("viewers", "both"):
                 proto = PROTOCOLS[cycle % len(PROTOCOLS)]
                 extra = stream_names[(cycle + 1) % len(stream_names)]
                 out_path = os.path.join(RESULTS, f"soak-{stamp}.churn-{cycle}.out")
@@ -377,6 +388,7 @@ def run(argv):
                 extra_f.close()
                 churn_events.append({"t_s": round(elapsed, 1), "action": "extra_viewers",
                                       "stream": extra, "proto": proto, "duration_s": dur})
+            if elapsed >= next_churn:
                 next_churn += churn_minutes * 60
 
             time.sleep(min(1.0, max(0.0, next_sample - time.monotonic())))
@@ -404,7 +416,7 @@ def run(argv):
     bench.stop(srv)
 
     meta = {
-        "stamp": stamp, "minutes": minutes, "churn_minutes": churn_minutes, "sample_s": sample_s,
+        "stamp": stamp, "minutes": minutes, "churn_minutes": churn_minutes, "churn_kind": churn_kind, "sample_s": sample_s,
         "stream_count": streams_n, "viewers_per_stream": viewers_n, "protocols": list(PROTOCOLS),
         "streams": stream_names, "server_log": server_log, "csv": csv_path,
         "machine": bench.machine(), "src_mbps": rates, "record_enabled": True,

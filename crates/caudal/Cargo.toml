@@ -17,6 +17,11 @@ captions = ["dep:caudal-captions"]
 # allocation is recorded with its backtrace, and `dhat-heap.json` is written
 # when the server exits. Slow; never for production builds.
 dhat-heap = ["dep:dhat"]
+# Use the platform's allocator (glibc malloc, musl's, the Windows heap)
+# instead of mimalloc. For comparison runs only: under publisher and viewer
+# churn glibc malloc kept freed frame buffers mapped and RSS grew per churn
+# event (bench/soak.py, docs/release-notes/v0.1.0.md).
+system-alloc = []
 
 [dependencies]
 caudal-core.workspace = true
@@ -60,6 +65,8 @@ tokio.workspace = true
 tracing.workspace = true
 toml = "1.1.6"
 dhat = { version = "0.3", optional = true }
+# The global allocator (see main.rs and the `system-alloc` feature).
+mimalloc = { version = "0.1", default-features = false }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 # `caudal doctor`: a blocking HTTP client (own /healthz, a running

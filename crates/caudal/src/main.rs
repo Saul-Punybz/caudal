@@ -29,6 +29,18 @@ use tracing_subscriber::EnvFilter;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+// mimalloc, not the platform allocator. The live buffer frees and
+// reallocates its whole window of frame buffers (tens of MB per stream)
+// every time a publisher reconnects, from whichever runtime thread the
+// new connection runs on. glibc malloc kept that freed memory mapped:
+// a soak with churn grew RSS per publisher restart while the live heap
+// stayed flat (bench/soak.py; numbers in docs/release-notes/v0.1.0.md).
+// mimalloc returns freed pages to the OS. `--features system-alloc`
+// switches back, for comparison runs.
+#[cfg(not(any(feature = "dhat-heap", feature = "system-alloc")))]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(name = "caudal", about = "Caudal media server", version)]
 struct Cli {

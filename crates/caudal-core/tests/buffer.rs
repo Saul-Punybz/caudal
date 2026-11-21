@@ -344,3 +344,48 @@ fn cue_after_end_is_rejected() {
     drop(publ);
     assert_eq!(stream.inject_cue(cue(0)), Err(PushError::Ended));
 }
+
+/// The soak's churn event, in process: a publisher restarts while viewers
+/// join and leave, many times over. Each ended publish must free its
+/// stream (and the frames in its window) once its last reader is gone;
+/// nothing in the registry or its announcement channels may keep an old
+/// one alive. A held `Arc<Stream>` here is what would grow memory per
+/// reconnect (see bench/soak.py, `--churn-kind`).
+#[test]
+fn republishing_frees_every_ended_stream() {
+    let reg = Registry::new();
+    let mut publishes = reg.subscribe_publishes();
+    let mut ends = reg.subscribe_ends();
+    let mut old: Vec<std::sync::Weak<Stream>> = Vec::new();
+    // A long-lived viewer of the previous publish, still reading when the
+    // next one starts.
+    let mut lingering: Option<Subscriber> = None;
+    for cycle in 0..100 {
+        let publ = reg.publish("live", cfg(50)).unwrap();
+        old.push(Arc::downgrade(publ.stream()));
+        assert!(Arc::ptr_eq(&publishes.try_recv().unwrap(), publ.stream()));
+        publ.set_tracks(vec![video()]).unwrap();
+        let mut sub = reg.subscribe("live", StartAt::Oldest).unwrap();
+        for n in 0..90 {
+            publ.push(vframe(n, 25_000)).unwrap();
+        }
+        // A batch of viewers joins and leaves.
+        let batch: Vec<_> = (0..5).map(|_| reg.subscribe("live", StartAt::LiveEdge).unwrap()).collect();
+        drop(batch);
+        // The previous publish's last viewer drains to `End` and leaves.
+        if let Some(mut l) = lingering.take() {
+            while !matches!(l.try_recv(), Some(Event::End)) {}
+        }
+        next_frame(&mut sub);
+        drop(publ);
+        assert_eq!(&*ends.try_recv().unwrap(), "live");
+        lingering = Some(sub);
+        // Everything but the publish the lingering viewer still reads is
+        // gone, frames included.
+        let alive = old.iter().filter(|w| w.strong_count() > 0).count();
+        assert_eq!(alive, 1, "cycle {cycle}: {alive} ended streams still held");
+    }
+    drop(lingering);
+    assert!(old.iter().all(|w| w.strong_count() == 0), "the last ended stream is held");
+    assert!(reg.list().is_empty());
+}

@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Summarizes a dhat-rs heap profile: the allocation sites holding the most
-bytes at the heap's peak (t-gmax), named by their first Caudal frame.
+bytes at a chosen instant, named by their first Caudal frame.
 
-    python3 bench/dhat_top.py dhat-heap.json [N]
+    python3 bench/dhat_top.py dhat-heap.json [N] [--at-end]
+
+By default the instant is the heap's peak (t-gmax): where the memory goes
+under load. `--at-end` uses t-end instead — what was still allocated when
+the process exited, which is where a leak shows: a site that grows with
+churn and is never freed still holds its bytes after every publisher and
+viewer is gone.
 """
 
 import collections
@@ -40,33 +46,44 @@ def short(frame):
 
 
 def main():
-    path = sys.argv[1]
-    n = int(sys.argv[2]) if len(sys.argv) > 2 else 30
+    args = [a for a in sys.argv[1:] if a != "--at-end"]
+    at_end = "--at-end" in sys.argv[1:]
+    path = args[0]
+    n = int(args[1]) if len(args) > 1 else 30
     d = json.load(open(path))
     ftbl, pps = d["ftbl"], d["pps"]
-    total = sum(p["gb"] for p in pps)
-    blocks = sum(p["gbk"] for p in pps)
-    print(f"heap at peak (t-gmax {d['tg'] / 1e6:.1f} s of {d['te'] / 1e6:.1f} s): "
-          f"{total / 1e6:.1f} MB in {blocks} blocks")
+    # dhat's per-program-point keys: "gb"/"gbk" are bytes/blocks at t-gmax,
+    # "fb"/"fbk" at t-end. Older profiles may not carry the t-end pair.
+    bkey, kkey = ("fb", "fbk") if at_end else ("gb", "gbk")
+    if at_end and not any(bkey in p for p in pps):
+        sys.exit("this profile has no t-end figures; rerun without --at-end")
+    for p in pps:
+        p.setdefault(bkey, 0)
+        p.setdefault(kkey, 0)
+    total = sum(p[bkey] for p in pps)
+    blocks = sum(p[kkey] for p in pps)
+    when = f"at end (t-end {d['te'] / 1e6:.1f} s)" if at_end else f"at peak (t-gmax {d['tg'] / 1e6:.1f} s of {d['te'] / 1e6:.1f} s)"
+    print(f"heap {when}: {total / 1e6:.1f} MB in {blocks} blocks")
     by_site = collections.Counter()
     by_crate = collections.Counter()
     for p in pps:
         s = short(site(p["fs"], ftbl))
-        by_site[s] += p["gb"]
+        by_site[s] += p[bkey]
         m = re.match(r"<?(\w+)::", s)
-        by_crate[m.group(1) if m else s[:40]] += p["gb"]
-    print("\nby crate (MB at peak):")
+        by_crate[m.group(1) if m else s[:40]] += p[bkey]
+    label = "at end" if at_end else "at peak"
+    print(f"\nby crate (MB {label}):")
     for c, b in by_crate.most_common(15):
         if b:
             print(f"  {b / 1e6:8.2f}  {c}")
-    print(f"\ntop {n} sites (MB at peak):")
+    print(f"\ntop {n} sites (MB {label}):")
     for s, b in by_site.most_common(n):
         if b:
             print(f"  {b / 1e6:8.2f}  {s}")
     # The full stacks of the biggest ones, for when the first frame is not enough.
     print("\nstacks of the 8 biggest sites:")
-    for p in sorted(pps, key=lambda p: -p["gb"])[:8]:
-        print(f"-- {p['gb'] / 1e6:.2f} MB, {p['gbk']} blocks")
+    for p in sorted(pps, key=lambda p: -p[bkey])[:8]:
+        print(f"-- {p[bkey] / 1e6:.2f} MB, {p[kkey]} blocks")
         for i in p["fs"][:14]:
             print("     " + short(ftbl[i]))
 

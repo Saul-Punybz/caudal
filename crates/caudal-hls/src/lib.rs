@@ -1,5 +1,6 @@
-//! LL-HLS / CMAF output and the `/play/{name}` page. Entry point fixed by
-//! the orchestrator.
+//! LL-HLS / CMAF output, classic HLS with MPEG-TS segments (`tsseg`, on
+//! demand), and the `/play/{name}` page. Entry point fixed by the
+//! orchestrator.
 //!
 //! One packager task per published stream turns frames into CMAF parts as
 //! they arrive, so parts exist before the first viewer asks. HTTP handlers
@@ -7,6 +8,7 @@
 //! the preload-hinted part wait on a `watch` channel bumped by the packager.
 
 mod packager;
+mod tsseg;
 mod vtt;
 
 use std::collections::{HashMap, VecDeque};
@@ -29,6 +31,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{broadcast, watch};
 
 use packager::{Lookup, Packager, VariantAttrs};
+use tsseg::TsSegmenter;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HlsConfig {
@@ -48,6 +51,11 @@ pub struct HlsConfig {
     /// players ride through an encoder reconnect. `ZERO` ends the playlist
     /// (`EXT-X-ENDLIST`) as soon as the publisher leaves.
     pub reconnect_grace: Duration,
+    /// Also serve classic HLS with MPEG-TS segments (`/hls/{name}/ts.m3u8`,
+    /// segments `t{seq}.ts`), for players that predate fMP4 and for MPEG-2
+    /// video / MP2 audio. Started on a stream's first such request, stopped
+    /// after [`TS_IDLE`] without one.
+    pub ts: bool,
 }
 
 impl Default for HlsConfig {
@@ -58,6 +66,7 @@ impl Default for HlsConfig {
             cue_tags: true,
             cue_out_tags: false,
             reconnect_grace: Duration::from_secs(10),
+            ts: true,
         }
     }
 }
@@ -71,10 +80,16 @@ const VIEWER_IDLE: Duration = Duration::from_secs(10);
 /// the reconnect grace (if any) has run out.
 const LINGER: Duration = Duration::from_secs(30);
 
+/// The TS rendition of a stream stops (its segments are dropped) after this
+/// long without a request for its playlist or segments.
+const TS_IDLE: Duration = Duration::from_secs(30);
+
 const PLAY_HTML: &str = include_str!("../static/play.html");
 
 /// Serves `/hls/{name}/master.m3u8` (players enter here), `/hls/{name}/index.m3u8`, `/hls/{name}/init.mp4`,
-/// `/hls/{name}/{segment}.m4s` and `/play/{name}`. Mounted at the root by
+/// `/hls/{name}/{segment}.m4s` and `/play/{name}`; with [`HlsConfig::ts`],
+/// also classic HLS at `/hls/{name}/ts.m3u8` + `/hls/{name}/t{seq}.ts`
+/// (see `tsseg`). Mounted at the root by
 /// the server; paths are absolute.
 ///
 /// Must be called inside a tokio runtime: it spawns the task that starts a
@@ -106,6 +121,7 @@ pub fn router_with_captions(
         cue_tags: cfg.cue_tags,
         cue_out_tags: cfg.cue_out_tags,
         reconnect_grace: cfg.reconnect_grace,
+        ts: cfg.ts,
     };
     let hls = Arc::new(Hls { registry: registry.clone(), cfg, trusted_proxies, captions, streams: Mutex::default() });
     match Handle::try_current() {
@@ -156,6 +172,17 @@ struct Entry {
     /// under the same lock, never lists one that does not exist yet, and a
     /// file's text never changes once listed).
     subs: Mutex<VecDeque<SubSeg>>,
+    /// The classic-HLS (TS segments) rendition, fed by its own task while
+    /// players ask for it.
+    ts: Mutex<TsState>,
+    ts_tick: watch::Sender<u64>,
+}
+
+struct TsState {
+    /// A task is feeding `seg`.
+    running: bool,
+    last_request: Instant,
+    seg: TsSegmenter,
 }
 
 /// One LL-HLS player: plain HTTP requests, so its session is inferred from
@@ -204,6 +231,39 @@ impl Entry {
             }
             let _ = tokio::time::timeout_at(deadline, self.handoff_ready.notified()).await;
         }
+    }
+
+    fn ts(&self) -> MutexGuard<'_, TsState> {
+        self.ts.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Like [`Entry::wait`], on the TS segmenter.
+    async fn wait_ts<T>(&self, timeout: Duration, f: impl Fn(&TsSegmenter) -> Option<T>) -> Option<T> {
+        let mut rx = self.ts_tick.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            rx.borrow_and_update();
+            if let Some(v) = f(&self.ts().seg) {
+                return Some(v);
+            }
+            match tokio::time::timeout_at(deadline, rx.changed()).await {
+                Ok(Ok(())) => {}
+                _ => return None,
+            }
+        }
+    }
+
+    /// Stops the TS rendition if nobody asked for it in [`TS_IDLE`].
+    fn ts_stop_if_idle(&self) -> bool {
+        let mut ts = self.ts();
+        if ts.last_request.elapsed() < TS_IDLE {
+            return false;
+        }
+        ts.seg.idle();
+        ts.running = false;
+        drop(ts);
+        self.ts_tick.send_modify(|v| *v = v.wrapping_add(1));
+        true
     }
 
     fn pkg(&self) -> MutexGuard<'_, Packager> {
@@ -312,6 +372,12 @@ impl Hls {
                 tick: watch::channel(0).0,
                 viewers: Mutex::default(),
                 subs: Mutex::default(),
+                ts: Mutex::new(TsState {
+                    running: false,
+                    last_request: Instant::now(),
+                    seg: TsSegmenter::new(self.cfg.segment_ms),
+                }),
+                ts_tick: watch::channel(0).0,
             });
             map.insert(stream.name().to_owned(), entry.clone());
             entry
@@ -556,6 +622,14 @@ async fn serve_file(
     token: Option<&str>,
     apple: bool,
 ) -> Response {
+    if hls.cfg.ts {
+        if file == "ts.m3u8" {
+            return ts_playlist(entry, token).await;
+        }
+        if let Some(seq) = parse_ts_name(file) {
+            return ts_segment(entry, seq).await;
+        }
+    }
     let entry = entry.as_ref();
     match file {
         "index.m3u8" => playlist(hls, name, entry, query, token).await,
@@ -587,6 +661,133 @@ async fn serve_file(
             Some((msn, part)) => media(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
+    }
+}
+
+/// `t{seq}.ts` → `seq`: a segment of the TS rendition.
+fn parse_ts_name(file: &str) -> Option<u64> {
+    let n = file.strip_prefix('t')?.strip_suffix(".ts")?;
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    n.parse().ok()
+}
+
+/// A request for the TS rendition: starts its task if it is not running
+/// (and the stream has not ended), and keeps it alive.
+fn ts_touch(entry: &Arc<Entry>) {
+    let mut ts = entry.ts();
+    ts.last_request = Instant::now();
+    if ts.running {
+        return;
+    }
+    if entry.pkg().ended {
+        // Too late to start: whatever was cut before stays, closed.
+        ts.seg.end();
+        return;
+    }
+    ts.running = true;
+    tracing::debug!(stream = %entry.stream().name(), "ts-hls segmenter started");
+    tokio::spawn(ts_run(entry.clone()));
+}
+
+/// `GET /hls/{name}/ts.m3u8`: waits for the first segment when the
+/// rendition has just started.
+async fn ts_playlist(entry: &Arc<Entry>, token: Option<&str>) -> Response {
+    ts_touch(entry);
+    let wait = Duration::from_secs(3 * entry.ts().seg.target_duration());
+    // `Some(None)`: the stream ended before a single segment was cut.
+    let body = entry
+        .wait_ts(wait, |s| match (s.segments.is_empty(), s.ended) {
+            (false, _) => Some(Some(s.playlist())),
+            (true, true) => Some(None),
+            (true, false) => None,
+        })
+        .await;
+    match body {
+        Some(Some(b)) => respond(StatusCode::OK, PLAYLIST, "no-cache", with_token(&b, token)),
+        Some(None) => error(StatusCode::NOT_FOUND),
+        None => error(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
+/// `GET /hls/{name}/t{seq}.ts`. The segment being cut right now is waited
+/// for; anything else is there or gone.
+async fn ts_segment(entry: &Arc<Entry>, seq: u64) -> Response {
+    ts_touch(entry);
+    let wait = Duration::from_secs(3 * entry.ts().seg.target_duration());
+    let found = entry
+        .wait_ts(wait, |s| match s.segment(seq) {
+            Some(b) => Some(Some(b)),
+            None if seq == s.next_seq() && !s.ended => None,
+            None => Some(None),
+        })
+        .await
+        .flatten();
+    match found {
+        Some(b) => respond(StatusCode::OK, "video/mp2t", "max-age=60", b),
+        None => error(StatusCode::NOT_FOUND),
+    }
+}
+
+/// The TS rendition's task: subscribes to the publish feeding `entry`
+/// (from its latest keyframe, so the first segment is ready about one
+/// segment later), follows a republish within the reconnect grace, and
+/// stops when the stream ends or nobody has asked for the rendition in
+/// [`TS_IDLE`].
+async fn ts_run(entry: Arc<Entry>) {
+    let mut stream = entry.stream();
+    let mut ticks = entry.tick.subscribe();
+    let mut idle = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        let mut sub = stream.subscribe_internal(StartAt::LiveEdge);
+        loop {
+            tokio::select! {
+                ev = sub.recv() => {
+                    let changed = {
+                        let mut ts = entry.ts();
+                        let before = (ts.seg.segments.len(), ts.seg.next_seq());
+                        match &ev {
+                            Event::TracksChanged => ts.seg.set_tracks(&sub.tracks()),
+                            Event::Frame(f) => ts.seg.push(f),
+                            Event::Lagged { .. } => ts.seg.lagged(),
+                            Event::Cue(cue) => ts.seg.push_cue(cue),
+                            Event::End => ts.seg.suspend(),
+                        }
+                        before != (ts.seg.segments.len(), ts.seg.next_seq())
+                    };
+                    if changed {
+                        entry.ts_tick.send_modify(|v| *v = v.wrapping_add(1));
+                    }
+                    if ev == Event::End {
+                        break;
+                    }
+                }
+                _ = idle.tick() => if entry.ts_stop_if_idle() { return },
+            }
+        }
+        // The publish is gone: a republish continues the playlist, the end
+        // of the LL-HLS one ends this one too.
+        loop {
+            if entry.pkg().ended {
+                {
+                    let mut ts = entry.ts();
+                    ts.seg.end();
+                    ts.running = false;
+                }
+                entry.ts_tick.send_modify(|v| *v = v.wrapping_add(1));
+                return;
+            }
+            let now = entry.stream();
+            if !Arc::ptr_eq(&now, &stream) {
+                stream = now;
+                break;
+            }
+            tokio::select! {
+                _ = ticks.changed() => {}
+                _ = idle.tick() => if entry.ts_stop_if_idle() { return },
+            }
+        }
     }
 }
 
@@ -957,6 +1158,9 @@ async fn play(State(hls): State<Arc<Hls>>, Path(name): Path<String>) -> Response
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ts_tests;
 
 #[cfg(test)]
 mod token_tests {

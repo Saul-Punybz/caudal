@@ -1,6 +1,6 @@
 [package]
 name = "caudal-hls"
-description = "LL-HLS / CMAF output for Caudal"
+description = "LL-HLS / CMAF and classic TS-segment HLS output for Caudal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ repository.workspace = true
 caudal-core.workspace = true
 caudal-cmaf.workspace = true
 caudal-scte35.workspace = true
+caudal-ts.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true

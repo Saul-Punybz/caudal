@@ -192,12 +192,19 @@ impl SessionHandler for Handler {
         // rtmp://host/live/<name>?token=<jwt>
         let (stream_name, query) = stream_name.split_once('?').unwrap_or((stream_name, ""));
         let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).filter(|t| !t.is_empty());
-        if let Err(denied) =
-            self.registry.authorize(caudal_core::Access::Publish, stream_name, token, Some(self.peer_ip)).await
+        let requested = stream_name;
+        let stream_name = match self
+            .registry
+            .resolve(caudal_core::Access::Publish, "rtmp", requested, token, Some(self.peer_ip))
+            .await
         {
-            tracing::info!(app = %app_name, stream = %stream_name, reason = ?denied, "rtmp publish rejected");
-            return Err(reject_error());
-        }
+            Ok(name) => name,
+            Err(denied) => {
+                tracing::info!(app = %app_name, stream = %requested, reason = ?denied, "rtmp publish rejected");
+                return Err(reject_error());
+            }
+        };
+        let stream_name = stream_name.as_str();
 
         match self.registry.publish(stream_name, self.buffer) {
             Ok(publisher) => {

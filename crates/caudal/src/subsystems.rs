@@ -100,6 +100,44 @@ impl caudal_core::Gate for CombinedGate {
     }
 }
 
+/// `[auth.rewrite]` as the core's [`caudal_core::Rewrite`]: asks the
+/// routing service which stream a publish or play really goes to.
+struct RewriteRouter {
+    hook: Arc<caudal_auth::RewriteHook>,
+    /// An edge pulling from this node plays the name its own rewrite
+    /// already produced: a valid inter-node token is never routed again.
+    cluster: Option<caudal_cluster::Secret>,
+}
+
+impl caudal_core::Rewrite for RewriteRouter {
+    fn rewrite<'a>(&'a self, req: caudal_core::RewriteRequest<'a>) -> caudal_core::RewriteFuture<'a> {
+        Box::pin(async move {
+            if req.access == caudal_core::Access::Play
+                && let (Some(secret), Some(t)) = (&self.cluster, req.token)
+                && secret.verify(t).is_some()
+            {
+                return Ok(req.stream.to_owned());
+            }
+            let action = match req.access {
+                caudal_core::Access::Publish => caudal_auth::Action::Publish,
+                caudal_core::Access::Play => caudal_auth::Action::Play,
+            };
+            self.hook
+                .rewrite(action, req.protocol, req.stream, req.token, req.ip)
+                .await
+                .map_err(caudal_core::Denied::Refused)
+        })
+    }
+}
+
+/// The `[auth.hook]` and `[auth.rewrite]` counters: one set for the
+/// process, so `/metrics` survives reloads of `[auth]`.
+#[derive(Clone, Default)]
+pub struct HookStats {
+    pub gate: Arc<caudal_auth::GateHookStats>,
+    pub rewrite: Arc<caudal_auth::RewriteHookStats>,
+}
+
 /// Applies the loaded `[auth]` section to the registry: reinstalls the
 /// combined gate with a fresh `Authorizer`, keeping the current
 /// `caudal-access` checker (its ruleset is independent, see
@@ -108,7 +146,7 @@ fn apply_auth(
     registry: &Arc<Registry>,
     access: &Arc<caudal_access::Checker>,
     cluster: &Option<caudal_cluster::Secret>,
-    hook_stats: &Arc<caudal_auth::GateHookStats>,
+    hook_stats: &HookStats,
     section: &config::AuthSection,
 ) {
     let auth = section.to_auth_config().expect("validated");
@@ -119,7 +157,7 @@ fn apply_auth(
     }
     let hook = section.hook_config().expect("validated").map(|cfg| {
         let url = cfg.url.clone();
-        match caudal_auth::GateHook::new(cfg, hook_stats.clone()) {
+        match caudal_auth::GateHook::new(cfg, hook_stats.gate.clone()) {
             Ok(h) => {
                 tracing::info!(%url, "auth hook enabled");
                 Arc::new(h)
@@ -129,10 +167,27 @@ fn apply_auth(
             // rather than silently skipping it.
             Err(e) => {
                 tracing::error!(error = %e, "auth hook could not start; refusing what it guards");
-                Arc::new(caudal_auth::GateHook::refusing(hook_stats.clone()))
+                Arc::new(caudal_auth::GateHook::refusing(hook_stats.gate.clone()))
             }
         }
     });
+    match section.rewrite_config().expect("validated") {
+        Some(cfg) => {
+            let (url, publish, play) = (cfg.url.clone(), cfg.publish, cfg.play);
+            let hook = match caudal_auth::RewriteHook::new(cfg, hook_stats.rewrite.clone()) {
+                Ok(h) => {
+                    tracing::info!(%url, publish, play, "rewrite hook enabled");
+                    h
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "rewrite hook could not start; refusing what it routes");
+                    caudal_auth::RewriteHook::refusing(publish, play, hook_stats.rewrite.clone())
+                }
+            };
+            registry.set_rewrite(Arc::new(RewriteRouter { hook: Arc::new(hook), cluster: cluster.clone() }));
+        }
+        None => registry.clear_rewrite(),
+    }
     registry.set_gate(Arc::new(CombinedGate {
         auth: caudal_auth::Authorizer::new(auth),
         access: access.clone(),
@@ -337,9 +392,9 @@ pub struct Supervisor {
     access: Arc<caudal_access::Checker>,
     /// `[cluster]`'s secret, fixed at startup (`[cluster]` needs a restart).
     cluster: Option<caudal_cluster::Secret>,
-    /// `[auth.hook]` counters; one for the process, so `/metrics` survives
-    /// reloads of `[auth]`.
-    hook_stats: Arc<caudal_auth::GateHookStats>,
+    /// `[auth.hook]` and `[auth.rewrite]` counters; one set for the
+    /// process, so `/metrics` survives reloads of `[auth]`.
+    hook_stats: HookStats,
 
     /// The last config a reload was applied against (or the startup
     /// config); also the mutex that serializes concurrent reloads (SIGHUP
@@ -363,8 +418,8 @@ pub struct Started {
     /// For `main::run` to hand to `api::AppState::set_access`, so
     /// `/metrics` can render `caudal_access_denied_total`.
     pub access: Arc<caudal_access::Checker>,
-    /// For `/metrics` (`caudal_auth_hook_*`).
-    pub hook_stats: Arc<caudal_auth::GateHookStats>,
+    /// For `/metrics` (`caudal_auth_hook_*`, `caudal_rewrite_hook_*`).
+    pub hook_stats: HookStats,
     /// For `api::AppState::set_omt`: `/api/v1/omt/sources`, the `omt`
     /// fields of `/api/v1/streams/{name}` and `caudal_omt_*`.
     pub omt: Arc<crate::omt::OmtRuntime>,
@@ -382,7 +437,7 @@ impl Supervisor {
 
         let access = cfg.access.to_access_config().expect("validated").checker().expect("validated");
         let cluster = cfg.cluster.as_ref().map(|c| c.secret().expect("validated"));
-        let hook_stats = Arc::new(caudal_auth::GateHookStats::default());
+        let hook_stats = HookStats::default();
         apply_auth(&registry, &access, &cluster, &hook_stats, &cfg.auth);
         let hooks_task = Mutex::new(None);
         apply_hooks(&registry, &hooks_task, &cfg.hooks);

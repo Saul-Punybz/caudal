@@ -99,6 +99,31 @@ pub fn render_auth_hook(out: &mut String, stats: &caudal_auth::GateHookStats) {
     }
 }
 
+/// `caudal_rewrite_hook_*`: calls to `[auth.rewrite]` by outcome, requests
+/// answered from its cache, and time spent waiting on it.
+pub fn render_rewrite_hook(out: &mut String, stats: &caudal_auth::RewriteHookStats) {
+    let _ =
+        writeln!(out, "# HELP caudal_rewrite_hook_calls_total Calls sent to [auth.rewrite], by action and outcome.");
+    let _ = writeln!(out, "# TYPE caudal_rewrite_hook_calls_total counter");
+    for m in stats.calls() {
+        let _ = writeln!(
+            out,
+            "caudal_rewrite_hook_calls_total{{action=\"{}\",outcome=\"{}\"}} {}",
+            m.action, m.outcome, m.count
+        );
+    }
+    let _ = writeln!(out, "# HELP caudal_rewrite_hook_cached_total Requests answered from the [auth.rewrite] cache.");
+    let _ = writeln!(out, "# TYPE caudal_rewrite_hook_cached_total counter");
+    for (action, n) in stats.cached() {
+        let _ = writeln!(out, "caudal_rewrite_hook_cached_total{{action=\"{action}\"}} {n}");
+    }
+    let _ = writeln!(out, "# HELP caudal_rewrite_hook_wait_seconds_total Time spent waiting on [auth.rewrite].");
+    let _ = writeln!(out, "# TYPE caudal_rewrite_hook_wait_seconds_total counter");
+    for (action, s) in stats.wait_seconds() {
+        let _ = writeln!(out, "caudal_rewrite_hook_wait_seconds_total{{action=\"{action}\"}} {s}");
+    }
+}
+
 /// Appends `caudal_omt_*` for every running `[[omt.pull]]` and
 /// `[[omt.output]]`. Pull series are labelled by `stream`; output series by
 /// `stream` and `output` (the OMT source name, unique per output).

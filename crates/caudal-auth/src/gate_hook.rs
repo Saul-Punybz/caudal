@@ -22,24 +22,15 @@
 //! (an optional `{"reason": "..."}` body is logged); anything else, a
 //! timeout or a connection error is a failure, decided by `on_error`.
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use serde_json::json;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
-use tokio::sync::OnceCell;
 
 use crate::Action;
-
-/// Cached decisions kept before expired ones are swept.
-const SWEEP_AT: usize = 10_000;
-/// Longest denial reason kept from the service's answer (for logs).
-const MAX_REASON: usize = 200;
+use crate::blocking::{FlightCache, Signer, deny_reason};
 
 /// What to do when the service does not answer in time or answers with
 /// something other than 2xx/401/403.
@@ -140,32 +131,20 @@ impl GateHookStats {
 
 type Key = (Action, String, Option<IpAddr>, Option<String>);
 
-struct Entry {
-    created: Instant,
-    cell: Arc<OnceCell<Decision>>,
-}
-
 /// The blocking webhook. Cheap to share behind an `Arc`.
 pub struct GateHook {
     cfg: GateHookConfig,
     /// `None`: a hook that could not start and refuses everything.
-    client: Option<(standardwebhooks::Webhook, reqwest::Client)>,
-    cache: Mutex<HashMap<Key, Entry>>,
+    client: Option<Signer>,
+    cache: FlightCache<Key, Decision>,
     stats: Arc<GateHookStats>,
 }
 
 impl GateHook {
     /// `Err` on a secret Standard Webhooks cannot parse.
     pub fn new(cfg: GateHookConfig, stats: Arc<GateHookStats>) -> Result<Self, String> {
-        let webhook = standardwebhooks::Webhook::new(&cfg.secret).map_err(|e| format!("[auth.hook] secret: {e}"))?;
-        let http = reqwest::Client::builder()
-            .timeout(cfg.timeout)
-            .connect_timeout(cfg.timeout)
-            // A redirect would send the token somewhere the config never named.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| format!("[auth.hook] http client: {e}"))?;
-        Ok(Self { cfg, client: Some((webhook, http)), cache: Mutex::new(HashMap::new()), stats })
+        let client = Signer::new("[auth.hook]", &cfg.url, &cfg.secret, cfg.timeout)?;
+        Ok(Self { cfg, client: Some(client), cache: FlightCache::default(), stats })
     }
 
     /// A hook that refuses every publish and play: what the server installs
@@ -181,7 +160,7 @@ impl GateHook {
             allow_cache: Duration::ZERO,
             deny_cache: Duration::ZERO,
         };
-        Self { cfg, client: None, cache: Mutex::new(HashMap::new()), stats }
+        Self { cfg, client: None, cache: FlightCache::default(), stats }
     }
 
     fn asks(&self, action: Action) -> bool {
@@ -191,15 +170,13 @@ impl GateHook {
         }
     }
 
-    fn fresh(&self, e: &Entry, now: Instant) -> bool {
-        let ttl = match e.cell.get() {
-            None => return true, // in flight: share it
-            Some(Decision::Allow) => self.cfg.allow_cache,
+    fn ttl(&self, d: &Decision) -> Duration {
+        match d {
+            Decision::Allow => self.cfg.allow_cache,
             // Denials and failures (even ones on_error allowed) are asked
             // again sooner, so a recovered service takes over quickly.
-            Some(_) => self.cfg.deny_cache,
-        };
-        now.duration_since(e.created) < ttl
+            _ => self.cfg.deny_cache,
+        }
     }
 
     /// `Ok` to go ahead; `Err(reason)` to refuse.
@@ -217,25 +194,7 @@ impl GateHook {
             return Err("authorization service unavailable".into());
         }
         let key: Key = (action, stream.to_owned(), ip, token.map(str::to_owned));
-        let now = Instant::now();
-        let (cell, from_cache) = {
-            let mut cache = self.cache.lock();
-            if cache.len() >= SWEEP_AT {
-                cache.retain(|_, e| self.fresh(e, now));
-                if cache.len() >= SWEEP_AT {
-                    // Still full of live entries: start over rather than grow.
-                    cache.clear();
-                }
-            }
-            match cache.get(&key) {
-                Some(e) if self.fresh(e, now) => (e.cell.clone(), e.cell.get().is_some()),
-                _ => {
-                    let cell = Arc::new(OnceCell::new());
-                    cache.insert(key, Entry { created: now, cell: cell.clone() });
-                    (cell, false)
-                }
-            }
-        };
+        let (cell, from_cache) = self.cache.cell(key, |d| self.ttl(d));
         if from_cache {
             self.stats.cached[action_index(action)].fetch_add(1, Ordering::Relaxed);
         }
@@ -267,45 +226,19 @@ impl GateHook {
             );
             Decision::Failed(allowed)
         };
-        let timestamp = OffsetDateTime::now_utc();
-        let body = json!({
-            "type": format!("gate.{}", action.as_str()),
-            "timestamp": timestamp.format(&Rfc3339).unwrap_or_default(),
-            "data": { "stream": stream, "ip": ip.map(|i| i.to_string()), "token": token },
-        });
-        let Some((webhook, http)) = &self.client else { return failed("not started") };
-        let Ok(payload) = serde_json::to_vec(&body) else { return failed("serialize") };
-        let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
-        let Ok(signature) = webhook.sign(&msg_id, timestamp.unix_timestamp(), &payload) else {
-            return failed("sign");
-        };
-        let sent = http
-            .post(&self.cfg.url)
-            .header("content-type", "application/json")
-            .header("webhook-id", msg_id.as_str())
-            .header("webhook-timestamp", timestamp.unix_timestamp().to_string())
-            .header("webhook-signature", signature.as_str())
-            .body(payload)
-            .send()
-            .await;
-        let resp = match sent {
+        let Some(client) = &self.client else { return failed("not started") };
+        let data = json!({ "stream": stream, "ip": ip.map(|i| i.to_string()), "token": token });
+        let resp = match client.post(&format!("gate.{}", action.as_str()), data).await {
             Ok(r) => r,
-            Err(e) if e.is_timeout() => return failed("timeout"),
-            Err(_) => return failed("connection"),
+            Err(e) => return failed(e.as_str()),
         };
         let status = resp.status();
         if status.is_success() {
             return Decision::Allow;
         }
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            let text = tokio::time::timeout(self.cfg.timeout, resp.text()).await.ok().and_then(Result::ok);
-            let reason = text
-                .and_then(|t| {
-                    serde_json::from_str::<serde_json::Value>(&t)
-                        .ok()
-                        .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(str::to_owned))
-                })
-                .map(|r| r.chars().take(MAX_REASON).collect::<String>())
+            let reason = deny_reason(resp, self.cfg.timeout)
+                .await
                 .unwrap_or_else(|| "refused by the authorization service".into());
             tracing::info!(stream, action = action.as_str(), %status, reason, "auth hook denied");
             return Decision::Deny(reason);

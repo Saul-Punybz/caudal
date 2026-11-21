@@ -89,6 +89,15 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # timeout_ms = 2000
 # on_error = "deny"
 
+# Ask your own service which stream a publish/play really goes to
+# (MistServer's PUSH_REWRITE / PLAY_REWRITE). See docs/REWRITE-HOOK.md.
+# [auth.rewrite]
+# url = "https://route.example.com/caudal"
+# secret = "whsec_..."
+# timeout_ms = 2000
+# on_error = "deny"
+# cache_secs = 30
+
 # Signed webhooks (standardwebhooks.com) on stream.started / stream.ended.
 # [hooks]
 # urls = ["https://example.com/caudal-events"]

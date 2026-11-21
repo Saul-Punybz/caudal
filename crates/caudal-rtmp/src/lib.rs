@@ -1,5 +1,7 @@
-//! RTMP / Enhanced RTMP ingest: accepts publishers and feeds a
-//! [`caudal_core::Publisher`]. Entry point fixed by the orchestrator.
+//! RTMP / Enhanced RTMP ingest: accepts publishers ([`serve`]) and pulls
+//! from remote RTMP servers as a player ([`pull`], `[[rtmp.pull]]`), feeding
+//! a [`caudal_core::Publisher`] either way. Also home of the RTMP/RTMPS
+//! client ([`client`]) `caudal-restream` pushes with.
 //!
 //! Built directly on `scuffle-rtmp`'s [`ServerSession`](scuffle_rtmp::ServerSession),
 //! driven from our own `tokio::net::TcpListener` (its `SessionHandler` API is
@@ -19,9 +21,14 @@ use caudal_core::{BufferConfig, Registry};
 use scuffle_rtmp::ServerSession;
 use tokio::net::TcpListener;
 
+pub mod client;
 mod demux;
+pub mod ingest;
+pub mod pull;
 mod session;
+pub mod url;
 
+pub use pull::{RtmpPull, RtmpPullHandle, start_pulls};
 use session::Handler;
 
 #[derive(Debug, Clone)]

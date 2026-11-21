@@ -84,11 +84,13 @@ pub struct RtmpSection {
     /// RTMPS publish (`rtmps://host:port/{app}/{stream}`) on this address,
     /// with `[tls]`'s certificate (files or ACME). Off when absent.
     pub tls_bind: Option<SocketAddr>,
+    /// Pull streams in from remote RTMP/RTMPS servers (Caudal plays them).
+    pub pull: Vec<RtmpPullEntry>,
 }
 
 impl Default for RtmpSection {
     fn default() -> Self {
-        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), tls_bind: None }
+        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), tls_bind: None, pull: Vec::new() }
     }
 }
 
@@ -108,6 +110,28 @@ impl RtmpSection {
             None => Err("[rtmp] tls_bind needs a certificate in [tls] (cert + key, or acme_domains)".into()),
         }
     }
+}
+
+impl RtmpSection {
+    /// Whether the listeners themselves (`bind`, `app`, the RTMPS `tls_bind`)
+    /// differ: pulls reload on their own without restarting them.
+    pub fn listener_changed(&self, other: &Self) -> bool {
+        self.bind != other.bind || self.app != other.app || self.tls_bind != other.tls_bind
+    }
+
+    /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
+    pub fn pull_targets(&self) -> Vec<caudal_rtmp::RtmpPull> {
+        self.pull.iter().map(|p| caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
+}
+
+/// One `[[rtmp.pull]]`: play `url` (`rtmp://host[:port]/app/key`, or
+/// `rtmps://`) from a remote RTMP server and publish it as `stream`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpPullEntry {
+    pub stream: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1466,6 +1490,8 @@ pub struct AuthSection {
     pub play: bool,
     /// Blocking authorization webhook, asked after the token check.
     pub hook: Option<AuthHookSection>,
+    /// Blocking routing webhook, asked before everything else.
+    pub rewrite: Option<AuthRewriteSection>,
 }
 
 impl Default for AuthSection {
@@ -1477,6 +1503,7 @@ impl Default for AuthSection {
             publish: true,
             play: false,
             hook: None,
+            rewrite: None,
         }
     }
 }
@@ -1556,6 +1583,77 @@ impl AuthHookSection {
     }
 }
 
+/// `[auth.rewrite]`: before a publish or a play, POST it (signed, Standard
+/// Webhooks) to `url` and use the stream name the answer gives (MistServer's
+/// `PUSH_REWRITE` / `PLAY_REWRITE`). An empty answer or 401/403 refuses; a
+/// timeout or any other answer is decided by `on_error` (`allow` keeps the
+/// requested name). See `caudal_auth::RewriteHook` and `docs/REWRITE-HOOK.md`.
+///
+/// It sits under `[auth]` rather than `[hooks]` because it behaves like
+/// `[auth.hook]` (blocking, fail-closed by default, reloaded with `[auth]`),
+/// while `[hooks]` only notifies, after the fact, and never blocks.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthRewriteSection {
+    pub url: String,
+    /// `whsec_...`, as in `[hooks]`.
+    pub secret: String,
+    /// One attempt, no retries. 100..=10000.
+    #[serde(default = "default_auth_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// `"deny"` (default) or `"allow"` (keep the requested name) when the
+    /// service fails.
+    #[serde(default = "default_auth_hook_on_error")]
+    pub on_error: String,
+    /// Route publishes (`PUSH_REWRITE`).
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    /// Route plays (`PLAY_REWRITE`).
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// How long an answer is remembered for the same protocol, stream, IP
+    /// and token; the service's `cache_secs` can only lower it.
+    #[serde(default = "default_auth_hook_allow_cache_secs")]
+    pub cache_secs: u64,
+    /// How long a denial or a failure is remembered.
+    #[serde(default = "default_auth_hook_deny_cache_secs")]
+    pub deny_cache_secs: u64,
+}
+
+impl AuthRewriteSection {
+    pub fn to_config(&self) -> Result<caudal_auth::RewriteHookConfig, String> {
+        let url = reqwest_url_ok(&self.url)
+            .ok_or_else(|| format!("[auth.rewrite] url {:?}: expected http(s)://", self.url))?;
+        if !self.secret.starts_with("whsec_") {
+            return Err("[auth.rewrite] `secret` must be a Standard Webhooks secret (whsec_...)".into());
+        }
+        if !(100..=10_000).contains(&self.timeout_ms) {
+            return Err(format!("[auth.rewrite] timeout_ms {} is outside 100..=10000", self.timeout_ms));
+        }
+        let on_error = match self.on_error.as_str() {
+            "deny" => caudal_auth::OnError::Deny,
+            "allow" => caudal_auth::OnError::Allow,
+            other => return Err(format!("[auth.rewrite] on_error {other:?}: expected \"deny\" or \"allow\"")),
+        };
+        if !self.publish && !self.play {
+            return Err("[auth.rewrite] `publish` and `play` are both false; remove the section instead".into());
+        }
+        if self.cache_secs > 3600 || self.deny_cache_secs > 3600 {
+            return Err("[auth.rewrite] cache times are at most 3600 s".into());
+        }
+        Ok(caudal_auth::RewriteHookConfig {
+            url,
+            secret: self.secret.clone(),
+            timeout: Duration::from_millis(self.timeout_ms),
+            on_error,
+            publish: self.publish,
+            play: self.play,
+            cache: Duration::from_secs(self.cache_secs),
+            deny_cache: Duration::from_secs(self.deny_cache_secs),
+        })
+    }
+}
+
 /// `Some(url)` for an absolute http(s) URL with a host.
 fn reqwest_url_ok(s: &str) -> Option<String> {
     let rest = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://"))?;
@@ -1581,6 +1679,11 @@ impl AuthSection {
     /// `[auth.hook]` as the runtime config, `None` when absent.
     pub fn hook_config(&self) -> Result<Option<caudal_auth::GateHookConfig>, String> {
         self.hook.as_ref().map(AuthHookSection::to_config).transpose()
+    }
+
+    /// `[auth.rewrite]` as the runtime config, `None` when absent.
+    pub fn rewrite_config(&self) -> Result<Option<caudal_auth::RewriteHookConfig>, String> {
+        self.rewrite.as_ref().map(AuthRewriteSection::to_config).transpose()
     }
 }
 
@@ -1807,6 +1910,7 @@ impl Config {
         self.tls.to_tls_config()?;
         self.auth.to_auth_config()?;
         self.auth.hook_config()?;
+        self.auth.rewrite_config()?;
         self.access.to_access_config()?;
         self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
@@ -1956,7 +2060,7 @@ impl Config {
 }
 
 impl Config {
-    /// `[[rtsp.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
+    /// Every `[[*.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
     /// name, the right URL scheme, and one pull per stream (two would race
     /// to publish the same name).
     fn validate_pulls_and_pushes(&self) -> Result<(), String> {
@@ -1980,6 +2084,7 @@ impl Config {
             .chain(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &p.stream, &p.url, &["srt"][..])))
             .chain(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &p.stream, &p.url, &["udp", "rtp"][..])))
             .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])))
+            .chain(self.rtmp.pull.iter().map(|p| ("[[rtmp.pull]]", &p.stream, &p.url, &["rtmp", "rtmps"][..])))
             .chain(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &p.stream, &p.url, &["http", "https"][..])));
         for (section, stream, url, schemes) in pulls {
             name_ok(section, stream)?;
@@ -1990,6 +2095,9 @@ impl Config {
         }
         for p in &self.http.pull {
             caudal_http_pull::parse_url(&p.url).map_err(|e| format!("[[http.pull]] url {e}"))?;
+        }
+        for p in &self.rtmp.pull {
+            caudal_rtmp::pull::parse_url(&p.url).map_err(|e| format!("[[rtmp.pull]] url {e}"))?;
         }
         for p in &self.hls.pull {
             caudal_hls_pull::parse_url(&p.url).map_err(|e| format!("[[hls.pull]] url {e}"))?;
@@ -2322,6 +2430,18 @@ origins = ["http://origin-a:8080", "https://origin-b"]
     }
 
     #[test]
+    fn rtmps_bind_change_restarts_the_listener() {
+        let a = RtmpSection::default();
+        let b = RtmpSection { tls_bind: Some("0.0.0.0:1936".parse().unwrap()), ..RtmpSection::default() };
+        assert!(a.listener_changed(&b), "turning RTMPS on must restart the listener");
+        let c = RtmpSection {
+            pull: vec![RtmpPullEntry { stream: "x".into(), url: "rtmp://h/a/k".into() }],
+            ..RtmpSection::default()
+        };
+        assert!(!a.listener_changed(&c), "a pull change alone does not");
+    }
+
+    #[test]
     fn http_pulls_are_validated() {
         let ok: Config = toml::from_str(
             "[[http.pull]]\nstream = \"web\"\nurl = \"http://10.0.0.5:8080/stream.ts\"\n\
@@ -2334,6 +2454,26 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"udp://h:1\"\n").contains("http://"));
         assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/live/index.m3u8\"\n").contains("[[hls.pull]]"));
         let twice = "[[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n";
+        assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
+    }
+
+    #[test]
+    fn rtmp_pulls_are_validated() {
+        let ok: Config = toml::from_str(
+            "[rtmp]\n[[rtmp.pull]]\nstream = \"remote\"\nurl = \"rtmp://10.0.0.5/live/cam1\"\n\
+             [[rtmp.pull]]\nstream = \"cdn\"\nurl = \"rtmps://live.example:443/app/KEY\"\n",
+        )
+        .unwrap();
+        ok.validate().unwrap();
+        assert_eq!(ok.rtmp.pull_targets()[1].url, "rtmps://live.example:443/app/KEY");
+        assert!(!ok.rtmp.listener_changed(&RtmpSection::default()), "pulls are not the listener");
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"srt://h:1\"\n").contains("rtmp://"));
+        assert!(bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/\"\n").contains("stream key"));
+        let e = bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h:x/live/SECRET\"\n");
+        assert!(!e.contains("SECRET"), "{e}");
+        let twice = "[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/live/k\"\n\
+                     [[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n";
         assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
     }
 
@@ -2404,6 +2544,34 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(err("[auth.hook]\nurl = \"auth.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
         assert!(err("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"hunter2\"\n").contains("whsec_"));
+    }
+
+    #[test]
+    fn auth_rewrite_section() {
+        let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+        let ok: Config =
+            toml::from_str(&format!("[auth.rewrite]\nurl = \"https://route.example/r\"\nsecret = \"{secret}\"\n"))
+                .unwrap();
+        ok.validate().unwrap();
+        let r = ok.auth.rewrite_config().unwrap().unwrap();
+        assert_eq!(r.timeout, Duration::from_millis(2000));
+        assert_eq!(r.on_error, caudal_auth::OnError::Deny, "fails closed by default");
+        assert!(r.publish && r.play);
+        assert_eq!((r.cache, r.deny_cache), (Duration::from_secs(30), Duration::from_secs(5)));
+        assert!(Config::default().auth.rewrite_config().unwrap().is_none());
+        let bad = |extra: &str| {
+            toml::from_str::<Config>(&format!("[auth.rewrite]\nurl = \"https://a/r\"\nsecret = \"{secret}\"\n{extra}"))
+                .unwrap()
+                .validate()
+                .unwrap_err()
+        };
+        assert!(bad("timeout_ms = 50\n").contains("[auth.rewrite] timeout_ms"));
+        assert!(bad("on_error = \"maybe\"\n").contains("on_error"));
+        assert!(bad("publish = false\nplay = false\n").contains("both false"));
+        assert!(bad("cache_secs = 86400\n").contains("3600"));
+        let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(err("[auth.rewrite]\nurl = \"route.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
+        assert!(err("[auth.rewrite]\nurl = \"https://a/r\"\nsecret = \"hunter2\"\n").contains("whsec_"));
     }
 
     #[test]

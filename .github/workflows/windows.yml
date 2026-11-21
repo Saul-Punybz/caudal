@@ -40,7 +40,7 @@ jobs:
           Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
           $bin = (Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
           Add-Content $env:GITHUB_PATH $bin
-      - name: Smoke test (UDP in, LL-HLS out; MPEG-2 + MP2 through [[udp.push]])
+      - name: Smoke test (UDP in, LL-HLS out; MPEG-2 + MP2 through [[udp.push]] and an H.264 copy)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -63,6 +63,14 @@ jobs:
           [[udp.push]]
           stream = "catv"
           url = "udp://127.0.0.1:5006"
+
+          # ...and an H.264 copy to watch it in a browser (/play/catv).
+          [[transcode.ladder]]
+          streams = ["catv"]
+          [[transcode.ladder.rendition]]
+          label = "720p"
+          height = 720
+          video_kbps = 3000
           "@ | Set-Content "$dir\caudal.toml"
           .\target\release\caudal.exe check "$dir\caudal.toml"
           if ($LASTEXITCODE -ne 0) { throw "caudal check failed" }
@@ -120,6 +128,24 @@ jobs:
             Write-Host "ffprobe over [[udp.push]]: $out"
             $o = $out -join ","
             if ($o -notmatch "mpeg2video,1280,720" -or $o -notmatch "mp2") { throw "[[udp.push]] does not carry MPEG-2 1280x720 + MP2: $o" }
+
+            # The transcode (ffmpeg.exe, no console window of its own) makes
+            # catv+720p as H.264 + AAC, and catv's master offers it.
+            $ok = $false
+            for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $r = Invoke-RestMethod "http://127.0.0.1:8080/api/v1/streams/catv%2B720p"
+                $c3 = ($r.tracks | ForEach-Object { $_.codec }) -join ","
+                $ok = $c3 -match "h264" -and $c3 -match "aac"
+              } catch {}
+            }
+            if (-not $ok) { throw "catv+720p never published H.264 + AAC" }
+            Write-Host "catv+720p published: $c3"
+            Start-Sleep -Seconds 6
+            $m2 = (curl.exe -s --fail http://127.0.0.1:8080/hls/catv/master.m3u8) -join "`n"
+            Write-Host "catv master.m3u8:`n$m2"
+            if ($m2 -notmatch "catv\+720p/index.m3u8") { throw "catv's master does not offer the H.264 copy" }
           } finally {
             if (-not $ff.HasExited) { Stop-Process -Id $ff.Id -Force }
             if (-not $ff2.HasExited) { Stop-Process -Id $ff2.Id -Force }

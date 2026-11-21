@@ -816,20 +816,37 @@ fn rendition_reports(hls: &Hls, name: &str) -> String {
 /// (contains `+`), the master keeps working as a single-variant playlist for
 /// just that stream, as it always has.
 async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) -> Response {
-    let wait = entry.block_timeout();
-    let Some(root_attrs) = entry.wait(wait, |p| p.variant_attrs()).await else {
-        return error(StatusCode::NOT_FOUND);
-    };
-    let mut variants = vec![(name.to_owned(), root_attrs)];
-    if !name.contains('+') {
+    let siblings = || -> Vec<(String, VariantAttrs)> {
+        if name.contains('+') {
+            return Vec::new();
+        }
         let prefix = format!("{name}+");
-        let siblings: Vec<(String, Arc<Entry>)> =
+        let entries: Vec<(String, Arc<Entry>)> =
             hls.streams().iter().filter(|(n, _)| n.starts_with(&prefix)).map(|(n, e)| (n.clone(), e.clone())).collect();
-        for (n, e) in siblings {
-            if let Some(attrs) = e.pkg().variant_attrs() {
-                variants.push((n, attrs));
+        entries.into_iter().filter_map(|(n, e)| e.pkg().variant_attrs().map(|a| (n, a))).collect()
+    };
+    // A root whose own media no browser plays (MPEG-2 from a broadcast
+    // feed) never becomes a variant; its transcoded `+` renditions are what
+    // the master offers then, instead of a 404.
+    // Read once, guard dropped: nothing may hold the packager across the wait.
+    let (root_now, root_ready) = {
+        let p = entry.pkg();
+        (p.variant_attrs(), p.ready())
+    };
+    let mut variants = match root_now {
+        Some(a) => vec![(name.to_owned(), a)],
+        None if !root_ready && !siblings().is_empty() => Vec::new(),
+        None => {
+            let wait = entry.block_timeout();
+            match entry.wait(wait, |p| p.variant_attrs()).await {
+                Some(a) => vec![(name.to_owned(), a)],
+                None => Vec::new(),
             }
         }
+    };
+    variants.extend(siblings());
+    if variants.is_empty() {
+        return error(StatusCode::NOT_FOUND);
     }
     variants.sort_by_key(|(_, a)| std::cmp::Reverse(a.peak));
     let text = hls.text_track(name).map(|t| (family_root(name).to_owned(), t));

@@ -182,12 +182,26 @@ impl Source {
     }
 }
 
+/// The video codecs a source may have: what browsers play (H.264, H.265),
+/// and MPEG-2 from a broadcast feed, which only becomes watchable in a
+/// browser through a transcode (ffmpeg engine).
+pub(crate) fn is_source_video(codec: Codec) -> bool {
+    matches!(codec, Codec::H264 | Codec::H265 | Codec::Mpeg2Video)
+}
+
+/// Whether browsers play this video codec as it is. A source that is not
+/// gets renditions at its own height too: there the transcode changes the
+/// codec, not the size.
+pub(crate) fn browser_playable(codec: Codec) -> bool {
+    matches!(codec, Codec::H264 | Codec::H265)
+}
+
 /// Waits for the source's track list to carry a video track. Returns `None`
 /// if the source ends first.
 pub(crate) async fn wait_tracks(sub: &mut Subscriber) -> Option<Vec<TrackInfo>> {
     loop {
         let tracks = sub.tracks();
-        if tracks.iter().any(|t| matches!(t.codec, Codec::H264 | Codec::H265)) {
+        if tracks.iter().any(|t| is_source_video(t.codec)) {
             return Some(tracks);
         }
         match sub.recv().await {
@@ -216,16 +230,19 @@ async fn run_source(registry: Arc<Registry>, stream: Arc<Stream>, ladder: Ladder
 }
 
 /// Picks the video/audio tracks and the renditions worth producing (those
-/// strictly smaller than the source; the others are logged once and skipped).
+/// strictly smaller than the source, or as tall for a source browsers do
+/// not play; the others are logged once and skipped).
 pub(crate) fn source_from_tracks(name: &str, tracks: &[TrackInfo], ladder: &Ladder) -> Option<Source> {
-    let video = tracks.iter().find(|t| matches!(t.codec, Codec::H264 | Codec::H265))?.clone();
+    let video = tracks.iter().find(|t| is_source_video(t.codec))?.clone();
     let audio = tracks.iter().find(|t| t.kind() == TrackKind::Audio).cloned();
     let src_h = video.video.map_or(0, |v| v.height);
+    let same_height_ok = !browser_playable(video.codec);
     let mut renditions = Vec::new();
     for r in &ladder.renditions {
-        if src_h > 0 && r.height >= src_h {
+        let too_tall = if same_height_ok { r.height > src_h } else { r.height >= src_h };
+        if src_h > 0 && too_tall {
             tracing::info!(stream = %name, rendition = %r.label, height = r.height, source_height = src_h,
-                "rendition skipped: not smaller than the source");
+                "rendition skipped: taller than the source (or as tall, for H.264/H.265)");
         } else {
             renditions.push(r.clone());
         }

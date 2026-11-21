@@ -43,14 +43,68 @@ pub fn scratch(name: &str) -> PathBuf {
 
 /// A `secs`-second 640x360 30 fps H.264 + 48 kHz AAC clip, via MPEG-TS.
 pub fn testsrc_clip(dir: &Path, secs: u32) -> Clip {
+    ts_clip(
+        dir,
+        "testsrc=size=640x360:rate=30",
+        secs,
+        &[
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "45",
+            "-bf",
+            "0",
+            "-threads",
+            "2",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+        ],
+    )
+}
+
+/// A broadcast-style clip: interlaced MPEG-2 640x360 29.97 (top field
+/// first, B-frames) + MP2, the kind an ATSC chain carries.
+pub fn mpeg2_clip(dir: &Path, secs: u32) -> Clip {
+    ts_clip(
+        dir,
+        "testsrc=size=640x360:rate=30000/1001",
+        secs,
+        &[
+            "-c:v",
+            "mpeg2video",
+            "-b:v",
+            "3M",
+            "-g",
+            "15",
+            "-bf",
+            "2",
+            "-flags",
+            "+ildct+ilme",
+            "-vf",
+            "setfield=tff",
+            "-c:a",
+            "mp2",
+            "-b:a",
+            "192k",
+        ],
+    )
+}
+
+/// `secs` of lavfi `video` + a 440 Hz tone, encoded with `codecs`, written
+/// as MPEG-TS and read back through `caudal-ts` into a clip.
+fn ts_clip(dir: &Path, video: &str, secs: u32, codecs: &[&str]) -> Clip {
     let path = dir.join("src.ts");
     let st = Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i"])
-        .arg("testsrc=size=640x360:rate=30")
+        .arg(video)
         .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
         .args(["-t", &secs.to_string()])
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "45", "-bf", "0", "-threads", "2"])
-        .args(["-c:a", "aac", "-b:a", "64k", "-f", "mpegts"])
+        .args(codecs)
+        .args(["-f", "mpegts"])
         .arg(&path)
         .status()
         .unwrap();

@@ -136,26 +136,27 @@
     if (pos !== null && isFinite(pos) && pos > video.currentTime) video.currentTime = pos;
   }
 
-  // After the buffer runs dry at the live edge, wait until the playlist is
-  // the target latency ahead before playing again. hls.js has no rebuffer
-  // goal: the element resumes on the first frames that arrive, and the
-  // latency controller only ever speeds up (maxLiveSyncPlaybackRate), never
-  // backs off. So when a publisher drops and comes back within the
-  // reconnect grace, playback restarts on the first part of the new publish
-  // and stays one part behind the encoder, with no headroom at all.
-  // Chromium and Firefox cope; WebKit (GStreamer MSE on Linux) on a loaded
-  // 2-core CI runner did not: it advanced 0.50 s in 3 s after the seam
-  // (browser suite, 21 Nov 2026).
-  // The distance is to the playlist's edge (not hls.latency, which keeps
-  // growing with the playlist's age while a publisher is away). A stall
-  // further back than the goal (a slow fetch) is left alone: holding there
-  // would only add latency. The goal is hls.targetLatency, at least
+  // When a publisher drops and comes back within the reconnect grace, the
+  // buffer runs dry at the edge of a playlist that stopped advancing, and
+  // the element resumes on the first part of the new publish: hls.js has no
+  // rebuffer goal, and its latency controller only ever speeds up
+  // (maxLiveSyncPlaybackRate), never backs off. Playback then stays one
+  // part behind the encoder with no headroom. Chromium and Firefox cope;
+  // WebKit (GStreamer MSE on Linux) on a loaded 2-core CI runner did not:
+  // it advanced 0.50 s in 3 s after the seam (browser suite, 21 Nov 2026).
+  // So a stall on a playlist that has not advanced for STALE_S is held
+  // (paused) until the playlist's edge is the goal ahead of the playhead.
+  // A stall while parts keep coming (a slow fetch, a startup hiccup) is
+  // left to hls.js: holding there only added latency (Chromium lost a
+  // second of play.spec's 3 s window). The distance is to the playlist's
+  // edge, not hls.latency, which keeps growing with the playlist's age
+  // while a publisher is away. The goal is hls.targetLatency, at least
   // HOLD_MIN_S (hls.js reports no stall of its own while the element is
   // paused, so it does not raise the target) and at most HOLD_CAP_S, so the
   // latency stays under 3 s. HOLD_MAX_MS releases a stream that ended, and
   // holes up to 0.5 s count as buffer (hls.js' gap controller jumps them).
   var holding = false, holdSince = 0, played = false;
-  var HOLD_MIN_S = 1, HOLD_CAP_S = 2, HOLD_MAX_MS = 8000;
+  var HOLD_MIN_S = 1, HOLD_CAP_S = 2, HOLD_MAX_MS = 8000, STALE_S = 1;
   video.addEventListener("playing", function () { played = true; });
   function bufferAhead() {
     var b = video.buffered, t = video.currentTime;
@@ -176,7 +177,7 @@
       return;
     }
     if (!live || !played || video.paused || video.seeking || video.ended) return;
-    if (video.readyState >= 3 || bufferAhead() > 0.1 || edgeAhead >= goal) return;
+    if (video.readyState >= 3 || bufferAhead() > 0.1 || edgeAhead >= goal || !(details.age > STALE_S)) return;
     holding = true;
     holdSince = Date.now();
     video.pause();

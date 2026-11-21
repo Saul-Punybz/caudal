@@ -5,9 +5,10 @@
 //!
 //! No new sender: a live match becomes one more target of the existing
 //! engine for its scheme (`caudal_restream`, `caudal_srt`'s push,
-//! `caudal_multicast`'s UDP/RTP sender), next to the static
-//! `[[restream]]`, `[[srt.push]]`, `[[multicast]]` / `[[udp.push]]`
-//! entries. [`AutoPush`] owns those three target lists: on every publish
+//! `caudal_multicast`'s UDP/RTP sender, `caudal_webrtc`'s WHIP push), next
+//! to the static `[[restream]]`, `[[srt.push]]`, `[[multicast]]` /
+//! `[[udp.push]]`, `[[webrtc.push]]` entries. [`AutoPush`] owns those four
+//! target lists: on every publish
 //! or end, and on a config reload, it recomputes `static ∪ expansions` and
 //! hands each engine its list. The engines' `reload` diffs by identity, so
 //! a target that did not change keeps its task and connection: an
@@ -39,6 +40,7 @@ pub struct PushSet {
     pub restream: Vec<caudal_restream::RestreamTarget>,
     pub srt: Vec<caudal_srt::SrtPush>,
     pub udp: Vec<caudal_multicast::MulticastTarget>,
+    pub whip: Vec<caudal_webrtc::WhipPush>,
     pub rules: Vec<AutoPushEntry>,
 }
 
@@ -49,6 +51,7 @@ impl PushSet {
             restream: cfg.restream_targets(),
             srt: cfg.srt.push_targets(),
             udp: cfg.multicast_targets().expect("validated"),
+            whip: cfg.webrtc.push_targets(),
             rules: cfg.push.auto.clone(),
         }
     }
@@ -60,7 +63,7 @@ pub struct RuleJson {
     pub streams: Vec<String>,
     /// The template, secrets masked like every push listing.
     pub url: String,
-    /// `rtmp`, `srt` or `udp`: the engine the pushes run on.
+    /// `rtmp`, `srt`, `udp` or `whip`: the engine the pushes run on.
     pub kind: &'static str,
     /// The pushes this rule runs now, one per live matching stream.
     pub active: Vec<ActiveJson>,
@@ -87,6 +90,7 @@ struct Plan {
     restream: Vec<caudal_restream::RestreamTarget>,
     srt: Vec<caudal_srt::SrtPush>,
     udp: Vec<caudal_multicast::MulticastTarget>,
+    whip: Vec<caudal_webrtc::WhipPush>,
     rules: Vec<RuleJson>,
 }
 
@@ -98,7 +102,13 @@ fn plan(
     live: &[String],
     held: &BTreeMap<std::net::SocketAddr, String>,
 ) -> (Plan, BTreeMap<std::net::SocketAddr, String>) {
-    let mut p = Plan { restream: set.restream.clone(), srt: set.srt.clone(), udp: set.udp.clone(), rules: vec![] };
+    let mut p = Plan {
+        restream: set.restream.clone(),
+        srt: set.srt.clone(),
+        udp: set.udp.clone(),
+        whip: set.whip.clone(),
+        rules: vec![],
+    };
     let mut now_held = BTreeMap::new();
     for rule in &set.rules {
         let kind = rule.kind().expect("validated");
@@ -128,6 +138,16 @@ fn plan(
                     json.active.push(ActiveJson { stream: name.clone(), url: crate::config_edit::redact(&t.url) });
                     if !p.srt.contains(&t) {
                         p.srt.push(t);
+                    }
+                }
+            }
+            AutoPushKind::Whip => {
+                for name in matching {
+                    let url = expand_push_template(&rule.url, name);
+                    let t = caudal_webrtc::WhipPush { stream: name.clone(), url, token: rule.token.clone() };
+                    json.active.push(ActiveJson { stream: name.clone(), url: crate::config_edit::redact(&t.url) });
+                    if !p.whip.iter().any(|w| w.stream == t.stream && w.url == t.url) {
+                        p.whip.push(t);
                     }
                 }
             }
@@ -174,7 +194,7 @@ struct State {
     warned: HashSet<(usize, String)>,
 }
 
-/// The auto-push rules and the three engines they feed. Cheap to clone.
+/// The auto-push rules and the four engines they feed. Cheap to clone.
 #[derive(Clone)]
 pub struct AutoPush {
     inner: Arc<Inner>,
@@ -185,11 +205,12 @@ struct Inner {
     restream: caudal_restream::RestreamHandle,
     srt: caudal_srt::PushHandle,
     udp: caudal_multicast::MulticastHandle,
+    whip: caudal_webrtc::WhipPushHandle,
     state: Mutex<State>,
 }
 
 impl AutoPush {
-    /// Takes over the target lists of the three engines (started with
+    /// Takes over the target lists of the four engines (started with
     /// `set`'s static targets) and starts watching publishes and ends.
     /// Must be called inside a tokio runtime.
     pub fn start(
@@ -198,11 +219,17 @@ impl AutoPush {
         restream: caudal_restream::RestreamHandle,
         srt: caudal_srt::PushHandle,
         udp: caudal_multicast::MulticastHandle,
+        whip: caudal_webrtc::WhipPushHandle,
     ) -> Self {
-        let applied =
-            Plan { restream: set.restream.clone(), srt: set.srt.clone(), udp: set.udp.clone(), rules: vec![] };
+        let applied = Plan {
+            restream: set.restream.clone(),
+            srt: set.srt.clone(),
+            udp: set.udp.clone(),
+            whip: set.whip.clone(),
+            rules: vec![],
+        };
         let state = State { set, applied, held: BTreeMap::new(), warned: HashSet::new() };
-        let inner = Arc::new(Inner { registry: registry.clone(), restream, srt, udp, state: Mutex::new(state) });
+        let inner = Arc::new(Inner { registry: registry.clone(), restream, srt, udp, whip, state: Mutex::new(state) });
         // Subscribe before the first recompute, so a stream published in
         // between is seen (a recompute is idempotent).
         let mut publishes = registry.subscribe_publishes();
@@ -279,6 +306,9 @@ impl Inner {
         if next.udp != st.applied.udp {
             self.udp.reload(&self.registry, next.udp.clone());
         }
+        if next.whip != st.applied.whip {
+            self.whip.reload(&self.registry, next.whip.clone());
+        }
         st.held = held;
         st.applied = next;
     }
@@ -295,6 +325,7 @@ mod tests {
             ttl: None,
             interface: None,
             pacing: None,
+            token: None,
         }
     }
 
@@ -325,6 +356,25 @@ mod tests {
     }
 
     #[test]
+    fn whip_rules_expand_with_their_token() {
+        let set = PushSet {
+            whip: vec![caudal_webrtc::WhipPush {
+                stream: "cam1".into(),
+                url: "whip://h/whip/cam1".into(),
+                token: None,
+            }],
+            rules: vec![AutoPushEntry { token: Some("tk".into()), ..rule(&["cam*"], "whip://h/whip/$stream") }],
+            ..Default::default()
+        };
+        let (p, _) = plan(&set, &names(&["cam1", "cam2", "other"]), &BTreeMap::new());
+        let got: Vec<_> = p.whip.iter().map(|t| (t.stream.as_str(), t.url.as_str(), t.token.as_deref())).collect();
+        // cam1 is the static entry already (runs once, as the static one).
+        assert_eq!(got, [("cam1", "whip://h/whip/cam1", None), ("cam2", "whip://h/whip/cam2", Some("tk"))]);
+        assert_eq!(p.rules[0].kind, "whip");
+        assert_eq!(p.rules[0].active.len(), 2);
+    }
+
+    #[test]
     fn udp_destination_stays_with_its_stream() {
         let set = PushSet { rules: vec![rule(&["*"], "udp://127.0.0.1:5000")], ..Default::default() };
         let (p, held) = plan(&set, &names(&["a", "b"]), &BTreeMap::new());
@@ -350,7 +400,8 @@ mod tests {
             caudal_restream::start(registry.clone(), caudal_restream::RestreamConfig { targets: set.restream.clone() });
         let srt = caudal_srt::start_pushes(registry.clone(), vec![]);
         let udp = caudal_multicast::start(registry.clone(), vec![]);
-        let auto = AutoPush::start(registry.clone(), set.clone(), restream, srt, udp);
+        let whip = caudal_webrtc::start_pushes(registry.clone(), vec![]);
+        let auto = AutoPush::start(registry.clone(), set.clone(), restream, srt, udp, whip);
         let _p = registry.publish("cam", caudal_core::BufferConfig::default()).unwrap();
         let mut with_rule = set.clone();
         with_rule.rules.push(rule(&["cam"], "rtmp://y/live/$stream"));
@@ -432,7 +483,8 @@ mod tests {
         let restream = caudal_restream::start(registry.clone(), caudal_restream::RestreamConfig { targets: vec![] });
         let srt = caudal_srt::start_pushes(registry.clone(), vec![]);
         let udp = caudal_multicast::start(registry.clone(), vec![]);
-        let auto = AutoPush::start(registry.clone(), set, restream, srt, udp);
+        let whip = caudal_webrtc::start_pushes(registry.clone(), vec![]);
+        let auto = AutoPush::start(registry.clone(), set, restream, srt, udp, whip);
 
         // Not matching: nothing is sent.
         let other = publish(&registry, "studio");

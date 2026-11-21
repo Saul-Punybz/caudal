@@ -274,6 +274,15 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # public_ips = []        # addresses to advertise behind a 1:1 NAT
 # threads = 0            # peer engines doing SRTP; 0 = one per core, at most 8
 
+# Push a live stream out to a WHIP endpoint (Cloudflare Stream, Millicast,
+# LiveKit, another Caudal). whip:// is HTTPS, whip+http:// plain HTTP;
+# token goes in `Authorization: Bearer`. H.264 + Opus (AAC audio: video
+# only). Hot-reloadable. docs/WHIP-PUSH.md.
+# [[webrtc.push]]
+# stream = "main"
+# url = "whip://ingest.example/whip/main"
+# token = "..."
+
 # Media over QUIC: output over WebTransport (on by default, self-signed cert
 # unless cert/key are set) and ingest. An encoder publishes a `hang`
 # broadcast (H.264/H.265 + AAC/Opus, avcC/hvcC or AudioSpecificConfig/

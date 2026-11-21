@@ -3,7 +3,7 @@
 //! smallest correct change per section:
 //!
 //! - **Hot, no restart:** `[[restream]]`, `[[multicast]]`, `[[channel]]`,
-//!   `[[failover]]`, `[[srt.push]]`, `[[push.auto]]`, `[[rtsp.pull]]`, `[[omt.pull]]`,
+//!   `[[failover]]`, `[[srt.push]]`, `[[webrtc.push]]`, `[[push.auto]]`, `[[rtsp.pull]]`, `[[omt.pull]]`,
 //!   `[[omt.output]]` (and `[omt] ffmpeg`) are each their own subsystem with a `reload` that
 //!   diffs by identity — unchanged entries keep their task untouched, so
 //!   a reload never drops an unrelated viewer or publisher. `[auth]` and
@@ -26,7 +26,8 @@
 //!   already-accepted connection: every connection handler is its own
 //!   independently spawned task, not a child of the listener's accept
 //!   loop.
-//! - **`requires_restart`:** `[server]`, `[tls]`, `[webrtc]`, `[moq]`,
+//! - **`requires_restart`:** `[server]`, `[tls]`, `[webrtc]` (not its
+//!   `[[webrtc.push]]`), `[moq]`,
 //!   `[hls]`, `[record]`, `[buffer]`, `[admin]`, `[health]`, `[captions]`, `[cluster]` are wired once at startup into the
 //!   single `axum::Router` passed to `axum::serve`; swapping them without
 //!   restarting the process is out of scope here. A reload reports these
@@ -375,8 +376,8 @@ pub struct Supervisor {
 
     channel: caudal_channel::ChannelHandle,
     failover: caudal_failover::FailoverHandle,
-    /// Owns the target lists of `[[restream]]`, `[[srt.push]]` and
-    /// `[[multicast]]`/`[[udp.push]]`, plus `[[push.auto]]`'s expansions.
+    /// Owns the target lists of `[[restream]]`, `[[srt.push]]`,
+    /// `[[multicast]]`/`[[udp.push]]` and `[[webrtc.push]]`, plus `[[push.auto]]`'s expansions.
     auto_push: crate::auto_push::AutoPush,
     srt_pull: caudal_srt::PullHandle,
     udp_pull: caudal_udp::UdpPullHandle,
@@ -467,7 +468,7 @@ impl Supervisor {
         let multicast = caudal_multicast::start(registry.clone(), cfg.multicast_targets().expect("validated"));
         let multicast_router = caudal_multicast::router(multicast.clone());
 
-        // From here on the three push engines get their target lists only
+        // From here on the four push engines get their target lists only
         // through `auto_push` (static entries + live `[[push.auto]]` matches).
         let auto_push = crate::auto_push::AutoPush::start(
             registry.clone(),
@@ -475,6 +476,7 @@ impl Supervisor {
             restream.clone(),
             srt_push,
             multicast.clone(),
+            caudal_webrtc::start_pushes(registry.clone(), cfg.webrtc.push_targets()),
         );
 
         let channel = caudal_channel::start(
@@ -558,14 +560,15 @@ impl Supervisor {
         let old = current.clone();
         let mut report = ReloadReport::default();
 
-        // [[restream]], [[srt.push]], [[multicast]], [[udp.push]] and
-        // [[push.auto]] all reach their engines through `auto_push`, which
+        // [[restream]], [[srt.push]], [[multicast]], [[udp.push]],
+        // [[webrtc.push]] and [[push.auto]] all reach their engines through `auto_push`, which
         // diffs by target: unchanged pushes keep running.
         let push_sections = [
             ("restream", old.restream != new_cfg.restream),
             ("srt.push", old.srt.push != new_cfg.srt.push),
             ("multicast", old.multicast != new_cfg.multicast),
             ("udp.push", old.udp.push != new_cfg.udp.push),
+            ("webrtc.push", old.webrtc.push != new_cfg.webrtc.push),
             ("push.auto", old.push != new_cfg.push),
         ];
         if push_sections.iter().any(|(_, changed)| *changed) {
@@ -694,7 +697,7 @@ impl Supervisor {
         if old.tls != new_cfg.tls {
             report.requires_restart.push("tls".into());
         }
-        if old.webrtc != new_cfg.webrtc {
+        if old.webrtc.listener_changed(&new_cfg.webrtc) {
             report.requires_restart.push("webrtc".into());
         }
         if old.moq != new_cfg.moq {

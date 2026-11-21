@@ -1349,13 +1349,16 @@ dependencies = [
  "getrandom 0.3.4",
  "if-addrs",
  "mp4-atom",
+ "parking_lot",
  "quinn-udp",
+ "reqwest 0.12.28",
  "scuffle-h264",
  "socket2 0.6.5",
  "str0m",
  "tokio",
  "tracing",
  "ureq",
+ "url",
 ]
 
 [[package]]

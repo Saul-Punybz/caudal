@@ -1,7 +1,7 @@
 # Automatic pushes
 
 A static push (`[[restream]]`, `[[srt.push]]`, `[[udp.push]]`,
-`[[multicast]]`) names one stream. An automatic push is a rule: stream
+`[[multicast]]`, `[[webrtc.push]]`) names one stream. An automatic push is a rule: stream
 patterns plus a target URL template. Whenever a stream matching the rule goes
 live, Caudal starts a push for it; when the stream ends, the push stops. This
 is MistServer's "automatic push" (`push_auto_add`).
@@ -31,14 +31,14 @@ pacing = true           # udp:// and rtp:// only, default true
 | | |
 |---|---|
 | `streams` | Exact names (`main`), `prefix*` (`cam*`), or `*`. The same matching `[transcode]` uses: a `name+rendition` stream (`main+720p`) never matches, so a rule pushes sources, not their renditions. |
-| `url` | `rtmp://` / `rtmps://` (the `[[restream]]` engine), `srt://` (the `[[srt.push]]` engine), `udp://` / `rtp://` (the `[[udp.push]]` sender). No new protocol: each match runs on the same engine as the static entry of that scheme, with the same reconnect and backoff. |
+| `url` | `rtmp://` / `rtmps://` (the `[[restream]]` engine), `srt://` (the `[[srt.push]]` engine), `udp://` / `rtp://` (the `[[udp.push]]` sender), `whip://` / `whip+http://` (the `[[webrtc.push]]` WHIP client; an optional `token` is the bearer token for every push of the rule, see `docs/WHIP-PUSH.md`). No new protocol: each match runs on the same engine as the static entry of that scheme, with the same reconnect and backoff. |
 | Variables | `$stream` or `${stream}`: the stream's name. `$basename` or `${basename}`: the part before `+`, which is the whole name here because `+` streams never match. Any other `$word` is left as it is (a stream key may contain `$`). MistServer's time variables (`$datetime`...) are not supported. |
 | UDP/RTP | The URL is an IP address and port, so it takes no variables, and a destination carries one stream at a time. When several live streams match one UDP rule, the stream already sending keeps the destination (otherwise the first by name); the rest are listed as `skipped`. |
 
 `caudal check` (and every reload) refuses a rule with an empty `streams`, a
 pattern that is not a name, `prefix*` or `*`, an unknown scheme, a template
 that does not expand to a URL with a host (and, for SRT, a port) for a sample
-name, `ttl`/`interface`/`pacing` on a non-UDP rule, or a UDP destination that
+name, `ttl`/`interface`/`pacing` on a non-UDP rule, `token` on a non-WHIP rule, or a UDP destination that
 a `[[multicast]]`, `[[udp.push]]` or another rule already uses.
 
 ## Duplicates

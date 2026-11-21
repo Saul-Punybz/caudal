@@ -11,9 +11,10 @@ use std::time::Duration;
 use caudal_core::{Event, Registry, StartAt, Stream, TrackId, TrackInfo};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::RestreamTarget;
 use crate::status::TargetStatus;
-use crate::{RestreamTarget, flv};
 use caudal_rtmp::client::RtmpClient;
+use caudal_rtmp::flv;
 use caudal_rtmp::url::parse_target_url;
 
 const BACKOFF_MIN: Duration = Duration::from_secs(1);

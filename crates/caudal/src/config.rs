@@ -81,6 +81,11 @@ pub struct RtmpSection {
     pub bind: SocketAddr,
     #[serde(default = "default_rtmp_app")]
     pub app: String,
+    /// Let viewers `play` streams over RTMP (`rtmp://host/app/stream`), as
+    /// VLC, ffplay or another server's RTMP pull do. Same auth as every
+    /// other output. On by default.
+    #[serde(default = "default_true")]
+    pub play: bool,
     /// RTMPS publish (`rtmps://host:port/{app}/{stream}`) on this address,
     /// with `[tls]`'s certificate (files or ACME). Off when absent.
     pub tls_bind: Option<SocketAddr>,
@@ -90,7 +95,7 @@ pub struct RtmpSection {
 
 impl Default for RtmpSection {
     fn default() -> Self {
-        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), tls_bind: None, pull: Vec::new() }
+        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), play: true, tls_bind: None, pull: Vec::new() }
     }
 }
 
@@ -113,10 +118,10 @@ impl RtmpSection {
 }
 
 impl RtmpSection {
-    /// Whether the listeners themselves (`bind`, `app`, the RTMPS `tls_bind`)
-    /// differ: pulls reload on their own without restarting them.
+    /// Whether the listeners themselves (`bind`, `app`, `play`, the RTMPS
+    /// `tls_bind`) differ: pulls reload on their own without restarting them.
     pub fn listener_changed(&self, other: &Self) -> bool {
-        self.bind != other.bind || self.app != other.app || self.tls_bind != other.tls_bind
+        self.bind != other.bind || self.app != other.app || self.play != other.play || self.tls_bind != other.tls_bind
     }
 
     /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.

@@ -245,8 +245,8 @@ fn apply_hooks(
     }
 }
 
-/// The RTMP listener task, restarted whole when `[rtmp]`'s `bind` or `app`
-/// changes. The compare key is `RtmpSection::listener_changed` on the
+/// The RTMP listener task, restarted whole when `[rtmp]`'s `bind`, `app` or
+/// `play` changes. The compare key is `RtmpSection::listener_changed` on the
 /// last-applied `Config` (see `Supervisor::reload`; `[[rtmp.pull]]` reloads
 /// on its own), so there's nothing to keep here beyond the task itself.
 struct RtmpListener {
@@ -259,9 +259,9 @@ fn spawn_rtmp(
     section: &config::RtmpSection,
     tls: &config::TlsSection,
 ) -> RtmpListener {
-    let cfg = caudal_rtmp::RtmpConfig { bind: section.bind, app: section.app.clone(), buffer };
+    let cfg = caudal_rtmp::RtmpConfig { bind: section.bind, app: section.app.clone(), buffer, play: section.play };
     let rtmps = section.tls_source(tls).expect("validated");
-    tracing::info!(bind = %cfg.bind, app = %cfg.app, tls_bind = ?rtmps.as_ref().map(|(b, _)| b), "starting rtmp listener");
+    tracing::info!(bind = %cfg.bind, app = %cfg.app, play = cfg.play, tls_bind = ?rtmps.as_ref().map(|(b, _)| b), "starting rtmp listener");
     let task = tokio::spawn(async move {
         let plain = caudal_rtmp::serve(cfg.clone(), registry.clone());
         let result = match rtmps {

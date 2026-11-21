@@ -35,7 +35,11 @@ test.describe("MoQ playback in a real browser", () => {
   let moq: MoqFingerprint | null = null;
 
   test.beforeAll(async () => {
-    server = await startCaudal();
+    // Debug for the MoQ/QUIC stack: printed only when the test fails (the
+    // firefox flake is a session that never comes up; NOTES.md).
+    server = await startCaudal({
+      rustLog: "info,caudal_moq=debug,moq_native=debug,moq_net=debug,web_transport_quinn=debug,quinn=info",
+    });
     publisher = startFfmpegPublisher(server.rtmpUrl(STREAM));
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
@@ -60,6 +64,16 @@ test.describe("MoQ playback in a real browser", () => {
     } catch {
       // Not JSON (e.g. the SPA fallback's HTML), connection refused, etc.
     }
+  });
+
+  test.afterEach(async ({ browserName }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus || !server) return;
+    const lines = server.logs().split("\n");
+    const moqLines = lines.filter((l) => /moq|quic|quinn|webtransport|h3|tls/i.test(l));
+    console.log(
+      `[${browserName}] server log on failure: ${moqLines.length} MoQ/QUIC lines of ${lines.length}\n` +
+        moqLines.slice(-300).join("\n"),
+    );
   });
 
   test.afterAll(async () => {

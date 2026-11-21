@@ -1,6 +1,6 @@
 //! `[[hls.pull]]` against real HLS: ffmpeg writing a live (or finished)
-//! HLS into a temporary directory, served by a small HTTP server in the
-//! test.
+//! HLS, with MPEG-TS or fMP4 segments, into a temporary directory, served
+//! by a small HTTP server in the test.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -32,11 +32,16 @@ async fn serve(dir: PathBuf) -> SocketAddr {
     addr
 }
 
-/// ffmpeg writing HLS with MPEG-TS segments; killed on drop.
+/// ffmpeg writing HLS (MPEG-TS segments, or fMP4 ones with `fmp4`);
+/// killed on drop.
 struct Encoder(Child);
 
 impl Encoder {
     fn start(playlist: &Path, codecs: &[&str], size_rate: &str, live: bool, secs: u32) -> Self {
+        Self::start_as(playlist, codecs, size_rate, live, secs, false)
+    }
+
+    fn start_as(playlist: &Path, codecs: &[&str], size_rate: &str, live: bool, secs: u32, fmp4: bool) -> Self {
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-hide_banner", "-loglevel", "error"]);
         if live {
@@ -49,6 +54,7 @@ impl Encoder {
             .args(codecs)
             .args(["-t", &secs.to_string(), "-f", "hls", "-hls_time", "1", "-hls_list_size"])
             .arg(if live { "5" } else { "0" })
+            .args(if fmp4 { &["-hls_segment_type", "fmp4"][..] } else { &[][..] })
             .arg(playlist)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -244,4 +250,98 @@ async fn endlist_with_a_discontinuity() {
     // Not replayed: the playlist still ends with EXT-X-ENDLIST.
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(registry.get("vod").is_none_or(|s| Arc::ptr_eq(&s, &stream)), "not published again");
+}
+
+/// ffmpeg's fMP4 HLS (`-hls_segment_type fmp4`: `EXT-X-MAP` init.mp4 and
+/// `.m4s` segments), live: H.264 + AAC published from the init segment,
+/// new segments keep coming, the video timeline only moves forward.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ffmpeg_fmp4_live_h264_aac() {
+    if !have("ffmpeg") {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("live")).unwrap();
+    let _encoder = Encoder::start_as(&dir.path().join("live/index.m3u8"), H264, "320x240:rate=25", true, 60, true);
+    let addr = serve(dir.path().to_owned()).await;
+    let registry = Registry::new();
+    let _pulls = start_pulls(
+        registry.clone(),
+        BufferConfig::default(),
+        vec![HlsPull { stream: "cmaf".into(), url: format!("http://{addr}/live/index.m3u8") }],
+    );
+    let stream = wait_for(Duration::from_secs(30), || registry.get("cmaf")).await.expect("published");
+    assert_eq!(codecs(&stream), [Codec::H264, Codec::Aac], "tracks announced with the publish");
+    let mut viewer = stream.subscribe(StartAt::Oldest);
+    let video = viewer.tracks().into_iter().find(|t| t.kind() == TrackKind::Video).unwrap();
+    let mut dts = Vec::new();
+    let mut keys = 0;
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Event::Frame(f) = viewer.recv().await
+                && f.track == video.id
+            {
+                keys += usize::from(f.keyframe);
+                dts.push(f.dts);
+            }
+        }
+    })
+    .await;
+    assert!(dts.len() > 100, "4+ s of 25 fps video: {}", dts.len());
+    assert!(keys >= 3, "a keyframe a second (GOP 25): {keys}");
+    assert!(dts.windows(2).all(|w| w[1] > w[0]), "monotonic across segments");
+    let span = (dts.last().unwrap() - dts[0]) as f64 / f64::from(video.timescale);
+    assert!((span - (dts.len() - 1) as f64 / 25.0).abs() < 0.05, "25 fps on the track's own timescale: {span} s");
+}
+
+/// A finished fMP4 HLS with H.265 (`hvc1`) + Opus: both announced, played
+/// to the end, then the stream ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ffmpeg_fmp4_vod_h265_opus() {
+    if !have("ffmpeg") {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let codecs_args =
+        ["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "keyint=25:log-level=error", "-tag:v", "hvc1"];
+    let mut e = Encoder::start_as(
+        &dir.path().join("index.m3u8"),
+        &[&codecs_args[..], &["-c:a", "libopus"][..]].concat(),
+        "320x240:rate=25",
+        false,
+        3,
+        true,
+    );
+    assert!(e.0.wait().unwrap().success(), "ffmpeg wrote the H.265 + Opus HLS");
+    let addr = serve(dir.path().to_owned()).await;
+    let registry = Registry::new();
+    // Three 1 s segments are fed within a second: watch for the publish
+    // rather than poll for it.
+    let mut published = registry.subscribe_publishes();
+    let _pulls = start_pulls(
+        registry.clone(),
+        BufferConfig::default(),
+        vec![HlsPull { stream: "hevc".into(), url: format!("http://{addr}/index.m3u8") }],
+    );
+    let stream = tokio::time::timeout(Duration::from_secs(20), published.recv()).await.expect("published").unwrap();
+    let mut viewer = stream.subscribe(StartAt::Oldest);
+    let mut frames = [0usize; 2];
+    let mut announced = Vec::new();
+    let ended = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match viewer.recv().await {
+                Event::TracksChanged => announced = viewer.tracks().iter().map(|t| t.codec).collect(),
+                Event::Frame(f) => frames[f.track.0 as usize] += 1,
+                Event::End => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "ended after EXT-X-ENDLIST");
+    assert_eq!(announced, [Codec::H265, Codec::Opus]);
+    assert!(frames[0] >= 70, "3 s of 25 fps H.265: {}", frames[0]);
+    assert!(frames[1] >= 140, "3 s of 20 ms Opus packets: {}", frames[1]);
 }

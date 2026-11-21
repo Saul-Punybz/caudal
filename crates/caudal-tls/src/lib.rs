@@ -61,9 +61,30 @@ pub async fn serve(
 /// over plain TCP interleaved). Certificates hot-reload the same way
 /// `CertSource::Files` does for HTTPS.
 pub async fn raw_tls_acceptor(cert: PathBuf, key: PathBuf) -> io::Result<tokio_rustls::TlsAcceptor> {
+    tls_acceptor(&CertSource::Files { cert, key }).await
+}
+
+/// [`raw_tls_acceptor`] for any [`CertSource`], so a non-HTTP listener
+/// (RTMPS) can present the same certificate as the HTTPS listener.
+///
+/// - `Files`: its own hot-reloaded copy of the PEM pair (polled every 5 s,
+///   same as HTTPS; the poller stops when the acceptor is dropped).
+/// - `Acme`: no second ACME client. The acceptor resolves through the
+///   certificate the running HTTPS listener ([`serve`]) orders and renews,
+///   so renewals are picked up without a restart. That listener is also
+///   where TLS-ALPN-01 challenges land, so `[tls]` must be serving for an
+///   ACME certificate to exist; until the first one is issued (or if the
+///   HTTPS listener isn't running) handshakes fail with no certificate.
+pub async fn tls_acceptor(source: &CertSource) -> io::Result<tokio_rustls::TlsAcceptor> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let resolver = resolver::FileCertResolver::load(cert, key)?;
-    resolver.spawn_reloader();
+    let resolver: Arc<dyn rustls::server::ResolvesServerCert> = match source {
+        CertSource::Files { cert, key } => {
+            let resolver = resolver::FileCertResolver::load(cert.clone(), key.clone())?;
+            resolver.spawn_reloader();
+            resolver
+        }
+        CertSource::Acme { .. } => Arc::new(acme::SharedAcmeResolver),
+    };
     let server_config = rustls::ServerConfig::builder().with_no_client_auth().with_cert_resolver(resolver);
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(server_config)))
 }

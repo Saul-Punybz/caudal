@@ -43,7 +43,7 @@ mod schedule;
 mod segmenter;
 mod upload;
 
-pub use schedule::{ScheduleConfig, validate_schedules};
+pub use schedule::{ScheduleConfig, Timetable, TimetableConfig, Window, validate_schedules};
 
 #[derive(Debug, Clone)]
 pub struct RecordConfig {

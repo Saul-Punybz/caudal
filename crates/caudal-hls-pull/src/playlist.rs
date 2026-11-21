@@ -1,8 +1,9 @@
 //! A small HLS playlist parser (RFC 8216 and the LL-HLS additions of its
 //! successor draft): just what a pull needs. A master playlist gives its
 //! variants; a media playlist gives its whole segments with their media
-//! sequence numbers, the target duration, `EXT-X-ENDLIST`, and the tags a
-//! pull cannot play (`EXT-X-MAP` for fMP4, `EXT-X-KEY` encryption).
+//! sequence numbers and the `EXT-X-MAP` (fMP4 init segment) each one
+//! uses, the target duration, `EXT-X-ENDLIST`, and whether segments are
+//! encrypted (`EXT-X-KEY`, which a pull cannot play).
 //!
 //! LL-HLS partial segments (`EXT-X-PART`, `EXT-X-PRELOAD-HINT`) are
 //! skipped: every part ends up in a whole segment, which is what is
@@ -31,8 +32,6 @@ pub struct Media {
     /// `EXT-X-MEDIA-SEQUENCE`.
     pub segments: Vec<Segment>,
     pub endlist: bool,
-    /// `EXT-X-MAP` URI: the segments are fMP4 (or carry an init section).
-    pub map: Option<Url>,
     /// An `EXT-X-KEY` with a method other than `NONE`.
     pub encrypted: bool,
 }
@@ -45,6 +44,9 @@ pub struct Segment {
     pub duration: f64,
     /// An `EXT-X-DISCONTINUITY` precedes this segment.
     pub discontinuity: bool,
+    /// The `EXT-X-MAP` in effect: the segment is fMP4 / CMAF and this is
+    /// its init segment. `None`: MPEG-TS (or packed audio).
+    pub map: Option<Url>,
 }
 
 /// The highest-`BANDWIDTH` variant (the first of equals).
@@ -112,7 +114,7 @@ pub fn parse(text: &str, base: &Url) -> Result<Playlist, String> {
         if let Some(bandwidth) = pending_variant.take() {
             variants.push(Variant { bandwidth, uri: join(line)? });
         } else if let Some(duration) = extinf.take() {
-            segments.push(Segment { seq, uri: join(line)?, duration, discontinuity });
+            segments.push(Segment { seq, uri: join(line)?, duration, discontinuity, map: map.clone() });
             seq += 1;
             discontinuity = false;
         }
@@ -128,7 +130,7 @@ pub fn parse(text: &str, base: &Url) -> Result<Playlist, String> {
     if !(target_duration > 0.0 && target_duration.is_finite()) {
         return Err(format!("EXT-X-TARGETDURATION {target_duration} is not a positive number"));
     }
-    Ok(Playlist::Media(Media { target_duration, segments, endlist, map, encrypted }))
+    Ok(Playlist::Media(Media { target_duration, segments, endlist, encrypted }))
 }
 
 /// The value of `key` in an attribute list (`KEY=VALUE,KEY="quoted, value"`),
@@ -192,7 +194,8 @@ mod tests {
             #EXT-X-DISCONTINUITY\n#EXTINF:2.000000,\n/abs/index9.ts?x=1\n";
         let Playlist::Media(m) = parse(text, &base()).unwrap() else { panic!("media") };
         assert_eq!(m.target_duration, 2.0);
-        assert!(!m.endlist && m.map.is_none() && !m.encrypted);
+        assert!(!m.endlist && !m.encrypted);
+        assert!(m.segments.iter().all(|s| s.map.is_none()));
         let seqs: Vec<u64> = m.segments.iter().map(|s| s.seq).collect();
         assert_eq!(seqs, [7, 8, 9]);
         assert_eq!(m.segments[0].uri.as_str(), "http://h/live/index7.ts");
@@ -214,9 +217,22 @@ mod tests {
         assert_eq!(m.segments.len(), 1, "parts are not segments");
         assert_eq!(m.segments[0].seq, 0, "no EXT-X-MEDIA-SEQUENCE: starts at 0");
         assert!(m.endlist && m.encrypted);
-        assert_eq!(m.map.unwrap().as_str(), "http://h/live/init.mp4");
+        assert_eq!(m.segments[0].map.as_ref().unwrap().as_str(), "http://h/live/init.mp4");
         let none = parse("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-KEY:METHOD=NONE\n", &base()).unwrap();
         assert!(matches!(none, Playlist::Media(m) if !m.encrypted && m.segments.is_empty()));
+    }
+
+    /// Caudal's own LL-HLS after a republish with new codec settings: a
+    /// discontinuity and a second `EXT-X-MAP` mid-playlist.
+    #[test]
+    fn a_map_per_segment() {
+        let text = "#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:4\n\
+            #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2.0,\ns4.m4s\n#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI=\"init1.mp4\"\n\
+            #EXTINF:2.0,\ns5.m4s\n#EXTINF:2.0,\ns6.m4s\n";
+        let Playlist::Media(m) = parse(text, &base()).unwrap() else { panic!("media") };
+        let maps: Vec<&str> = m.segments.iter().map(|s| s.map.as_ref().unwrap().path()).collect();
+        assert_eq!(maps, ["/live/init.mp4", "/live/init1.mp4", "/live/init1.mp4"]);
+        assert!(m.segments[1].discontinuity && !m.segments[2].discontinuity);
     }
 
     #[test]

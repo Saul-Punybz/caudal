@@ -1,6 +1,6 @@
 [package]
 name = "caudal-hls-pull"
-description = "HLS and LL-HLS pulled into Caudal: playlists polled, MPEG-TS segments demuxed and published"
+description = "HLS and LL-HLS pulled into Caudal: playlists polled, MPEG-TS and fMP4/CMAF segments demuxed and published"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bytes.workspace = true
+caudal-cmaf.workspace = true
 caudal-core.workspace = true
 caudal-ts.workspace = true
 tokio.workspace = true
@@ -18,4 +20,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 axum.workspace = true
+caudal-hls.workspace = true
+mp4-atom = "0.15.0"
 tempfile = "3"

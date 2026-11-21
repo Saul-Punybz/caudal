@@ -60,7 +60,11 @@ export function Player({ streamName, token, onLatency, onAuthError }: Props) {
       if (HlsCtor.isSupported()) {
         // Catch up to the live target at up to 1.5x instead of staying wherever
         // playback started (see crates/caudal-hls/static/play.html).
-        hls = new HlsCtor({ lowLatencyMode: true, maxLiveSyncPlaybackRate: 1.5 });
+        // liveDurationInfinity keeps the MediaSource duration at Infinity
+        // instead of following the playlist: otherwise WebKit fires `ended`
+        // during a publisher reconnect gap and playback stops (same option
+        // as the server's /play page, PR #35).
+        hls = new HlsCtor({ lowLatencyMode: true, maxLiveSyncPlaybackRate: 1.5, liveDurationInfinity: true });
         hls.loadSource(src);
         hls.attachMedia(video);
         hls.on(HlsCtor.Events.ERROR, (_evt, data) => {

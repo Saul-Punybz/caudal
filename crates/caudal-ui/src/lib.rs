@@ -34,3 +34,23 @@ async fn serve(uri: Uri) -> Response {
 pub fn router() -> Router {
     Router::new().fallback(serve)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Dist;
+
+    /// The committed build is complete: index.html is embedded and every
+    /// `/assets/...` file it references is embedded too, so a rebuild that
+    /// left stale or missing files in `dist/` fails here, not in a browser.
+    #[test]
+    fn index_html_references_only_embedded_assets() {
+        let index = Dist::get("index.html").expect("dist/index.html is embedded");
+        let html = std::str::from_utf8(&index.data).expect("utf-8");
+        let refs: Vec<&str> =
+            html.split('"').filter_map(|s| s.strip_prefix('/')).filter(|s| s.starts_with("assets/")).collect();
+        assert!(!refs.is_empty(), "index.html references no assets");
+        for path in refs {
+            assert!(Dist::get(path).is_some(), "{path} is referenced by index.html but not embedded");
+        }
+    }
+}

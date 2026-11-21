@@ -14,6 +14,12 @@ import {
   requestClip,
   skipChannel,
   vodPlaylistUrl,
+  thumbnailUrl,
+  listSessions,
+  kickSession,
+  listPulls,
+  listPushes,
+  listAutoPushes,
   type ChannelStatus,
   type Recording,
   type RestreamStatus,
@@ -337,5 +343,83 @@ describe('admin login', () => {
   it('a server without login routes reads as "not required"', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(htmlFallbackResponse()));
     await expect(getSession()).resolves.toMatchObject({ required: false });
+  });
+});
+
+describe('thumbnailUrl', () => {
+  it('encodes the stream name and adds the width and a cache buster', () => {
+    expect(thumbnailUrl('cam 1', 640)).toBe('/api/v1/streams/cam%201/thumbnail.jpg?width=640');
+    expect(thumbnailUrl('cam', 320, 42)).toBe('/api/v1/streams/cam/thumbnail.jpg?width=320&t=42');
+  });
+});
+
+describe('viewer sessions', () => {
+  const session = {
+    id: 17,
+    stream: 'cam',
+    protocol: 'srt',
+    ip: '203.0.113.9',
+    started: 1763586245,
+    duration_secs: 312,
+    bytes_out: 48211904,
+    rtt_ms: 18.4,
+    loss: 0.003,
+    tags: ['vip'],
+  };
+
+  it('lists one stream\'s sessions', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, [session]));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(listSessions('my cam')).resolves.toEqual([session]);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/sessions?stream=my%20cam');
+  });
+
+  it('resolves to an empty array on an older server without the route', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(htmlFallbackResponse()));
+    await expect(listSessions()).resolves.toEqual([]);
+  });
+
+  it('kicks with DELETE and the CSRF token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    setCsrfToken('csrf-1');
+    await kickSession(17);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/sessions/17',
+      expect.objectContaining({ method: 'DELETE', headers: { 'x-csrf-token': 'csrf-1' } }),
+    );
+  });
+
+  it('passes block_secs and throws with the status on 404', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(kickSession(9, 60)).rejects.toMatchObject({ status: 404 });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/sessions/9?block_secs=60');
+  });
+});
+
+describe('pulls and pushes', () => {
+  const entry = { stream: 'cam1', url: 'rtsp://10.0.0.5/live', section: '[[rtsp.pull]]' };
+  const rule = {
+    streams: ['cam*'],
+    url: 'srt://203.0.113.4:9000?streamid=****',
+    kind: 'srt',
+    active: [{ stream: 'cam1', url: 'srt://203.0.113.4:9000?streamid=****' }],
+    skipped: [],
+  };
+
+  it('parses each listing', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [entry])));
+    await expect(listPulls()).resolves.toEqual([entry]);
+    await expect(listPushes()).resolves.toEqual([entry]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [rule])));
+    await expect(listAutoPushes()).resolves.toEqual([rule]);
+  });
+
+  it('resolves to empty arrays when the config routes are not mounted', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(404, 'not found', false)));
+    await expect(listPulls()).resolves.toEqual([]);
+    await expect(listPushes()).resolves.toEqual([]);
+    await expect(listAutoPushes()).resolves.toEqual([]);
   });
 });

@@ -186,7 +186,9 @@ async fn mpeg2_and_mp2_over_udp_like_an_atsc_feed() {
         (t.iter().any(|t| t.codec == Codec::Mpeg2Video) && t.iter().any(|t| t.codec == Codec::Mp2)).then_some(t)
     })
     .await
-    .unwrap_or_else(|| panic!("MPEG-2 + MP2 tracks: {:?}", stream.tracks().iter().map(|t| t.codec).collect::<Vec<_>>()));
+    .unwrap_or_else(|| {
+        panic!("MPEG-2 + MP2 tracks: {:?}", stream.tracks().iter().map(|t| t.codec).collect::<Vec<_>>())
+    });
     let video = tracks.iter().find(|t| t.codec == Codec::Mpeg2Video).and_then(|t| t.video).unwrap();
     assert_eq!((video.width, video.height), (1280, 720));
     let before = stream.stats().frames_in;

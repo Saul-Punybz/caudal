@@ -341,7 +341,13 @@ impl Demuxer {
             return;
         }
         let keyframe = mpeg::mpeg2_is_intra(&unit.data);
-        out.push(DemuxEvent::VideoFrame(Frame { track: VIDEO_TRACK, dts, pts, keyframe, data: Bytes::from(unit.data) }));
+        out.push(DemuxEvent::VideoFrame(Frame {
+            track: VIDEO_TRACK,
+            dts,
+            pts,
+            keyframe,
+            data: Bytes::from(unit.data),
+        }));
     }
 
     /// MPEG audio (Layer II or III): each frame of the PES becomes one

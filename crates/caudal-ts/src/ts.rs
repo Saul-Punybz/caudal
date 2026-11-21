@@ -248,10 +248,8 @@ impl TsDemux {
                     // of each, so a second audio (an SAP or a commentary
                     // track) would interleave into the first. The first one
                     // the PMT lists wins, as with ffmpeg's default pick.
-                    let taken = self
-                        .es_pids
-                        .iter()
-                        .any(|(pid, k)| *pid != es.elementary_pid && k.media() == kind.media());
+                    let taken =
+                        self.es_pids.iter().any(|(pid, k)| *pid != es.elementary_pid && k.media() == kind.media());
                     if taken {
                         if self.ignored.insert(es.elementary_pid.as_u16()) {
                             tracing::info!(

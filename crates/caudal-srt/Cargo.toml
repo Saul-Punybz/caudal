@@ -21,8 +21,10 @@ scuffle-h264 = "0.2.2"
 scuffle-h265 = "0.2.2"
 
 [dev-dependencies]
-rustix.workspace = true
 tokio = { workspace = true, features = ["full", "test-util", "process"] }
 caudal-hls.workspace = true
 caudal-scte35.workspace = true
 axum.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix.workspace = true

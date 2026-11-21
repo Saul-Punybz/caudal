@@ -1,6 +1,10 @@
 //! The in-process `RustyH264` engine on the small H.264 (B-frames) + AAC
 //! fixture. Debug builds of the codec are slow, hence the tiny source.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 mod support;
 
 use std::sync::Arc;

@@ -34,7 +34,11 @@ const TS_PACKET: usize = 188;
 /// stderr lines kept for the crash report.
 const TAIL_LINES: usize = 8;
 
-/// ffmpeg's process group, killed whole when dropped.
+/// `CREATE_NO_WINDOW` (winbase.h).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// ffmpeg's process group (Unix), killed whole when dropped.
 struct ProcGuard {
     child: Child,
 }
@@ -45,9 +49,11 @@ impl ProcGuard {
         // never signalled. A direct killpg: `/bin/kill -KILL -<pgid>` from
         // Linux procps signals every process of the user instead (it killed
         // the GitHub runner, and would kill everything Caudal's user runs).
+        #[cfg(unix)]
         if let Some(pid) = self.child.id().and_then(|p| rustix::process::Pid::from_raw(p as i32)) {
             let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
+        // Windows: ffmpeg is one process (no group to kill); TerminateProcess.
         let _ = self.child.start_kill();
     }
 }
@@ -72,12 +78,13 @@ impl FfmpegProcess {
     /// called inside a tokio runtime.
     pub fn spawn(program: &Path, args: &[String], stream: &str) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
         let mut cmd = Command::new(program);
-        cmd.args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
+        cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
+        // No console window per ffmpeg when Caudal runs without one (as a
+        // Windows service, or started from Explorer).
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         let mut child = cmd.spawn()?;
         let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
@@ -220,7 +227,7 @@ pub async fn read_ts_outputs(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod kill_tests {
     use super::ProcGuard;
     use std::time::Duration;

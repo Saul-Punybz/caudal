@@ -134,10 +134,16 @@ pub fn router(registry: Arc<Registry>, cfg: WebRtcConfig, trusted_proxies: Vec<c
 }
 
 /// A non-blocking UDP socket on `addr`, shareable with `SO_REUSEPORT`.
+/// Windows has no `SO_REUSEPORT` (its `SO_REUSEADDR` does not spread
+/// datagrams across sockets), so asking for it there fails and the caller
+/// falls back to one engine on one socket.
 fn bind_udp(addr: SocketAddr, reuse_port: bool) -> std::io::Result<tokio::net::UdpSocket> {
     let s = socket2::Socket::new(socket2::Domain::for_address(addr), socket2::Type::DGRAM, None)?;
     if reuse_port {
+        #[cfg(unix)]
         s.set_reuse_port(true)?;
+        #[cfg(not(unix))]
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "SO_REUSEPORT needs Unix"));
     }
     s.set_nonblocking(true)?;
     s.bind(&addr.into())?;

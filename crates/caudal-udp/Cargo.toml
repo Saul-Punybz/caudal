@@ -17,4 +17,6 @@ socket2 = "0.6"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
 rustix.workspace = true

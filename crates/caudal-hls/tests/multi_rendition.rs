@@ -5,6 +5,10 @@
 //! token propagation) already have thorough in-process coverage in
 //! `src/tests.rs`; this file exists for the checks that need a real socket.
 
+// Drives real processes (ffmpeg, srt-live-transmit, the caudal binary)
+// through Unix process groups; Windows runs its own smoke test in CI.
+#![cfg(unix)]
+
 #[path = "../src/mp4demux.rs"]
 mod mp4demux;
 

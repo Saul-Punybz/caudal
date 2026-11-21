@@ -6,6 +6,7 @@ import { Publish } from './pages/Publish';
 import { Channels } from './pages/Channels';
 import { Restreams } from './pages/Restreams';
 import { Recordings } from './pages/Recordings';
+import { Ingest } from './pages/Ingest';
 import { Login } from './pages/Login';
 import { useAuth } from './auth';
 
@@ -32,6 +33,7 @@ export function App() {
         <Route path="/publish" element={<Publish />} />
         <Route path="/streams/:name" element={<StreamDetail />} />
         <Route path="/channels" element={<Channels />} />
+        <Route path="/ingest" element={<Ingest />} />
         <Route path="/restreams" element={<Restreams />} />
         <Route path="/recordings" element={<Recordings />} />
         <Route

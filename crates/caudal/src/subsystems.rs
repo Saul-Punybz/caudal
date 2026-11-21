@@ -149,6 +149,7 @@ fn apply_auth(
     access: &Arc<caudal_access::Checker>,
     cluster: &Option<caudal_cluster::Secret>,
     hook_stats: &HookStats,
+    on_demand: &crate::on_demand::OnDemand,
     section: &config::AuthSection,
 ) {
     let auth = section.to_auth_config().expect("validated");
@@ -190,6 +191,22 @@ fn apply_auth(
         }
         None => registry.clear_rewrite(),
     }
+    let source = section.source.as_ref().map(|sec| {
+        let cfg = sec.to_config().expect("validated");
+        let url = cfg.url.clone();
+        let hook = match caudal_auth::SourceHook::new(cfg, on_demand.hook_stats.clone()) {
+            Ok(h) => {
+                tracing::info!(%url, "source hook enabled");
+                h
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "source hook could not start; no stream gets a source from it");
+                caudal_auth::SourceHook::refusing(on_demand.hook_stats.clone())
+            }
+        };
+        crate::on_demand::SourceHook { hook: Arc::new(hook), idle: std::time::Duration::from_secs(sec.idle_secs) }
+    });
+    on_demand.set_hook(source);
     registry.set_gate(Arc::new(CombinedGate {
         auth: caudal_auth::Authorizer::new(auth),
         access: access.clone(),
@@ -413,6 +430,8 @@ pub struct Supervisor {
     /// `[auth.hook]` and `[auth.rewrite]` counters; one set for the
     /// process, so `/metrics` survives reloads of `[auth]`.
     hook_stats: HookStats,
+    /// `on_demand = true` pulls and `[auth.source]`.
+    on_demand: Arc<crate::on_demand::OnDemand>,
 
     /// The last config a reload was applied against (or the startup
     /// config); also the mutex that serializes concurrent reloads (SIGHUP
@@ -441,6 +460,9 @@ pub struct Started {
     /// For `api::AppState::set_omt`: `/api/v1/omt/sources`, the `omt`
     /// fields of `/api/v1/streams/{name}` and `caudal_omt_*`.
     pub omt: Arc<crate::omt::OmtRuntime>,
+    /// For `api::AppState::set_on_demand`: `caudal_on_demand_*` and
+    /// `caudal_source_hook_*`.
+    pub on_demand: Arc<crate::on_demand::OnDemand>,
 }
 
 impl Supervisor {
@@ -456,7 +478,9 @@ impl Supervisor {
         let access = cfg.access.to_access_config().expect("validated").checker().expect("validated");
         let cluster = cfg.cluster.as_ref().map(|c| c.secret().expect("validated"));
         let hook_stats = HookStats::default();
-        apply_auth(&registry, &access, &cluster, &hook_stats, &cfg.auth);
+        let on_demand = crate::on_demand::OnDemand::install(&registry, buffer);
+        on_demand.configure(cfg.on_demand_entries());
+        apply_auth(&registry, &access, &cluster, &hook_stats, &on_demand, &cfg.auth);
         let hooks_task = Mutex::new(None);
         apply_hooks(&registry, &hooks_task, &cfg.hooks);
 
@@ -537,6 +561,7 @@ impl Supervisor {
             access: access.clone(),
             cluster,
             hook_stats: hook_stats.clone(),
+            on_demand: on_demand.clone(),
             current: Mutex::new(cfg.clone()),
         });
         Started {
@@ -550,6 +575,7 @@ impl Supervisor {
             access,
             hook_stats,
             omt,
+            on_demand,
         }
     }
 
@@ -560,6 +586,11 @@ impl Supervisor {
     /// The config currently applied (the startup one, or the last reload).
     pub fn current_config(&self) -> Config {
         self.current.lock().clone()
+    }
+
+    /// The on-demand pulls (`GET /api/v1/pulls` states).
+    pub fn on_demand(&self) -> &Arc<crate::on_demand::OnDemand> {
+        &self.on_demand
     }
 
     /// `[[push.auto]]` rules with the pushes each runs now.
@@ -637,6 +668,15 @@ impl Supervisor {
             self.rtsp_pull.reload(&self.registry, self.buffer, new_cfg.rtsp.pull_targets());
             report.applied.push("rtsp.pull".into());
         }
+        let pulls_changed = old.udp.pull != new_cfg.udp.pull
+            || old.http.pull != new_cfg.http.pull
+            || old.rtmp.pull != new_cfg.rtmp.pull
+            || old.hls.pull != new_cfg.hls.pull
+            || old.srt.pull != new_cfg.srt.pull
+            || old.rtsp.pull != new_cfg.rtsp.pull;
+        if pulls_changed {
+            self.on_demand.configure(new_cfg.on_demand_entries());
+        }
         let omt = self.omt.reload(&old, &new_cfg);
         report.applied.extend(omt.applied.into_iter().map(String::from));
         report.requires_restart.extend(omt.requires_restart.into_iter().map(String::from));
@@ -653,7 +693,7 @@ impl Supervisor {
             }
         }
         if old.auth != new_cfg.auth {
-            apply_auth(&self.registry, &self.access, &self.cluster, &self.hook_stats, &new_cfg.auth);
+            apply_auth(&self.registry, &self.access, &self.cluster, &self.hook_stats, &self.on_demand, &new_cfg.auth);
             report.applied.push("auth".into());
         }
         if old.access != new_cfg.access {

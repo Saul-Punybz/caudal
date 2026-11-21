@@ -12,9 +12,11 @@ mod gate_hook;
 mod hooks_delivery;
 mod jwks;
 mod rewrite_hook;
+mod source_hook;
 
 pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError, ReplyMode, mist_bool};
 pub use rewrite_hook::{RewriteHook, RewriteHookConfig, RewriteHookMetric, RewriteHookStats};
+pub use source_hook::{SourceHook, SourceHookConfig, SourceHookStats};
 
 use std::sync::Arc;
 use std::time::Duration;

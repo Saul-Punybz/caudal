@@ -1,4 +1,5 @@
-//! What the blocking webhooks (`[auth.hook]`, `[auth.rewrite]`) share: a
+//! What the blocking webhooks (`[auth.hook]`, `[auth.rewrite]`,
+//! `[auth.source]`) share: a
 //! signed POST with one short timeout, and a cache of answers in which
 //! concurrent identical requests share one call.
 

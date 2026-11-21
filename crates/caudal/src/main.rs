@@ -13,6 +13,7 @@ mod doctor;
 mod import_mist;
 mod metrics;
 mod omt;
+mod on_demand;
 mod reload;
 mod shutdown;
 mod subsystems;
@@ -250,6 +251,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     }
     state.set_multicast(started.multicast.clone());
     state.set_omt(started.omt.clone());
+    state.set_on_demand(started.on_demand.clone());
     state.thumbnails.set_ffmpeg(cfg.transcode.ffmpeg.clone());
     let webrtc_router = caudal_webrtc::router(
         registry.clone(),

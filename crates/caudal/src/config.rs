@@ -126,7 +126,11 @@ impl RtmpSection {
 
     /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
     pub fn pull_targets(&self) -> Vec<caudal_rtmp::RtmpPull> {
-        self.pull.iter().map(|p| caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 }
 
@@ -137,6 +141,15 @@ impl RtmpSection {
 pub struct RtmpPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -151,7 +164,7 @@ pub struct SrtSection {
     /// Push streams out to remote SRT listeners.
     pub push: Vec<SrtPushEntry>,
     /// Pull streams in from remote SRT listeners (Caudal calls them).
-    pub pull: Vec<SrtPushEntry>,
+    pub pull: Vec<SrtPullEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -159,6 +172,24 @@ pub struct SrtSection {
 pub struct SrtPushEntry {
     pub stream: String,
     pub url: String,
+}
+
+/// One `[[srt.pull]]`: call the SRT listener at `url` and publish what it
+/// sends as `stream`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SrtPullEntry {
+    pub stream: String,
+    pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl Default for SrtSection {
@@ -209,11 +240,24 @@ pub struct HlsSection {
 pub struct HlsPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl HlsSection {
     pub fn pull_targets(&self) -> Vec<caudal_hls_pull::HlsPull> {
-        self.pull.iter().map(|p| caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 
     /// The output settings alone: what a change of needs a restart.
@@ -478,11 +522,24 @@ pub struct HttpSection {
 pub struct HttpPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl HttpSection {
     pub fn pull_targets(&self) -> Vec<caudal_http_pull::HttpPull> {
-        self.pull.iter().map(|p| caudal_http_pull::HttpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_http_pull::HttpPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 }
 
@@ -497,12 +554,22 @@ pub struct UdpPullEntry {
     pub url: String,
     #[serde(default)]
     pub interface: Option<std::net::Ipv4Addr>,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl UdpSection {
     pub fn pull_targets(&self) -> Vec<caudal_udp::UdpPull> {
         self.pull
             .iter()
+            .filter(|p| !p.on_demand)
             .map(|p| caudal_udp::UdpPull { stream: p.stream.clone(), url: p.url.clone(), interface: p.interface })
             .collect()
     }
@@ -904,6 +971,15 @@ impl Default for RtspSection {
 pub struct RtspPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl RtspSection {
@@ -923,14 +999,22 @@ impl RtspSection {
 
     /// `[[rtsp.pull]]` as the runtime type `caudal-rtsp` takes.
     pub fn pull_targets(&self) -> Vec<caudal_rtsp::RtspPull> {
-        self.pull.iter().map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 }
 
 impl SrtSection {
     /// `[[srt.pull]]` as the runtime type `caudal-srt` takes.
     pub fn pull_targets(&self) -> Vec<caudal_srt::SrtPull> {
-        self.pull.iter().map(|p| caudal_srt::SrtPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_srt::SrtPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 
     /// `[[srt.push]]` as the runtime type `caudal-srt` takes.
@@ -1614,6 +1698,9 @@ pub struct AuthSection {
     pub hook: Option<AuthHookSection>,
     /// Blocking routing webhook, asked before everything else.
     pub rewrite: Option<AuthRewriteSection>,
+    /// Where to pull a stream nobody publishes and nothing configures
+    /// (MistServer's `STREAM_SOURCE`), asked when a viewer requests it.
+    pub source: Option<AuthSourceSection>,
 }
 
 impl Default for AuthSection {
@@ -1626,6 +1713,7 @@ impl Default for AuthSection {
             play: false,
             hook: None,
             rewrite: None,
+            source: None,
         }
     }
 }
@@ -1791,6 +1879,71 @@ impl AuthRewriteSection {
     }
 }
 
+/// `[auth.source]`: when a viewer asks for a stream that is neither live
+/// nor configured, POST its name (signed, Standard Webhooks) to `url`; the
+/// answer is a source URL (`srt://`, `udp://`, `rtp://`, `http(s)://` TS or
+/// `.m3u8`, `rtmp(s)://`, `rtsp(s)://`) that Caudal pulls on demand until
+/// `idle_secs` after the last viewer left, or empty for "no such stream".
+/// MistServer's `STREAM_SOURCE`. See `caudal_auth::SourceHook` and
+/// `docs/ON-DEMAND.md`.
+///
+/// Under `[auth]` with `[auth.hook]` and `[auth.rewrite]`: it blocks the
+/// request, reuses their signing, timeout and cache, and reloads with them.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthSourceSection {
+    pub url: String,
+    /// `whsec_...`, as in `[hooks]`.
+    pub secret: String,
+    /// One attempt, no retries. 100..=10000.
+    #[serde(default = "default_auth_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// How long a source is remembered for a stream name; the service's
+    /// `cache_secs` can only lower it.
+    #[serde(default = "default_auth_source_cache_secs")]
+    pub cache_secs: u64,
+    /// How long "no such stream" or a failure is remembered.
+    #[serde(default = "default_auth_hook_deny_cache_secs")]
+    pub deny_cache_secs: u64,
+    /// Seconds without viewers before a pull it started stops.
+    #[serde(default = "default_idle_secs")]
+    pub idle_secs: u64,
+}
+
+fn default_auth_source_cache_secs() -> u64 {
+    10
+}
+
+fn default_idle_secs() -> u64 {
+    crate::on_demand::DEFAULT_IDLE.as_secs()
+}
+
+impl AuthSourceSection {
+    pub fn to_config(&self) -> Result<caudal_auth::SourceHookConfig, String> {
+        let url = reqwest_url_ok(&self.url)
+            .ok_or_else(|| format!("[auth.source] url {:?}: expected http(s)://", self.url))?;
+        if !self.secret.starts_with("whsec_") {
+            return Err("[auth.source] `secret` must be a Standard Webhooks secret (whsec_...)".into());
+        }
+        if !(100..=10_000).contains(&self.timeout_ms) {
+            return Err(format!("[auth.source] timeout_ms {} is outside 100..=10000", self.timeout_ms));
+        }
+        if self.cache_secs > 3600 || self.deny_cache_secs > 3600 {
+            return Err("[auth.source] cache times are at most 3600 s".into());
+        }
+        if !(1..=3600).contains(&self.idle_secs) {
+            return Err(format!("[auth.source] idle_secs {} is outside 1..=3600", self.idle_secs));
+        }
+        Ok(caudal_auth::SourceHookConfig {
+            url,
+            secret: self.secret.clone(),
+            timeout: Duration::from_millis(self.timeout_ms),
+            cache: Duration::from_secs(self.cache_secs),
+            deny_cache: Duration::from_secs(self.deny_cache_secs),
+        })
+    }
+}
+
 /// `Some(url)` for an absolute http(s) URL with a host.
 fn reqwest_url_ok(s: &str) -> Option<String> {
     let rest = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://"))?;
@@ -1821,6 +1974,11 @@ impl AuthSection {
     /// `[auth.rewrite]` as the runtime config, `None` when absent.
     pub fn rewrite_config(&self) -> Result<Option<caudal_auth::RewriteHookConfig>, String> {
         self.rewrite.as_ref().map(AuthRewriteSection::to_config).transpose()
+    }
+
+    /// `[auth.source]` as the runtime config, `None` when absent.
+    pub fn source_config(&self) -> Result<Option<caudal_auth::SourceHookConfig>, String> {
+        self.source.as_ref().map(AuthSourceSection::to_config).transpose()
     }
 }
 
@@ -2048,6 +2206,7 @@ impl Config {
         self.auth.to_auth_config()?;
         self.auth.hook_config()?;
         self.auth.rewrite_config()?;
+        self.auth.source_config()?;
         self.access.to_access_config()?;
         self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
@@ -2197,6 +2356,58 @@ impl Config {
 }
 
 impl Config {
+    /// Every `[[*.pull]]` except `[[omt.pull]]`: section, stream, url,
+    /// `on_demand`, `idle_secs`.
+    fn pull_specs(&self) -> Vec<(&'static str, &str, &str, bool, Option<u64>)> {
+        let mut v: Vec<(&'static str, &str, &str, bool, Option<u64>)> = Vec::new();
+        v.extend(self.rtsp.pull.iter().map(|p| ("[[rtsp.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.http.pull.iter().map(|p| ("[[http.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.rtmp.pull.iter().map(|p| ("[[rtmp.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v
+    }
+
+    /// The `on_demand = true` pull entries, by stream name.
+    pub fn on_demand_entries(&self) -> std::collections::HashMap<String, crate::on_demand::Entry> {
+        use crate::on_demand::{Entry, Source};
+        let idle = |i: Option<u64>| i.map_or(crate::on_demand::DEFAULT_IDLE, Duration::from_secs);
+        let mut out = std::collections::HashMap::new();
+        let mut put = |stream: &str, source: Source, i: Option<u64>| {
+            out.insert(stream.to_owned(), Entry { source, idle: idle(i) });
+        };
+        for p in self.rtsp.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Rtsp(caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.srt.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Srt(caudal_srt::SrtPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.udp.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Udp(caudal_udp::UdpPull {
+                stream: p.stream.clone(),
+                url: p.url.clone(),
+                interface: p.interface,
+            });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.http.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Http(caudal_http_pull::HttpPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.rtmp.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Rtmp(caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.hls.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Hls(caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        out
+    }
+
     /// Every `[[*.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
     /// name, the right URL scheme, and one pull per stream (two would race
     /// to publish the same name).
@@ -2223,6 +2434,16 @@ impl Config {
             .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])))
             .chain(self.rtmp.pull.iter().map(|p| ("[[rtmp.pull]]", &p.stream, &p.url, &["rtmp", "rtmps"][..])))
             .chain(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &p.stream, &p.url, &["http", "https"][..])));
+        for (section, stream, _, on_demand, idle) in self.pull_specs() {
+            if idle.is_some() && !on_demand {
+                return Err(format!("{section} stream {stream:?}: `idle_secs` needs `on_demand = true`"));
+            }
+            if let Some(i) = idle
+                && !(1..=3600).contains(&i)
+            {
+                return Err(format!("{section} stream {stream:?}: idle_secs {i} is outside 1..=3600"));
+            }
+        }
         for (section, stream, url, schemes) in pulls {
             name_ok(section, stream)?;
             scheme_ok(section, url, schemes)?;
@@ -2579,7 +2800,12 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let b = RtmpSection { tls_bind: Some("0.0.0.0:1936".parse().unwrap()), ..RtmpSection::default() };
         assert!(a.listener_changed(&b), "turning RTMPS on must restart the listener");
         let c = RtmpSection {
-            pull: vec![RtmpPullEntry { stream: "x".into(), url: "rtmp://h/a/k".into() }],
+            pull: vec![RtmpPullEntry {
+                stream: "x".into(),
+                url: "rtmp://h/a/k".into(),
+                on_demand: false,
+                idle_secs: None,
+            }],
             ..RtmpSection::default()
         };
         assert!(!a.listener_changed(&c), "a pull change alone does not");
@@ -2723,6 +2949,53 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(err("[auth.rewrite]\nurl = \"route.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
         assert!(err("[auth.rewrite]\nurl = \"https://a/r\"\nsecret = \"hunter2\"\n").contains("whsec_"));
+    }
+
+    #[test]
+    fn auth_source_section() {
+        let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+        let base = format!("[auth.source]\nurl = \"https://src.example/s\"\nsecret = \"{secret}\"\n");
+        let ok: Config = toml::from_str(&base).unwrap();
+        ok.validate().unwrap();
+        let c = ok.auth.source_config().unwrap().unwrap();
+        assert_eq!((c.cache, c.deny_cache), (Duration::from_secs(10), Duration::from_secs(5)));
+        assert_eq!(ok.auth.source.as_ref().unwrap().idle_secs, 30);
+        let bad = |extra: &str| toml::from_str::<Config>(&format!("{base}{extra}")).unwrap().validate().unwrap_err();
+        assert!(bad("idle_secs = 0\n").contains("idle_secs"));
+        assert!(bad("timeout_ms = 50\n").contains("[auth.source] timeout_ms"));
+        assert!(toml::from_str::<Config>(&format!("{base}on_error = \"allow\"\n")).is_err(), "no on_error");
+    }
+
+    #[test]
+    fn on_demand_pulls() {
+        let cfg: Config = toml::from_str(
+            "[[http.pull]]\nstream = \"a\"\nurl = \"http://h/a.ts\"\non_demand = true\nidle_secs = 5\n\
+             [[http.pull]]\nstream = \"b\"\nurl = \"http://h/b.ts\"\n\
+             [[srt.pull]]\nstream = \"c\"\nurl = \"srt://h:9000\"\non_demand = true\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.http.pull_targets().iter().map(|p| p.stream.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert!(cfg.srt.pull_targets().is_empty());
+        let od = cfg.on_demand_entries();
+        assert_eq!(od.len(), 2);
+        assert_eq!(od["a"].idle, Duration::from_secs(5));
+        assert_eq!(od["c"].idle, crate::on_demand::DEFAULT_IDLE);
+        assert_eq!(od["c"].source.kind(), "srt");
+        let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(
+            err("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/a.ts\"\nidle_secs = 5\n").contains("needs `on_demand")
+        );
+        assert!(
+            err("[[rtsp.pull]]\nstream = \"a\"\nurl = \"rtsp://h/a\"\non_demand = true\nidle_secs = 0\n")
+                .contains("1..=3600")
+        );
+        // Still one pull per stream, on demand or not.
+        assert!(
+            err("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/a.ts\"\non_demand = true\n\
+                 [[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/live/k\"\n")
+            .contains("pulled twice")
+        );
     }
 
     #[test]

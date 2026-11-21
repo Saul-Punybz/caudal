@@ -34,9 +34,10 @@ pub struct Registry {
     /// Name routing asked before the gate (see [`Registry::resolve`]).
     /// Same locking rationale as `gate`.
     rewrite: RwLock<Option<Arc<dyn Rewrite>>>,
-    /// Where a viewer's request for an unknown name goes (a cluster edge
-    /// pulling from its origin). Same locking rationale as `gate`.
-    demand: RwLock<Option<Arc<dyn Demand>>>,
+    /// Where a viewer's request for an unknown name goes (on-demand pulls,
+    /// a cluster edge pulling from its origin), asked in this order. Same
+    /// locking rationale as `gate`.
+    demand: RwLock<Vec<(&'static str, Arc<dyn Demand>)>>,
     /// Open viewer sessions and kick blocks.
     sessions: Arc<Sessions>,
 }
@@ -66,7 +67,7 @@ impl Default for Registry {
             ended: broadcast::channel(64).0,
             gate: RwLock::new(None),
             rewrite: RwLock::new(None),
-            demand: RwLock::new(None),
+            demand: RwLock::new(Vec::new()),
             sessions: Arc::default(),
         }
     }
@@ -208,16 +209,28 @@ impl Registry {
         self.streams.lock().get(name).cloned()
     }
 
-    /// Installs the source asked for streams nobody publishes here (see
-    /// [`Demand`]). Without one, [`Registry::get_or_demand`] is `get`.
-    pub fn set_demand(&self, demand: Arc<dyn Demand>) {
-        *self.demand.write() = Some(demand);
+    /// Installs (or, under the same `key`, replaces) a source asked for
+    /// streams nobody publishes here (see [`Demand`]). Sources are asked in
+    /// the order they were first installed; the first that brings the
+    /// stream up wins. Without any, [`Registry::get_or_demand`] is `get`.
+    pub fn set_demand(&self, key: &'static str, demand: Arc<dyn Demand>) {
+        let mut v = self.demand.write();
+        match v.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = demand,
+            None => v.push((key, demand)),
+        }
+    }
+
+    /// Removes the demand source installed under `key`, if any.
+    pub fn clear_demand(&self, key: &'static str) {
+        self.demand.write().retain(|(k, _)| *k != key);
     }
 
     /// The live stream `name`; if there is none, asks the installed
-    /// [`Demand`] source and waits (at most [`DEMAND_TIMEOUT`]) for it to
-    /// publish. Outputs call this for a viewer who already passed
-    /// `authorize`, so an unauthorized request never starts a pull.
+    /// [`Demand`] sources in turn and waits (at most [`DEMAND_TIMEOUT`] in
+    /// all) for one to publish it. Outputs call this for a viewer who
+    /// already passed `authorize`, so an unauthorized request never starts
+    /// a pull.
     pub async fn get_or_demand(&self, name: &str) -> Option<Arc<Stream>> {
         if let Some(s) = self.get(name) {
             return Some(s);
@@ -225,9 +238,21 @@ impl Registry {
         if !valid_stream_name(name) {
             return None;
         }
-        let demand = self.demand.read().clone()?;
-        match tokio::time::timeout(DEMAND_TIMEOUT, demand.demand(name)).await {
-            Ok(Some(s)) if !s.is_ended() => Some(s),
+        let sources: Vec<Arc<dyn Demand>> = self.demand.read().iter().map(|(_, d)| d.clone()).collect();
+        if sources.is_empty() {
+            return None;
+        }
+        let ask = async {
+            for d in &sources {
+                match d.demand(name).await {
+                    Some(s) if !s.is_ended() => return Some(s),
+                    _ => {}
+                }
+            }
+            None
+        };
+        match tokio::time::timeout(DEMAND_TIMEOUT, ask).await {
+            Ok(Some(s)) => Some(s),
             _ => self.get(name),
         }
     }
@@ -319,8 +344,12 @@ mod tests {
 
         let src =
             Arc::new(Source { registry: Arc::downgrade(&reg), asked: AtomicUsize::new(0), held: Mutex::default() });
-        reg.set_demand(src.clone());
+        // A source that has nothing is asked first, then the next one.
+        let none = Arc::new(Nothing(AtomicUsize::new(0)));
+        reg.set_demand("none", none.clone());
+        reg.set_demand("src", src.clone());
         let s = reg.get_or_demand("cam").await.expect("brought up on demand");
+        assert_eq!(none.0.load(Ordering::Relaxed), 1);
         assert!(Arc::ptr_eq(&s, &reg.get("cam").unwrap()));
         // Live now: no second demand.
         assert!(Arc::ptr_eq(&s, &reg.get_or_demand("cam").await.unwrap()));
@@ -328,6 +357,21 @@ mod tests {
         // Names that can never exist are not asked for.
         assert!(reg.get_or_demand("../x").await.is_none());
         assert_eq!(src.asked.load(Ordering::Relaxed), 1);
+        // Removed: only the empty source is left.
+        reg.clear_demand("src");
+        assert!(reg.get_or_demand("other").await.is_none());
+        assert_eq!(src.asked.load(Ordering::Relaxed), 1);
+        assert_eq!(none.0.load(Ordering::Relaxed), 2);
+    }
+
+    /// Never has a stream; counts the questions.
+    struct Nothing(AtomicUsize);
+
+    impl Demand for Nothing {
+        fn demand<'a>(&'a self, _name: &'a str) -> DemandFuture<'a> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { None })
+        }
     }
 
     /// `alias` -> `real`, `gone` -> refused, anything else kept.

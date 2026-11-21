@@ -132,8 +132,10 @@ fn current(state: &ReloadState) -> crate::config::Config {
     state.supervisor.current_config()
 }
 
-async fn list_pulls(State(state): State<ReloadState>) -> Json<Vec<config_edit::EntryJson>> {
-    Json(config_edit::list(&current(&state), &Kind::PULLS))
+/// The configured pulls with their state (on-demand ones: idle, starting,
+/// live...), then the pulls `[auth.source]` started.
+async fn list_pulls(State(state): State<ReloadState>) -> Json<Vec<crate::on_demand::PullRow>> {
+    Json(state.supervisor.on_demand().rows(config_edit::list(&current(&state), &Kind::PULLS)))
 }
 
 async fn list_pushes(State(state): State<ReloadState>) -> Json<Vec<config_edit::EntryJson>> {

@@ -46,6 +46,8 @@ pub struct AppState {
     omt: std::sync::OnceLock<Arc<crate::omt::OmtRuntime>>,
     /// `GET /api/v1/streams/{name}/thumbnail.jpg`.
     pub thumbnails: crate::thumbnail::Thumbnailer,
+    /// Set once at startup: `caudal_on_demand_*`, `caudal_source_hook_*`.
+    on_demand: std::sync::OnceLock<Arc<crate::on_demand::OnDemand>>,
 }
 
 impl AppState {
@@ -63,6 +65,7 @@ impl AppState {
             multicast: std::sync::OnceLock::new(),
             omt: std::sync::OnceLock::new(),
             thumbnails: Default::default(),
+            on_demand: std::sync::OnceLock::new(),
         })
     }
 
@@ -97,6 +100,10 @@ impl AppState {
 
     pub fn set_omt(&self, omt: Arc<crate::omt::OmtRuntime>) {
         let _ = self.omt.set(omt);
+    }
+
+    pub fn set_on_demand(&self, on_demand: Arc<crate::on_demand::OnDemand>) {
+        let _ = self.on_demand.set(on_demand);
     }
 
     pub fn set_edge(&self, edge: caudal_cluster::Edge) {
@@ -566,6 +573,9 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     }
     if let Some(omt) = state.omt.get() {
         metrics::render_omt(&mut body, &omt.pulls(), &omt.outputs());
+    }
+    if let Some(od) = state.on_demand.get() {
+        od.render_metrics(&mut body);
     }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }

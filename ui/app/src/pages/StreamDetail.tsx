@@ -113,6 +113,9 @@ export function StreamDetail() {
               mode={mode}
               moqDisabled={!moqSupported}
               onChange={(m) => {
+                // Paired with MoqPlayer's `[moq-ui]` step lines: a MoQ run
+                // that never connects first says whether the switch happened.
+                console.debug(`[moq-ui] playback mode ${m}`);
                 setMode(m);
                 setAuthError(null);
                 setLatency(null);

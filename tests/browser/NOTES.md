@@ -294,3 +294,65 @@ green, so the next failure has not been captured yet. When it is, read:
 If it is the browser side, a connect timeout in the player
 (abort and retry when `ready` has not settled after a few seconds) is the
 fix that helps real viewers too.
+
+## Firefox MoQ flake: the click (21 Nov 2026)
+
+Captured on run 44940439144 (attempt 1, `feat/ui-catch-up`), next to a
+green run 44939320967. The failing Firefox log has **no `[wt] new` line**
+in 21 s, no `[ws]` line, no `pageerror`, and the server saw no QUIC
+connection: the page never tried. So it was not the session after all, at
+least not this time.
+
+The Playwright trace for the failing test (artifact `playwright-traces`)
+says why, without guessing:
+
+- The network log has no request for the `@moq/watch` chunk
+  (`assets/element-*.js`) at all, while LL-HLS playlist and part requests
+  continue to the end of the test. `MoqPlayer` was never rendered.
+- The DOM snapshots after `click action done` still show the MoQ radio
+  with `aria-checked="false"` and the same hls.js `<video>` (same blob URL)
+  in the player box; the last screencast frame shows LL-HLS selected and
+  playing. `setMode('moq')` never ran.
+- The screencast frames around the click show the Material Symbols font
+  arriving **during** it: before, the icons render as their ligature
+  names ("check", "arrow_back") in a fallback font; one frame after the
+  click the swap is in progress. The "check" in the selected LL-HLS
+  segment shrank from a word to an 18 px glyph, which moved the MoQ
+  segment about 30 px left (to roughly x=304-362). Playwright's click point (x=367 in a box that
+  started at 336, 63 px wide) ends up just outside the moved button. The
+  click was hit-tested on the button and then landed off it, so no
+  `click` reached React.
+
+The fonts come from fonts.googleapis.com, so how they race the click
+depends on the network; Chromium's run clicks at a different moment.
+That fits "Firefox only, about 1 in 6, since September", and it is why
+the `canvas.evaluate` poll logged a single line: a locator waits for its
+element, and there never was a `<moq-watch>`.
+
+Fix (`fix/moq-player-setup`):
+
+- UI: `.ms` icons reserve their 1em box (`display: inline-block; width:
+  1em; overflow: hidden; flex-shrink: 0`), so the icon font arriving no
+  longer moves anything. That is a real-user fix too: anyone clicking the
+  switch while the page loads could miss.
+- Spec: waits for `document.fonts.ready`, then clicks until the radio
+  reads `aria-checked="true"` and logs `MoQ radio needed N clicks` when it
+  took more than one. Label text can still reflow when Roboto Flex
+  arrives; that is input delivery, not the MoQ path, which only starts
+  after the switch. The canvas poll now uses `page.evaluate`, so it logs
+  every poll with whether `<moq-watch>` exists and what the player box
+  says (overlay or error).
+- Player: `[moq-ui]` debug lines for each step (playback mode change,
+  module load, mount with URL, each broadcast status), forwarded by the
+  spec's console hook. Loading `@moq/watch` now has a 15 s bound that
+  ends in a visible error with a Retry button instead of "Connecting…"
+  forever; a setup exception is shown the same way.
+
+Reading the next failure: no `[moq-ui] playback mode moq` means the click
+again; `loading player module` with no `loaded` means the chunk load
+hung; `<moq-watch> mounted` with no `[wt] new` is inside `@moq/watch`;
+from `[wt] new` on, the reading guide in the previous section applies.
+
+Not addressed here: `usePolling` waits for each fetch before scheduling
+the next one, so a single `/moq/fingerprint` request that never settles
+would leave "Loading MoQ endpoint…" up for good. Not seen in any trace.

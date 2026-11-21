@@ -112,3 +112,18 @@ EOF) and a dead/killed peer (timeout) end `ServerSession::run()` well within
 the 5s budget. `on_unpublish` (from an explicit `deleteStream`) removes the
 stream immediately. Either way `Handler::streams` drops its `Arc<Shared>`,
 which drops the `Publisher`, which ends the `caudal_core::Stream`.
+
+## Play
+
+`play` on the listener is answered through a patch to the vendored
+`scuffle-rtmp` (see `vendor/README.md`): `SessionHandler::on_play` decides
+(app, `[rtmp] play`, `Registry::authorize(Access::Play, ..)` with the
+stream key's `?token=`, `get_or_demand`), and `next_play_message` feeds the
+session one message at a time from `crate::play::Play`, which turns
+`Subscriber` events into `onMetaData`, sequence headers and FLV tags
+(`crate::flv`, moved here from `caudal-restream` so both directions share
+it). The session awaits each write before asking for the next message, so
+a slow viewer costs at most one message of memory; the stream's ring
+decides when it lags (`Event::Lagged`, resumed at a keyframe) and a 10 s
+blocked write drops it. Timestamps are the frames' own dts in ms, wrapping
+at 32 bits like the RTMP clock, not rebased to 0 per viewer.

@@ -29,6 +29,7 @@ Both endpoints are under `/api/`, so they need the admin login when
 |---|---|---|---|---|
 | SRT | one connection | yes | MPEG-TS sent | from SRT's own measurements; `loss` = share of packets retransmitted or dropped late |
 | RTSP | one PLAY | yes | RTP sent | `null` (not measured yet) |
+| RTMP | one `play` | yes | FLV tag bodies sent (before RTMP chunk headers) | `null` |
 | WHEP | one peer | yes | media payload, before RTP/SRTP | from the peer stats: RTT, and the loss the viewer reports over RTCP |
 | LL-HLS | one player: address + user agent, ended after 10 s without a playlist request | yes | every file it fetched | `null` |
 | MoQ | one QUIC session; `stream` is `*` when it connected to the root and may see every stream | no (the MoQ library does not expose it) | 0 (stats are per broadcast, not per session) | `null` |

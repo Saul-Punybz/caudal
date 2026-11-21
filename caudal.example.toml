@@ -19,6 +19,7 @@ http_bind = "127.0.0.1:8080"
 [rtmp]
 bind = "0.0.0.0:1935"  # RTMP server bind address
 app = "live"  # RTMP application name
+play = true  # viewers may play streams over RTMP too (rtmp://host/live/NAME); see docs/RTMP.md
 
 [hls]
 part_ms = 200  # HLS part duration in milliseconds

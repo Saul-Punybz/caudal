@@ -1,6 +1,6 @@
 [package]
 name = "caudal-rtmp"
-description = "RTMP and Enhanced RTMP ingest for Caudal: publishers in, pulls from remote RTMP(S) servers, and the RTMP client pushes use"
+description = "RTMP and Enhanced RTMP for Caudal: publishers in, viewers out (play), pulls from remote RTMP(S) servers, and the RTMP client pushes use"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

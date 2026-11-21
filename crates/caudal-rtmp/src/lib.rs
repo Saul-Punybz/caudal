@@ -1,6 +1,7 @@
-//! RTMP / Enhanced RTMP ingest: accepts publishers ([`serve`]) and pulls
-//! from remote RTMP servers as a player ([`pull`], `[[rtmp.pull]]`), feeding
-//! a [`caudal_core::Publisher`] either way. Also home of the RTMP/RTMPS
+//! RTMP / Enhanced RTMP: accepts publishers ([`serve`]) and pulls from
+//! remote RTMP servers as a player ([`pull`], `[[rtmp.pull]]`), feeding a
+//! [`caudal_core::Publisher`] either way; the same listener serves viewers
+//! who `play` a stream (`play.rs`). Also home of the RTMP/RTMPS
 //! client ([`client`]) `caudal-restream` pushes with.
 //!
 //! Built directly on `scuffle-rtmp`'s [`ServerSession`](scuffle_rtmp::ServerSession),
@@ -19,7 +20,9 @@ use tokio::net::TcpListener;
 
 pub mod client;
 mod demux;
+pub mod flv;
 pub mod ingest;
+mod play;
 pub mod pull;
 mod session;
 pub mod url;
@@ -33,6 +36,9 @@ pub struct RtmpConfig {
     /// Only `rtmp://host/{app}/{stream}` is accepted.
     pub app: String,
     pub buffer: BufferConfig,
+    /// Answer `play` (viewers reading a stream over RTMP). Publishing is
+    /// always on.
+    pub play: bool,
 }
 
 /// Fuzz-only entry points into the FLV/AMF parsing internals of
@@ -80,11 +86,12 @@ pub async fn serve(cfg: RtmpConfig, registry: Arc<Registry>) -> std::io::Result<
         let registry = registry.clone();
         let app = cfg.app.clone();
         let buffer = cfg.buffer;
+        let play = cfg.play;
 
         // Each connection runs on its own task: a panic, a slow client or a
         // malformed handshake in one never affects any other publisher.
         tokio::spawn(async move {
-            let handler = Handler::new(registry, app, buffer, addr.ip());
+            let handler = Handler::new(registry, app, buffer, addr.ip(), play);
             let session = ServerSession::new(stream, handler);
             match session.run().await {
                 Ok(clean) => tracing::debug!(%addr, clean, "rtmp session ended"),

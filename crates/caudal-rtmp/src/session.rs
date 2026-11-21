@@ -1,15 +1,16 @@
 //! The per-connection RTMP session handler: bridges `scuffle_rtmp`'s
 //! `SessionHandler` callbacks to a [`caudal_core::Publisher`] per published
-//! stream.
+//! stream, and to a [`crate::play::Play`] when the client plays one.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use caudal_core::{BufferConfig, PublishError, Registry};
-use scuffle_rtmp::session::server::{ServerSessionError, SessionData, SessionHandler};
+use caudal_core::{Access, BufferConfig, PublishError, Registry, StartAt};
+use scuffle_rtmp::session::server::{PlayMessage, PlayResponse, ServerSessionError, SessionData, SessionHandler};
 
 use crate::ingest::FlvIngest;
+use crate::play::{Next, Play};
 
 /// One RTMP connection. A connection may publish more than one stream (each
 /// with its own RTMP stream id), though real encoders publish exactly one.
@@ -20,13 +21,38 @@ pub(crate) struct Handler {
     /// The TCP peer's address, passed to every `authorize` call on this
     /// connection.
     peer_ip: IpAddr,
+    /// Whether `play` is answered at all (`[rtmp] play`).
+    play_enabled: bool,
     streams: HashMap<u32, FlvIngest>,
+    /// The stream this connection plays, with its RTMP stream id.
+    play: Option<(u32, Play)>,
 }
 
 impl Handler {
-    pub(crate) fn new(registry: Arc<Registry>, app: String, buffer: BufferConfig, peer_ip: IpAddr) -> Self {
-        Self { registry, app, buffer, peer_ip, streams: HashMap::new() }
+    pub(crate) fn new(
+        registry: Arc<Registry>,
+        app: String,
+        buffer: BufferConfig,
+        peer_ip: IpAddr,
+        play_enabled: bool,
+    ) -> Self {
+        Self { registry, app, buffer, peer_ip, play_enabled, streams: HashMap::new(), play: None }
     }
+}
+
+/// `name?token=...` (OBS and ffmpeg put credentials in the stream key) into
+/// the name and the token, if any.
+fn split_token(stream_name: &str) -> (&str, Option<&str>) {
+    let (name, query) = stream_name.split_once('?').unwrap_or((stream_name, ""));
+    let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).filter(|t| !t.is_empty());
+    (name, token)
+}
+
+const PLAY_NOT_FOUND: &str = "NetStream.Play.StreamNotFound";
+const PLAY_FAILED: &str = "NetStream.Play.Failed";
+
+fn reject(code: &'static str, description: &str) -> PlayResponse {
+    PlayResponse::Reject { code, description: description.to_owned() }
 }
 
 /// `ServerSessionError` (scuffle-rtmp 0.2.3) is a closed enum with no
@@ -59,8 +85,7 @@ impl SessionHandler for Handler {
 
         // OBS and ffmpeg carry credentials in the stream key:
         // rtmp://host/live/<name>?token=<jwt>
-        let (stream_name, query) = stream_name.split_once('?').unwrap_or((stream_name, ""));
-        let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).filter(|t| !t.is_empty());
+        let (stream_name, token) = split_token(stream_name);
         if let Err(denied) =
             self.registry.authorize(caudal_core::Access::Publish, stream_name, token, Some(self.peer_ip)).await
         {
@@ -87,7 +112,63 @@ impl SessionHandler for Handler {
     async fn on_unpublish(&mut self, stream_id: u32) -> Result<(), ServerSessionError> {
         // Dropping the FlvIngest (and its Publisher) ends the stream immediately.
         self.streams.remove(&stream_id);
+        // `deleteStream` on the played stream: the viewer is done.
+        if self.play.as_ref().is_some_and(|(id, _)| *id == stream_id) {
+            self.play = None;
+        }
         Ok(())
+    }
+
+    async fn on_play(
+        &mut self,
+        stream_id: u32,
+        app_name: &str,
+        stream_name: &str,
+    ) -> Result<PlayResponse, ServerSessionError> {
+        let (name, token) = split_token(stream_name);
+        if !self.play_enabled {
+            tracing::info!(stream = %name, reason = "play_disabled", "rtmp play rejected");
+            return Ok(reject(PLAY_FAILED, "play is disabled on this server"));
+        }
+        if app_name != self.app {
+            tracing::info!(app = %app_name, stream = %name, reason = "wrong_app", "rtmp play rejected");
+            return Ok(reject(PLAY_NOT_FOUND, "no such application"));
+        }
+        if let Err(denied) = self.registry.authorize(Access::Play, name, token, Some(self.peer_ip)).await {
+            tracing::info!(stream = %name, reason = ?denied, "rtmp play rejected");
+            return Ok(reject(PLAY_FAILED, "access denied"));
+        }
+        // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
+        let Some(stream) = self.registry.get_or_demand(name).await.filter(|s| !s.is_ended()) else {
+            tracing::info!(stream = %name, reason = "not_found", "rtmp play rejected");
+            return Ok(reject(PLAY_NOT_FOUND, "stream not found"));
+        };
+        // A real viewer: counted in the stream's viewers, listed in
+        // /api/v1/sessions, kickable.
+        let sub = stream.subscribe(StartAt::LiveEdge);
+        let session = self.registry.open_session(name, "rtmp", Some(self.peer_ip));
+        tracing::info!(peer = %self.peer_ip, stream = %name, "rtmp play started");
+        self.play = Some((stream_id, Play::new(sub, session, name.to_owned())));
+        Ok(PlayResponse::Start)
+    }
+
+    async fn next_play_message(&mut self) -> PlayMessage {
+        let Some((_, play)) = self.play.as_mut() else {
+            return std::future::pending().await;
+        };
+        match play.next().await {
+            Next::Send(PlayMessage::End) => {
+                tracing::info!(peer = %self.peer_ip, stream = %play.stream(), "rtmp play ended: stream ended");
+                self.play = None;
+                PlayMessage::End
+            }
+            Next::Send(msg) => msg,
+            Next::Kicked => {
+                tracing::info!(peer = %self.peer_ip, stream = %play.stream(), "rtmp play kicked");
+                self.play = None;
+                PlayMessage::Close
+            }
+        }
     }
 
     async fn on_data(&mut self, stream_id: u32, data: SessionData) -> Result<(), ServerSessionError> {

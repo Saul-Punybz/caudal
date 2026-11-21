@@ -137,6 +137,7 @@ version = "2.0"
 version = "1.36"
 features = [
     "io-util",
+    "macros",
     "sync",
 ]
 

@@ -1044,6 +1044,7 @@ dependencies = [
  "caudal-scte35",
  "caudal-ts",
  "mp4-atom",
+ "roxmltree",
  "rustix",
  "tokio",
  "tower",

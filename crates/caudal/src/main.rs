@@ -11,6 +11,7 @@ mod config;
 mod config_edit;
 mod doctor;
 mod import_mist;
+mod malloc_trim;
 mod metrics;
 mod omt;
 mod reload;
@@ -28,18 +29,6 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
-
-// mimalloc, not the platform allocator. The live buffer frees and
-// reallocates its whole window of frame buffers (tens of MB per stream)
-// every time a publisher reconnects, from whichever runtime thread the
-// new connection runs on. glibc malloc kept that freed memory mapped:
-// a soak with churn grew RSS per publisher restart while the live heap
-// stayed flat (bench/soak.py; numbers in docs/release-notes/v0.1.0.md).
-// mimalloc returns freed pages to the OS. `--features system-alloc`
-// switches back, for comparison runs.
-#[cfg(not(any(feature = "dhat-heap", feature = "system-alloc")))]
-#[global_allocator]
-static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Parser)]
 #[command(name = "caudal", about = "Caudal media server", version)]
@@ -188,6 +177,7 @@ fn main() -> ExitCode {
     };
 
     init_logging();
+    malloc_trim::spawn_from_env();
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime");
     let code = rt.block_on(run(cfg, config_path));

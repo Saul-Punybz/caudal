@@ -16,33 +16,40 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Round 2. Round 1 (run 44944552859, churn every 2 min, both
+        # halves unless noted): glibc publisher-only +28.9 MB/h, glibc
+        # viewers-only +14.5 MB/h, mimalloc +9.6 MB/h over 60 min but
+        # ~80 MB higher RSS throughout. Every entry here is glibc malloc
+        # with one knob changed, plus the musl build that ships.
         include:
-          # Which half of a churn event grows RSS, on the old allocator
-          # (glibc malloc). Compare run 35622240566: both halves, same
-          # length and churn rate, +56.0 MB/h.
-          - name: glibc-publisher-30m
-            features: system-alloc
-            minutes: 30
-            churn_minutes: 2
-            churn_kind: publisher
-          - name: glibc-viewers-30m
-            features: system-alloc
-            minutes: 30
-            churn_minutes: 2
-            churn_kind: viewers
-          # The fix: mimalloc, both halves, 60 min after the 10-min warm-up.
-          - name: mimalloc-both-70m
-            features: ""
-            minutes: 70
-            churn_minutes: 2
-            churn_kind: both
+          - name: glibc-control-30m
+          - name: glibc-mmap-threshold-30m
+            env: GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072
+          - name: glibc-arena-max-2-30m
+            env: MALLOC_ARENA_MAX=2
+          - name: glibc-trim-10s-30m
+            env: CAUDAL_MALLOC_TRIM_SECS=10
+          - name: musl-30m
+            musl: true
     name: soak ${{ matrix.name }}
+    env:
+      MINUTES: ${{ matrix.minutes || 30 }}
+      CHURN_MINUTES: ${{ matrix.churn_minutes || 2 }}
+      CHURN_KIND: ${{ matrix.churn_kind || 'both' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mlugg/setup-zig@v2
+        if: matrix.musl
+      - uses: taiki-e/install-action@v2
+        if: matrix.musl
+        with:
+          tool: cargo-zigbuild
+      - run: rustup target add x86_64-unknown-linux-musl
+        if: matrix.musl
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.features }}
+          key: ${{ matrix.musl && 'musl' || 'gnu' }}
           workspaces: |
             .
             bench/client
@@ -52,8 +59,11 @@ jobs:
           nproc; free -g; uname -a
       - name: Build
         run: |
-          if [ -n "${{ matrix.features }}" ]; then
-            cargo build --release -p caudal --features "${{ matrix.features }}"
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            # The release binary (release.yml), where bench/ expects it.
+            cargo zigbuild --release -p caudal --target x86_64-unknown-linux-musl
+            mkdir -p target/release
+            cp target/x86_64-unknown-linux-musl/release/caudal target/release/caudal
           else
             cargo build --release -p caudal
           fi
@@ -62,9 +72,10 @@ jobs:
         run: |
           set -o pipefail
           ulimit -n 65536 || true
-          echo "${{ matrix.name }}: ${{ matrix.minutes }} min, churn (${{ matrix.churn_kind }}) every ${{ matrix.churn_minutes }} min"
-          csv="$(python3 bench/soak.py run --minutes "${{ matrix.minutes }}" \
-            --churn-minutes "${{ matrix.churn_minutes }}" --churn-kind "${{ matrix.churn_kind }}")"
+          if [ -n "${{ matrix.env }}" ]; then export "${{ matrix.env }}"; fi
+          echo "${{ matrix.name }}: env '${{ matrix.env }}'; $MINUTES min, churn ($CHURN_KIND) every $CHURN_MINUTES min"
+          csv="$(python3 bench/soak.py run --minutes "$MINUTES" \
+            --churn-minutes "$CHURN_MINUTES" --churn-kind "$CHURN_KIND")"
           echo "SOAK_CSV=$csv" >> "$GITHUB_ENV"
       - name: Verdict
         if: always() && env.SOAK_CSV != ''

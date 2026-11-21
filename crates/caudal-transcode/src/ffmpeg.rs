@@ -99,7 +99,7 @@ fn refresh_tracks(src: &mut Source, tracks: &[TrackInfo]) -> bool {
 }
 
 enum Feeder {
-    Ts(TsMux),
+    Ts(Box<TsMux>),
     Mkv(MkvWriter),
 }
 
@@ -114,7 +114,7 @@ impl Feeder {
                 let mut mux = TsMux::new();
                 let tracks: Vec<TrackInfo> = std::iter::once(&src.video).chain(audio).cloned().collect();
                 mux.set_tracks(&tracks);
-                (Feeder::Ts(mux), Vec::new())
+                (Feeder::Ts(Box::new(mux)), Vec::new())
             }
         }
     }

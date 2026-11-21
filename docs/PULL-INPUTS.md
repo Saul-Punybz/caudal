@@ -58,10 +58,34 @@ too.
   0x04), which is what an ATSC 1.0 chain carries (an encoder feeding a
   multiplexer and an exciter).
 - MPEG-2 video and MP2 pass through as they are: the TS outputs (SRT play,
-  `[[multicast]]`, `[[srt.push]]`) carry them unchanged. Browser outputs
-  (LL-HLS, WebRTC, MoQ), recording and the transcoder skip those tracks: no
-  browser decodes MPEG-2, so watching such a feed in a browser needs a
-  transcode to H.264 (not built yet).
+  `[[multicast]]`, `[[udp.push]]`, `[[srt.push]]`) carry them unchanged.
+  Browser outputs (LL-HLS, WebRTC, MoQ) and recording skip those tracks: no
+  browser decodes MPEG-2.
+- To watch such a feed in a browser, give it a `[[transcode.ladder]]`: the
+  ffmpeg engine takes MPEG-2 + MP2/MP3 in and publishes `<stream>+<label>`
+  as H.264 + AAC. For a source browsers do not play, a rendition as tall as
+  the source is made too (720p -> `+720p`: the codec changes, not the
+  size); interlaced frames (1080i) are deinterlaced (`bwdif`) first. The
+  original keeps going out untouched on the TS outputs, and
+  `/hls/<stream>/master.m3u8` (so `/play/<stream>` and the dashboard
+  player) lists the renditions, since the MPEG-2 original is not a variant.
+
+```toml
+[[udp.pull]]
+stream = "catv"
+url = "udp://:5000"            # what VLC sends to the multiplexer
+
+[[udp.push]]
+stream = "catv"                # MPEG-2 + MP2, untouched, to the multiplexer
+url = "udp://10.0.0.20:5000"
+
+[[transcode.ladder]]
+streams = ["catv"]             # and an H.264 copy to watch: /play/catv
+[[transcode.ladder.rendition]]
+label = "720p"
+height = 720
+video_kbps = 3000
+```
 - One video and one audio: the first of each that the PMT lists. A second
   audio PID (an SAP) is ignored, logged once.
 

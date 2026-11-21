@@ -53,8 +53,8 @@ function RailPlaceholder({ icon, label }: { icon: string; label: string }) {
   );
 }
 
-/** Left navigation rail. Overview, Publish, Streams, Channels, Restreams
- * and Recordings have real screens; the rest of MistServer's parity list
+/** Left navigation rail. Overview, Publish, Streams, Channels, Ingest,
+ * Restreams and Recordings have real screens; the rest of MistServer's parity list
  * is shown disabled, per DESIGN.md's screen inventory, rather than built
  * as fake pages. "Push" in that inventory is restreaming out to other
  * targets, so it links to /restreams instead of staying a placeholder. */
@@ -103,7 +103,7 @@ export function NavRail() {
       <RailLink to="/" icon="space_dashboard" label="Overview" />
       <RailLink to="/publish" icon="videocam" label="Publish" />
       <RailLink to="/channels" icon="live_tv" label="Channels" />
-      <RailPlaceholder icon="input" label="Ingest" />
+      <RailLink to="/ingest" icon="input" label="Ingest" />
       <RailLink to="/restreams" icon="cast" label="Push" />
       <RailLink to="/recordings" icon="video_library" label="Recordings" />
       <RailPlaceholder icon="bolt" label="Triggers" />

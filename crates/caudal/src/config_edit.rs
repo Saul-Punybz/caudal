@@ -31,6 +31,8 @@ pub enum Kind {
     UdpPull,
     /// `[[http.pull]]`: Caudal GETs MPEG-TS served over HTTP(S).
     HttpPull,
+    /// `[[hls.pull]]`: Caudal polls an HLS playlist and fetches its segments.
+    HlsPull,
     /// `[[udp.push]]`: Caudal sends MPEG-TS over UDP (or RTP) to a receiver.
     UdpPush,
     /// `[[restream]]`: Caudal pushes the stream over RTMP(S).
@@ -45,6 +47,7 @@ impl Kind {
             Kind::SrtPull => &["srt", "pull"],
             Kind::UdpPull => &["udp", "pull"],
             Kind::HttpPull => &["http", "pull"],
+            Kind::HlsPull => &["hls", "pull"],
             Kind::UdpPush => &["udp", "push"],
             Kind::Restream => &["restream"],
         }
@@ -58,6 +61,7 @@ impl Kind {
             Kind::SrtPull => "[[srt.pull]]",
             Kind::UdpPull => "[[udp.pull]]",
             Kind::HttpPull => "[[http.pull]]",
+            Kind::HlsPull => "[[hls.pull]]",
             Kind::UdpPush => "[[udp.push]]",
             Kind::Restream => "[[restream]]",
         }
@@ -69,6 +73,7 @@ impl Kind {
             Some("rtsp" | "rtsps") => Ok(Kind::RtspPull),
             Some("srt") => Ok(Kind::SrtPull),
             Some("udp" | "rtp") => Ok(Kind::UdpPull),
+            Some("http" | "https") if caudal_hls_pull::is_playlist_url(url) => Ok(Kind::HlsPull),
             Some("http" | "https") => Ok(Kind::HttpPull),
             _ => Err(format!(
                 "pull url {url:?}: expected rtsp://, rtsps://, srt://, udp://, rtp://, http:// or https://"
@@ -86,7 +91,7 @@ impl Kind {
         }
     }
 
-    pub const PULLS: [Kind; 4] = [Kind::RtspPull, Kind::SrtPull, Kind::UdpPull, Kind::HttpPull];
+    pub const PULLS: [Kind; 5] = [Kind::RtspPull, Kind::SrtPull, Kind::UdpPull, Kind::HttpPull, Kind::HlsPull];
     pub const PUSHES: [Kind; 3] = [Kind::SrtPush, Kind::UdpPush, Kind::Restream];
 }
 
@@ -151,6 +156,7 @@ pub fn list(cfg: &Config, kinds: &[Kind]) -> Vec<EntryJson> {
             Kind::SrtPull => cfg.srt.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::UdpPull => cfg.udp.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::HttpPull => cfg.http.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
+            Kind::HlsPull => cfg.hls.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::UdpPush => cfg.udp.push.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::Restream => cfg.restream.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
         };
@@ -294,6 +300,17 @@ mod tests {
     }
 
     #[test]
+    fn an_hls_pull_sits_beside_the_hls_output_settings() {
+        let out = add("[hls]\npart_ms = 100\n", Kind::HlsPull, "tv", "https://cdn.example/live/index.m3u8").unwrap();
+        let cfg = check(&out).unwrap();
+        assert_eq!(cfg.hls.part_ms, 100, "{out}");
+        assert_eq!(cfg.hls.pull[0].url, "https://cdn.example/live/index.m3u8");
+        let (gone, n) = remove(&out, Kind::HlsPull, "tv", None).unwrap();
+        assert_eq!(n, 1);
+        assert!(check(&gone).unwrap().hls.pull.is_empty());
+    }
+
+    #[test]
     fn remove_by_stream_or_by_stream_and_url() {
         let two = add(FILE, Kind::RtspPull, "cam1", "rtsp://10.0.0.9/backup").unwrap();
         let (one, n) = remove(&two, Kind::RtspPull, "cam1", Some("rtsp://10.0.0.9/backup")).unwrap();
@@ -326,6 +343,9 @@ mod tests {
         assert_eq!(Kind::for_pull("rtp://:5004"), Ok(Kind::UdpPull));
         assert_eq!(Kind::for_pull("http://10.0.0.5:8080/stream.ts"), Ok(Kind::HttpPull));
         assert_eq!(Kind::for_pull("https://encoder.example/live"), Ok(Kind::HttpPull));
+        assert_eq!(Kind::for_pull("https://cdn.example/live/index.m3u8"), Ok(Kind::HlsPull));
+        assert_eq!(Kind::for_pull("http://h/Master.M3U8?token=x"), Ok(Kind::HlsPull));
+        assert_eq!(Kind::for_pull("http://h/stream.ts?list=a.m3u8"), Ok(Kind::HttpPull), "the path decides");
         assert_eq!(Kind::for_push("rtmp://h/a/k"), Ok(Kind::Restream));
         assert_eq!(Kind::for_push("srt://h:1"), Ok(Kind::SrtPush));
         assert_eq!(Kind::for_push("udp://10.0.0.20:5000"), Ok(Kind::UdpPush));

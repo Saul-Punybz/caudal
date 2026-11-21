@@ -234,6 +234,8 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         caption_source,
     );
 
+    // `/audio/{name}.aac|.mp3`: a stream's audio alone, internet-radio style.
+    let audio_router = caudal_audio::router(registry.clone(), trusted_proxies.clone());
     // `/ts/{name}.ts`: the stream as one endless MPEG-TS response.
     let http_ts_router = caudal_hls::http_ts::router(registry.clone(), trusted_proxies.clone());
 
@@ -348,6 +350,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
         .merge(hls_router)
+        .merge(audio_router)
         .merge(http_ts_router)
         .merge(webrtc_router)
         .merge(moq_router)

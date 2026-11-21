@@ -131,7 +131,7 @@ license re-checked by hand with `gh api` and crates.io. Tiers match
 | WebVTT/TTML → HLS | fishloa/rust-broadcast, subtitle-rs | 0.1.x / 2.7.1 | Apache-2.0 | 1 / 3 | 2026 | write ourselves; thin glue over WebVTT segments |
 | Audio-only HLS (AAC/Opus) | compose mp4-atom + our packager | — | — | — | — | no extra crate needed |
 | RTMP push out (YouTube/Twitch) | KallDrexx/rust-media-libs (`rml_rtmp`) client side; xiu's RTMP client as reference | 0.8.0 | MIT | 242 | Apr 2023 (stale) | depend for primitives, write the push wrapper; check scuffle-rtmp client mode first |
-| HLS pull input | sile/hls_m3u8 + aschey/stream-download-rs | 0.7.0 / 0.24.4 | Apache-2.0 | 66 / 114 | 2026 | depend; write the live-edge polling loop |
+| HLS pull input | sile/hls_m3u8 + aschey/stream-download-rs | 0.7.0 / 0.24.4 | Apache-2.0 | 66 / 114 | 2026 | written in `caudal-hls-pull` (Nov 2026) without them: the pull reads eight tags, a ~130-line parser (plus tests) and reqwest (already in the tree) covered it; `hls_m3u8` stays the candidate if more of the spec is needed |
 
 ### Tier A (table stakes)
 
@@ -255,3 +255,8 @@ repo re-checked by hand with crates.io and `gh api`.
 - **TS muxing:** our own `caudal-ts` (`TsMux`, on `mpeg2ts`), given a media-clock mode so the PSI/PCR cadence follows the frames' timestamps once the output is paced.
 - **RTP header (RFC 2250, PT 33) and 7x188 datagram framing:** written in `caudal-multicast`: a 12-byte header and a chunker. The `rtp` crate (webrtc-rs) would add a dependency for less code than it replaces, the same call `caudal-rtsp` made.
 - **Pacing:** written (`crates/caudal-multicast/src/pacer.rs`, pure functions of `now`). Kernel pacing (`SO_TXTIME` + `fq`, Linux only) is batch 13 item 4; this user-space pacer works on every OS and is the baseline that item would measure against.
+
+## Batch 14 · Audio-only HTTP output (21 Nov 2026)
+
+- **ADTS framing and ICY metadata:** written in `caudal-audio` (a 7-byte header from the track's AudioSpecificConfig; a byte counter that inserts SHOUTcast metadata blocks). Both are a few lines; no crate on crates.io does only this, and `caudal-ts`'s ADTS builder is private to its muxer. Ours is checked by ffprobe/ffmpeg in the crate's tests.
+- **Transcoding to a requested format:** not done; ffmpeg (already spawned by `caudal-transcode`) would be the way if it is ever needed.

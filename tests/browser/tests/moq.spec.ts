@@ -14,7 +14,7 @@
 // once the orchestrator merges P's crate.
 
 import { test, expect } from "@playwright/test";
-import { haveFfmpeg, startCaudal, startFfmpegPublisher, type CaudalServer, type FfmpegPublisher } from "./harness";
+import { haveFfmpeg, startCaudal, startFfmpegPublisher, logMachineLoad, type CaudalServer, type FfmpegPublisher } from "./harness";
 
 const STREAM = "moq";
 
@@ -35,7 +35,11 @@ test.describe("MoQ playback in a real browser", () => {
   let moq: MoqFingerprint | null = null;
 
   test.beforeAll(async () => {
-    server = await startCaudal();
+    // Debug for the MoQ/QUIC stack: printed only when the test fails (the
+    // firefox flake is a session that never comes up; NOTES.md).
+    server = await startCaudal({
+      rustLog: "info,caudal_moq=debug,moq_native=debug,moq_net=debug,web_transport_quinn=debug,quinn=debug,quinn_proto=debug",
+    });
     publisher = startFfmpegPublisher(server.rtmpUrl(STREAM));
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
@@ -62,6 +66,16 @@ test.describe("MoQ playback in a real browser", () => {
     }
   });
 
+  test.afterEach(async ({ browserName }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus || !server) return;
+    const lines = server.logs().split("\n");
+    const moqLines = lines.filter((l) => /moq|quic|quinn|webtransport|h3|tls/i.test(l));
+    console.log(
+      `[${browserName}] server log on failure: ${moqLines.length} MoQ/QUIC lines of ${lines.length}\n` +
+        moqLines.slice(-300).join("\n"),
+    );
+  });
+
   test.afterAll(async () => {
     await publisher?.stop();
     await server?.stop();
@@ -75,26 +89,67 @@ test.describe("MoQ playback in a real browser", () => {
         "merges P's branch; see STATUS.md \"Batch 5\".",
     );
 
+    // Diagnostics for the firefox-only canvas-resize flake (seen twice: the
+    // canvas never reached width 1280; passed on rerun; an untouched-page
+    // control rerun also passed — so not a global runner problem by itself).
+    // Forward the page's own console (moq/watch, WebTransport, @moq/hang
+    // libraries tend to log connection/subscribe state) and any uncaught
+    // page error, prefixed so they interleave with the harness's log lines.
+    page.on("console", (msg) => console.log(`[${browserName}][page:${msg.type()}] ${msg.text()}`));
+    page.on("pageerror", (err) => console.log(`[${browserName}][pageerror] ${err.stack || err.message}`));
+    logMachineLoad();
+
+    // The firefox flake: the server never sees a session, and @moq/net only
+    // logs in dev builds. Wrap the two transports it races so the page log
+    // says what the browser did: which URL, and whether WebTransport's
+    // `ready` resolved, rejected, or never settled (a hung handshake never
+    // reaches @moq/net's retry loop). Logged as `[wt]` / `[ws]` lines.
+    await page.addInitScript(() => {
+      const t0 = performance.now();
+      const at = () => `+${Math.round(performance.now() - t0)}ms`;
+      const WT = (window as any).WebTransport;
+      if (WT) {
+        (window as any).WebTransport = new Proxy(WT, {
+          construct(target, args) {
+            const opts = args[1] ?? {};
+            console.log(`[wt] new ${args[0]} ${at()} hashes=${(opts.serverCertificateHashes ?? []).length} protocols=${(opts.protocols ?? []).length}`);
+            const wt = new target(...args);
+            wt.ready.then(
+              () => console.log(`[wt] ready ${at()}`),
+              (e: unknown) => console.log(`[wt] ready rejected ${at()}: ${e}`),
+            );
+            wt.closed.then(
+              (i: unknown) => console.log(`[wt] closed ${at()}: ${JSON.stringify(i)}`),
+              (e: unknown) => console.log(`[wt] closed with error ${at()}: ${e}`),
+            );
+            return wt;
+          },
+        });
+      }
+      const WS = window.WebSocket;
+      (window as any).WebSocket = new Proxy(WS, {
+        construct(target, args) {
+          console.log(`[ws] new ${args[0]} ${at()}`);
+          const ws = new target(...(args as [string]));
+          ws.addEventListener("open", () => console.log(`[ws] open ${at()}`));
+          ws.addEventListener("error", () => console.log(`[ws] error ${at()}`));
+          return ws;
+        },
+      });
+    });
     await page.goto(`${server.baseUrl}/streams/${STREAM}`);
 
     const moqRadio = page.getByRole("radio", { name: "MoQ" });
     await expect(moqRadio, "MoQ option should be enabled: this Chromium build has WebTransport").toBeEnabled();
+    const radioClickedAt = Date.now();
     await moqRadio.click();
-
-    // @moq/watch has no <video>/MediaStream in this path: WebCodecs decodes
-    // straight to VideoFrames, drawn onto a <canvas> nested in <moq-watch>.
-    const canvas = page.locator("moq-watch canvas");
-    await expect
-      .poll(async () => canvas.evaluate((c: HTMLCanvasElement) => c.width).catch(() => 0), { timeout: 20_000 })
-      .toBe(1280);
-    await expect
-      .poll(async () => canvas.evaluate((c: HTMLCanvasElement) => c.height).catch(() => 0), { timeout: 5_000 })
-      .toBe(720);
 
     // frameCount comes straight from `<moq-watch>.video.out.stats` (see
     // node_modules/@moq/watch/video/decoder.d.ts) — the same public signal
     // the library's own stats panel reads, not something invented for this
-    // test.
+    // test. Read alongside canvas size during the wait below so a stalled
+    // subscribe (frameCount stuck at 0) can be told apart from a decoded
+    // stream whose <canvas> just hasn't been resized yet (a late-resize bug).
     const frameCount = () =>
       page.evaluate(() => {
         const el = document.querySelector("moq-watch") as unknown as {
@@ -102,6 +157,29 @@ test.describe("MoQ playback in a real browser", () => {
         } | null;
         return el?.video.out.stats.peek()?.frameCount ?? 0;
       });
+
+    // @moq/watch has no <video>/MediaStream in this path: WebCodecs decodes
+    // straight to VideoFrames, drawn onto a <canvas> nested in <moq-watch>.
+    const canvas = page.locator("moq-watch canvas");
+    await expect
+      .poll(
+        async () => {
+          const [width, height, frames] = await Promise.all([
+            canvas.evaluate((c: HTMLCanvasElement) => c.width).catch(() => 0),
+            canvas.evaluate((c: HTMLCanvasElement) => c.height).catch(() => 0),
+            frameCount().catch(() => -1),
+          ]);
+          console.log(
+            `[${browserName}] moq canvas width=${width} height=${height} frameCount=${frames} @ +${Date.now() - radioClickedAt}ms`,
+          );
+          return width;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(1280);
+    await expect
+      .poll(async () => canvas.evaluate((c: HTMLCanvasElement) => c.height).catch(() => 0), { timeout: 5_000 })
+      .toBe(720);
 
     const f0 = await frameCount();
     await page.waitForTimeout(3_000);

@@ -55,8 +55,14 @@ export interface CaudalServer {
   baseUrl: string;
   httpsBaseUrl?: string;
   rtmpUrl(streamName: string): string;
+  /** The server's own log (stdout + stderr), most recent last; kept in memory
+   * and printed by a spec only when it fails, so green runs stay quiet. */
+  logs(): string;
   stop(): Promise<void>;
 }
+
+/** Lines of server log kept per caudal process (the oldest are dropped). */
+const LOG_LINES = 4000;
 
 function resolveBinary(): string {
   const fromEnv = process.env.CAUDAL_BIN;
@@ -80,7 +86,7 @@ function resolveBinary(): string {
  * times after the reconnect/failover specs were added; this shows whether
  * earlier specs left encoders or servers running. Linux only (CI).
  */
-function logMachineLoad(): void {
+export function logMachineLoad(): void {
   if (process.platform !== "linux") return;
   try {
     const load = execSync("cat /proc/loadavg").toString().trim();
@@ -96,7 +102,12 @@ function logMachineLoad(): void {
   }
 }
 
-export async function startCaudal(opts?: { tls?: boolean; extraToml?: string }): Promise<CaudalServer> {
+export async function startCaudal(opts?: {
+  tls?: boolean;
+  extraToml?: string;
+  /** `RUST_LOG` for this server (default `info`), e.g. debug for one crate. */
+  rustLog?: string;
+}): Promise<CaudalServer> {
   logMachineLoad();
   const bin = resolveBinary();
   const fs = await import("node:fs");
@@ -183,8 +194,21 @@ export async function startCaudal(opts?: { tls?: boolean; extraToml?: string }):
   }
 
   const child: ChildProcess = spawn(bin, ["--config", cfgPath], {
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, RUST_LOG: opts?.rustLog ?? process.env.RUST_LOG ?? "info", NO_COLOR: "1" },
   });
+  // tracing writes to stdout; keep both streams in memory instead of
+  // dropping stdout (which hid every server-side clue to the MoQ flake).
+  const logLines: string[] = [];
+  const collect = (chunk: Buffer) => {
+    for (const line of chunk.toString().split("\n")) {
+      if (line.length === 0) continue;
+      logLines.push(line);
+      if (logLines.length > LOG_LINES) logLines.shift();
+    }
+  };
+  child.stdout?.on("data", collect);
+  child.stderr?.on("data", collect);
 
   let exited = false;
   child.on("exit", () => {
@@ -206,7 +230,7 @@ export async function startCaudal(opts?: { tls?: boolean; extraToml?: string }):
   try {
     while (Date.now() < deadline) {
       if (exited) {
-        throw new Error("caudal exited before /healthz answered — check its stderr above");
+        throw new Error(`caudal exited before /healthz answered; its log:\n${logLines.join("\n")}`);
       }
       try {
         const res = await fetch(healthzUrl);
@@ -218,6 +242,7 @@ export async function startCaudal(opts?: { tls?: boolean; extraToml?: string }):
             baseUrl,
             httpsBaseUrl,
             rtmpUrl: (name: string) => `rtmp://127.0.0.1:${rtmpPort}/live/${name}`,
+            logs: () => logLines.join("\n"),
             stop: async () => {
               child.kill("SIGTERM");
               await new Promise<void>((resolve) => {

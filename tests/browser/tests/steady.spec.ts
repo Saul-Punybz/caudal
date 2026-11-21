@@ -14,9 +14,15 @@ import {
   type CaudalServer,
   type FfmpegPublisher,
 } from "./harness";
-import { exposeHlsInstance, readMetrics } from "./metrics";
+import { exposeHlsInstance, readMetrics, startDecodedFrameCounter, stopDecodedFrameCounter, type DecodedFrames } from "./metrics";
 
 const STREAM_NAME = "steady";
+
+// 30fps source (harness.ts). A generous 10fps floor over the ~20s sampling
+// window, same ratio as play.spec.ts's DECODED_FRAME_FLOOR_3S and
+// moq.spec.ts's frame floor — tolerant of a slow CI runner while still
+// catching a real stall. See metrics.ts readDecodedFrames (TEST-AUDIT gap 12).
+const DECODED_FRAME_FLOOR_20S = 200;
 
 interface SteadyStateMetrics {
   browser: string;
@@ -25,6 +31,8 @@ interface SteadyStateMetrics {
   steadyStateMedian: number | null;
   steadyStateMax: number | null;
   validSampleCount: number;
+  decodedFrameDelta: number | null;
+  decodedFrameSource: DecodedFrames["source"];
   fatalHlsError: string | null;
   hlsInstanceExposed: boolean;
   engine: string | null;
@@ -144,6 +152,13 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
     // Wait 10 seconds before starting steady-state sampling.
     await page.waitForTimeout(10_000);
 
+    // Real decoded-frame signal bracketing the whole sampling window,
+    // independent of ingestToGlassSec/currentTime (see metrics.ts
+    // readDecodedFrames, TEST-AUDIT gap 12): proves frames actually kept
+    // decoding for the ~20s this test treats as "steady state", rather than
+    // the playhead merely reporting low latency while stalled or seeking.
+    await startDecodedFrameCounter(page);
+
     // Sample ingest-to-glass once per second for 20 seconds (to get 20 samples).
     const samples: number[] = [];
     const sampleIntervalMs = 1_000;
@@ -163,6 +178,11 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
         await page.waitForTimeout(Math.min(waitTime, sampleIntervalMs));
       }
     }
+
+    const frames = await stopDecodedFrameCounter(page);
+    const decodedFrameSource = frames.source;
+    const decodedFrameDelta = frames.count;
+    const decodedFrameResets = frames.resets;
 
     // Calculate statistics from samples.
     let steadyStateMin: number | null = null;
@@ -186,6 +206,8 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
       steadyStateMedian,
       steadyStateMax,
       validSampleCount: samples.length,
+      decodedFrameDelta,
+      decodedFrameSource,
       fatalHlsError: metricsSnapshot.fatalHlsError,
       hlsInstanceExposed: metricsSnapshot.hlsInstanceExposed,
       engine: metricsSnapshot.engine,
@@ -193,6 +215,7 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
 
     console.log(`[${browserName}] steady-state samples collected: ${samples.length}`);
     console.log(`[${browserName}] steady-state ingest-to-glass: min=${steadyStateMin?.toFixed(2) ?? "n/a"}s, median=${steadyStateMedian?.toFixed(2) ?? "n/a"}s, max=${steadyStateMax?.toFixed(2) ?? "n/a"}s`);
+    console.log(`[${browserName}] decoded frames over ~20s steady window: ${decodedFrameDelta ?? "n/a"} (source: ${decodedFrameSource ?? "unavailable"}, counter resets: ${decodedFrameResets})`);
     console.log(`[${browserName}] hls.js instance exposed: ${metricsSnapshot.hlsInstanceExposed} (engine: ${metricsSnapshot.engine})`);
 
     // Write results to latest.json under "steady" key.
@@ -216,6 +239,21 @@ test.describe("Caudal LL-HLS steady-state latency", () => {
     // Assertions.
     expect(samples.length, "at least 15 valid steady-state samples required").toBeGreaterThanOrEqual(15);
     expect(metricsSnapshot.fatalHlsError).toBeNull();
+
+    // Real decoded-frame signal for the whole steady-state window (see
+    // metrics.ts readDecodedFrames, TEST-AUDIT gap 12). Skip cleanly (not
+    // silently) when this browser exposes neither counter.
+    if (decodedFrameDelta === null) {
+      test.info().annotations.push({
+        type: "decoded-frame-signal-unavailable",
+        description: `${browserName} exposes neither getVideoPlaybackQuality().totalVideoFrames nor webkitDecodedFrameCount; steady-state decoded-frame assertion skipped for this browser`,
+      });
+    } else {
+      expect(
+        decodedFrameDelta,
+        `decoded-frame count barely moved (${decodedFrameDelta} frames via ${decodedFrameSource} over the ~20s steady window, ${decodedFrameResets} counter resets) while ingestToGlass samples looked fine — the playhead may be reporting latency without the decoder actually keeping up`,
+      ).toBeGreaterThanOrEqual(DECODED_FRAME_FLOOR_20S);
+    }
 
     expect(steadyStateMedian, "steady-state median ingest-to-glass should be measurable").not.toBeNull();
     const median = steadyStateMedian as number;

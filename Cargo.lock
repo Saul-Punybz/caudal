@@ -1172,14 +1172,11 @@ dependencies = [
  "caudal-rtmp",
  "parking_lot",
  "rml_rtmp",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
- "tokio-rustls",
  "tower",
  "tracing",
- "webpki-roots 1.0.12",
 ]
 
 [[package]]
@@ -1191,6 +1188,8 @@ dependencies = [
  "caudal-core",
  "caudal-scte35",
  "parking_lot",
+ "rml_rtmp",
+ "rustls",
  "scuffle-aac",
  "scuffle-amf0",
  "scuffle-av1",
@@ -1199,7 +1198,9 @@ dependencies = [
  "scuffle-h265",
  "scuffle-rtmp",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]

@@ -81,12 +81,36 @@ pub struct RtmpSection {
     pub bind: SocketAddr,
     #[serde(default = "default_rtmp_app")]
     pub app: String,
+    /// Pull streams in from remote RTMP/RTMPS servers (Caudal plays them).
+    pub pull: Vec<RtmpPullEntry>,
 }
 
 impl Default for RtmpSection {
     fn default() -> Self {
-        Self { bind: default_rtmp_bind(), app: default_rtmp_app() }
+        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), pull: Vec::new() }
     }
+}
+
+impl RtmpSection {
+    /// Whether the listener itself (`bind`, `app`) differs: pulls reload on
+    /// their own without restarting it.
+    pub fn listener_changed(&self, other: &Self) -> bool {
+        self.bind != other.bind || self.app != other.app
+    }
+
+    /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
+    pub fn pull_targets(&self) -> Vec<caudal_rtmp::RtmpPull> {
+        self.pull.iter().map(|p| caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
+}
+
+/// One `[[rtmp.pull]]`: play `url` (`rtmp://host[:port]/app/key`, or
+/// `rtmps://`) from a remote RTMP server and publish it as `stream`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpPullEntry {
+    pub stream: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1934,7 +1958,7 @@ impl Config {
 }
 
 impl Config {
-    /// `[[rtsp.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
+    /// Every `[[*.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
     /// name, the right URL scheme, and one pull per stream (two would race
     /// to publish the same name).
     fn validate_pulls_and_pushes(&self) -> Result<(), String> {
@@ -1958,6 +1982,7 @@ impl Config {
             .chain(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &p.stream, &p.url, &["srt"][..])))
             .chain(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &p.stream, &p.url, &["udp", "rtp"][..])))
             .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])))
+            .chain(self.rtmp.pull.iter().map(|p| ("[[rtmp.pull]]", &p.stream, &p.url, &["rtmp", "rtmps"][..])))
             .chain(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &p.stream, &p.url, &["http", "https"][..])));
         for (section, stream, url, schemes) in pulls {
             name_ok(section, stream)?;
@@ -1968,6 +1993,9 @@ impl Config {
         }
         for p in &self.http.pull {
             caudal_http_pull::parse_url(&p.url).map_err(|e| format!("[[http.pull]] url {e}"))?;
+        }
+        for p in &self.rtmp.pull {
+            caudal_rtmp::pull::parse_url(&p.url).map_err(|e| format!("[[rtmp.pull]] url {e}"))?;
         }
         for p in &self.hls.pull {
             caudal_hls_pull::parse_url(&p.url).map_err(|e| format!("[[hls.pull]] url {e}"))?;
@@ -2308,6 +2336,26 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"udp://h:1\"\n").contains("http://"));
         assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/live/index.m3u8\"\n").contains("[[hls.pull]]"));
         let twice = "[[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n";
+        assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
+    }
+
+    #[test]
+    fn rtmp_pulls_are_validated() {
+        let ok: Config = toml::from_str(
+            "[rtmp]\n[[rtmp.pull]]\nstream = \"remote\"\nurl = \"rtmp://10.0.0.5/live/cam1\"\n\
+             [[rtmp.pull]]\nstream = \"cdn\"\nurl = \"rtmps://live.example:443/app/KEY\"\n",
+        )
+        .unwrap();
+        ok.validate().unwrap();
+        assert_eq!(ok.rtmp.pull_targets()[1].url, "rtmps://live.example:443/app/KEY");
+        assert!(!ok.rtmp.listener_changed(&RtmpSection::default()), "pulls are not the listener");
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"srt://h:1\"\n").contains("rtmp://"));
+        assert!(bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/\"\n").contains("stream key"));
+        let e = bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h:x/live/SECRET\"\n");
+        assert!(!e.contains("SECRET"), "{e}");
+        let twice = "[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/live/k\"\n\
+                     [[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n";
         assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
     }
 

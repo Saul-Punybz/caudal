@@ -189,10 +189,10 @@ fn apply_hooks(
     }
 }
 
-/// The RTMP listener task, restarted whole when `[rtmp]` changes. The
-/// compare key is simply `old.rtmp != new.rtmp` on the last-applied
-/// `Config` (see `Supervisor::reload`), so there's nothing to keep here
-/// beyond the task itself.
+/// The RTMP listener task, restarted whole when `[rtmp]`'s `bind` or `app`
+/// changes. The compare key is `RtmpSection::listener_changed` on the
+/// last-applied `Config` (see `Supervisor::reload`; `[[rtmp.pull]]` reloads
+/// on its own), so there's nothing to keep here beyond the task itself.
 struct RtmpListener {
     task: tokio::task::JoinHandle<()>,
 }
@@ -326,6 +326,7 @@ pub struct Supervisor {
     srt_pull: caudal_srt::PullHandle,
     udp_pull: caudal_udp::UdpPullHandle,
     http_pull: caudal_http_pull::HttpPullHandle,
+    rtmp_pull: caudal_rtmp::RtmpPullHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
     omt: Arc<crate::omt::OmtRuntime>,
     transcode: caudal_transcode::TranscodeHandle,
@@ -392,6 +393,7 @@ impl Supervisor {
         let srt_pull = caudal_srt::start_pulls(registry.clone(), buffer, cfg.srt.pull_targets());
         let udp_pull = caudal_udp::start_pulls(registry.clone(), buffer, cfg.udp.pull_targets());
         let http_pull = caudal_http_pull::start_pulls(registry.clone(), buffer, cfg.http.pull_targets());
+        let rtmp_pull = caudal_rtmp::start_pulls(registry.clone(), buffer, cfg.rtmp.pull_targets());
         let rtsp_listen = Mutex::new(spawn_rtsp(registry.clone(), buffer, &cfg.rtsp));
         let rtsp_pull = caudal_rtsp::start_pulls(registry.clone(), buffer, cfg.rtsp.pull_targets());
         let omt = crate::omt::OmtRuntime::start(cfg, registry.clone(), buffer);
@@ -451,6 +453,7 @@ impl Supervisor {
             srt_pull,
             udp_pull,
             http_pull,
+            rtmp_pull,
             rtsp_pull,
             omt: omt.clone(),
             transcode,
@@ -535,6 +538,10 @@ impl Supervisor {
             self.http_pull.reload(&self.registry, new_cfg.http.pull_targets());
             report.applied.push("http.pull".into());
         }
+        if old.rtmp.pull != new_cfg.rtmp.pull {
+            self.rtmp_pull.reload(&self.registry, new_cfg.rtmp.pull_targets());
+            report.applied.push("rtmp.pull".into());
+        }
         if old.srt.pull != new_cfg.srt.pull {
             self.srt_pull.reload(&self.registry, new_cfg.srt.pull_targets());
             report.applied.push("srt.pull".into());
@@ -580,7 +587,7 @@ impl Supervisor {
             report.applied.push("hooks".into());
         }
 
-        if old.rtmp != new_cfg.rtmp {
+        if old.rtmp.listener_changed(&new_cfg.rtmp) {
             tracing::info!(
                 old_bind = %old.rtmp.bind, new_bind = %new_cfg.rtmp.bind,
                 old_app = %old.rtmp.app, new_app = %new_cfg.rtmp.app,

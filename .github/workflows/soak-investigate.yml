@@ -16,20 +16,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Round 2. Round 1 (run 44944552859, churn every 2 min, both
-        # halves unless noted): glibc publisher-only +28.9 MB/h, glibc
-        # viewers-only +14.5 MB/h, mimalloc +9.6 MB/h over 60 min but
-        # ~80 MB higher RSS throughout. Every entry here is glibc malloc
-        # with one knob changed, plus the musl build that ships.
+        # Round 3, the proofs: 70 min = 60 min after the verdict's 10-min
+        # warm-up, churn every 2 min. Round 2 (run 44952665812, 30 min):
+        # glibc control +31.1 MB/h, fixed mmap_threshold +21.1, two arenas
+        # +9.0, malloc_trim every 10 s -63.8 (PASS), musl's malloc +723.5.
+        # Round 1 (run 44944552859): publisher restarts alone +28.9,
+        # viewer batches alone +14.5, mimalloc on glibc +9.6 over 60 min.
         include:
-          - name: glibc-control-30m
-          - name: glibc-mmap-threshold-30m
-            env: GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072
-          - name: glibc-arena-max-2-30m
-            env: MALLOC_ARENA_MAX=2
-          - name: glibc-trim-10s-30m
-            env: CAUDAL_MALLOC_TRIM_SECS=10
-          - name: musl-30m
+          # The default glibc build: malloc_trim every 10 s.
+          - name: glibc-trim-70m
+            minutes: 70
+          # The release build: musl + mimalloc.
+          - name: musl-mimalloc-70m
+            minutes: 70
             musl: true
     name: soak ${{ matrix.name }}
     env:

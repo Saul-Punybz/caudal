@@ -321,3 +321,87 @@ export async function requestClip(req: ClipRequest): Promise<Blob> {
   }
   return res.blob();
 }
+
+// ---- Thumbnails (crates/caudal/src/thumbnail.rs) ----
+
+/** `GET /api/v1/streams/{name}/thumbnail.jpg?width=` — a JPEG of the
+ * stream's newest video keyframe. `bust` is appended so a refresh is a
+ * new URL; the server caches one picture per stream and width for 3 s, so
+ * polling every few seconds costs at most one ffmpeg run per interval.
+ * 409 (no video track) and 503 (no keyframe yet, ffmpeg missing or busy)
+ * are normal answers, not faults. */
+export function thumbnailUrl(stream: string, width: number, bust?: number): string {
+  const base = `/api/v1/streams/${encodeURIComponent(stream)}/thumbnail.jpg?width=${width}`;
+  return bust === undefined ? base : `${base}&t=${bust}`;
+}
+
+// ---- Viewer sessions (docs/SESSIONS.md) ----
+
+export interface ViewerSession {
+  id: number;
+  stream: string;
+  /** `srt`, `rtsp`, `whep`, `hls`, `moq`, … */
+  protocol: string;
+  /** `null` for MoQ, whose library does not expose the address. */
+  ip: string | null;
+  /** Unix seconds. */
+  started: number;
+  duration_secs: number;
+  bytes_out: number;
+  /** `null` means not measured, never zero. */
+  rtt_ms: number | null;
+  /** Share of packets lost or retransmitted, 0..1; `null` when not measured. */
+  loss: number | null;
+  tags: string[];
+}
+
+/** GET /api/v1/sessions?stream= — oldest first. */
+export function listSessions(stream?: string): Promise<ViewerSession[]> {
+  const path = stream ? `/api/v1/sessions?stream=${encodeURIComponent(stream)}` : '/api/v1/sessions';
+  return getJsonFeature<ViewerSession[]>(path, []);
+}
+
+/** DELETE /api/v1/sessions/{id} — ends one viewer. Without `blockSecs` a
+ * player that reconnects by itself is back within seconds. */
+export async function kickSession(id: number, blockSecs?: number): Promise<void> {
+  const base = `/api/v1/sessions/${id}`;
+  const path = blockSecs ? `${base}?block_secs=${blockSecs}` : base;
+  const res = await request(path, { method: 'DELETE' });
+  if (!res.ok) {
+    throw new ApiError(`${base} returned ${res.status}`, res.status);
+  }
+}
+
+// ---- Configured pulls and pushes (docs/STREAM-API.md, docs/AUTO-PUSH.md) ----
+
+export interface ConfigEntry {
+  stream: string;
+  /** Secrets already masked by the server (`****`). */
+  url: string;
+  /** The config section it lives in, e.g. `[[rtsp.pull]]`, `[[restream]]`,
+   * or `[[push.auto]]` for an automatic-push rule pattern. */
+  section: string;
+}
+
+/** GET /api/v1/pulls. Empty when the server runs without a config file. */
+export function listPulls(): Promise<ConfigEntry[]> {
+  return getJsonFeature<ConfigEntry[]>('/api/v1/pulls', []);
+}
+
+/** GET /api/v1/pushes — static pushes plus one row per `[[push.auto]]` pattern. */
+export function listPushes(): Promise<ConfigEntry[]> {
+  return getJsonFeature<ConfigEntry[]>('/api/v1/pushes', []);
+}
+
+export interface AutoPushRule {
+  streams: string[];
+  url: string;
+  kind: 'rtmp' | 'srt' | 'udp' | string;
+  active: { stream: string; url: string }[];
+  skipped: { stream: string; reason: string }[];
+}
+
+/** GET /api/v1/auto-pushes — each `[[push.auto]]` rule with what it runs now. */
+export function listAutoPushes(): Promise<AutoPushRule[]> {
+  return getJsonFeature<AutoPushRule[]>('/api/v1/auto-pushes', []);
+}

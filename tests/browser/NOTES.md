@@ -291,6 +291,6 @@ green, so the next failure has not been captured yet. When it is, read:
 - quinn lines for the connection but no `moq:` line: the handshake stalls
   inside quinn/moq-native (server side, a Caudal bug to fix, not retry).
 
-If it is the first case of the last two, a connect timeout in the player
+If it is the browser side, a connect timeout in the player
 (abort and retry when `ready` has not settled after a few seconds) is the
 fix that helps real viewers too.

@@ -61,6 +61,17 @@
     word-wrap: normal;
     direction: ltr;
     -webkit-font-smoothing: antialiased;
+    /* Reserve the glyph's square box before the icon font arrives. Until
+       then the ligature renders as its name ("check", "arrow_back") in a
+       fallback font, several em wide, and the swap shifts everything next
+       to it. That shift once moved the MoQ segmented button out from under
+       a click in progress (tests/browser/NOTES.md, "Firefox MoQ flake:
+       the click"). overflow: hidden zeroes a flex item's automatic minimum
+       width, hence flex-shrink: 0. */
+    display: inline-block;
+    width: 1em;
+    overflow: hidden;
+    flex-shrink: 0;
     font-variation-settings:
       'FILL' 0,
       'wght' 400,

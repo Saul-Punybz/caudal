@@ -501,7 +501,7 @@ pub struct PushSection {
 /// `$stream` replaced by its name; stop when it ends. The URL's scheme
 /// picks the engine, the same ones the static pushes use: `rtmp://` /
 /// `rtmps://` (`[[restream]]`), `srt://` (`[[srt.push]]`), `udp://` /
-/// `rtp://` (`[[udp.push]]`).
+/// `rtp://` (`[[udp.push]]`), `whip://` / `whip+http://` (`[[webrtc.push]]`).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AutoPushEntry {
@@ -521,6 +521,9 @@ pub struct AutoPushEntry {
     /// `udp://` / `rtp://` only: as `[[udp.push]]` `pacing` (default on).
     #[serde(default)]
     pub pacing: Option<bool>,
+    /// `whip://` / `whip+http://` only: as `[[webrtc.push]]` `token`.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 /// Which push engine an auto-push URL goes to.
@@ -529,6 +532,7 @@ pub enum AutoPushKind {
     Restream,
     Srt,
     Udp,
+    Whip,
 }
 
 impl AutoPushKind {
@@ -537,6 +541,7 @@ impl AutoPushKind {
             AutoPushKind::Restream => "rtmp",
             AutoPushKind::Srt => "srt",
             AutoPushKind::Udp => "udp",
+            AutoPushKind::Whip => "whip",
         }
     }
 }
@@ -577,7 +582,8 @@ impl AutoPushEntry {
             Some("rtmp" | "rtmps") => Ok(AutoPushKind::Restream),
             Some("srt") => Ok(AutoPushKind::Srt),
             Some("udp" | "rtp") => Ok(AutoPushKind::Udp),
-            _ => Err(self.ctx("expected an rtmp://, rtmps://, srt://, udp:// or rtp:// url")),
+            Some("whip" | "whip+http") => Ok(AutoPushKind::Whip),
+            _ => Err(self.ctx("expected an rtmp://, rtmps://, srt://, udp://, rtp://, whip:// or whip+http:// url")),
         }
     }
 
@@ -624,6 +630,11 @@ impl AutoPushEntry {
         if kind != AutoPushKind::Udp && (self.ttl.is_some() || self.interface.is_some() || self.pacing.is_some()) {
             return Err(self.ctx("`ttl`, `interface` and `pacing` only apply to udp:// and rtp:// targets"));
         }
+        match (&self.token, kind) {
+            (Some(t), AutoPushKind::Whip) => whip_token_ok("[[push.auto]]", t)?,
+            (Some(_), _) => return Err(self.ctx("`token` only applies to whip:// and whip+http:// targets")),
+            (None, _) => {}
+        }
         let sample = self.sample_stream();
         let url = expand_push_template(&self.url, &sample);
         match kind {
@@ -634,6 +645,9 @@ impl AutoPushEntry {
                     );
                 }
                 self.udp_target(&sample)?;
+            }
+            AutoPushKind::Whip => {
+                caudal_webrtc::whip_endpoint(&url).map_err(|e| self.ctx(format!("expands to {e}")))?;
             }
             AutoPushKind::Restream | AutoPushKind::Srt => {
                 let parsed = url::Url::parse(&url).map_err(|e| self.ctx(format!("expands to {url:?}: {e}")))?;
@@ -1384,7 +1398,7 @@ fn default_webrtc_udp() -> SocketAddr {
     "0.0.0.0:8189".parse().unwrap()
 }
 
-/// WHIP ingest and WHEP playback over one UDP port.
+/// WHIP ingest and WHEP playback over one UDP port, and WHIP pushes out.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct WebRtcSection {
@@ -1395,12 +1409,61 @@ pub struct WebRtcSection {
     /// Peer engines sharing the UDP port (cores doing SRTP). 0: one per
     /// core, at most 8.
     pub threads: usize,
+    /// `[[webrtc.push]]`: send streams to remote WHIP endpoints. Hot
+    /// reloadable, unlike the rest of the section.
+    pub push: Vec<WhipPushEntry>,
 }
 
 impl Default for WebRtcSection {
     fn default() -> Self {
-        Self { udp_bind: default_webrtc_udp(), public_ips: Vec::new(), threads: 0 }
+        Self { udp_bind: default_webrtc_udp(), public_ips: Vec::new(), threads: 0, push: Vec::new() }
     }
+}
+
+impl WebRtcSection {
+    /// Whether the part wired at startup (the UDP port and its engines)
+    /// changed; `push` reloads on its own.
+    pub fn listener_changed(&self, other: &Self) -> bool {
+        (self.udp_bind, &self.public_ips, self.threads) != (other.udp_bind, &other.public_ips, other.threads)
+    }
+
+    pub fn push_targets(&self) -> Vec<caudal_webrtc::WhipPush> {
+        self.push
+            .iter()
+            .map(|p| caudal_webrtc::WhipPush { stream: p.stream.clone(), url: p.url.clone(), token: p.token.clone() })
+            .collect()
+    }
+}
+
+/// One `[[webrtc.push]]`: while `stream` is live, publish it to the WHIP
+/// endpoint `url` (`whip://` = HTTPS, `whip+http://` = plain HTTP, or an
+/// `https://` / `http://` URL as is).
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WhipPushEntry {
+    pub stream: String,
+    pub url: String,
+    /// Sent as `Authorization: Bearer <token>`.
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for WhipPushEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WhipPushEntry")
+            .field("stream", &self.stream)
+            .field("url", &caudal_webrtc::redact_whip_url(&self.url))
+            .field("token", &self.token.as_ref().map(|_| "****"))
+            .finish()
+    }
+}
+
+/// A bearer token: printable ASCII without spaces (it goes in a header).
+pub(crate) fn whip_token_ok(ctx: &str, token: &str) -> Result<(), String> {
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(format!("{ctx}: `token` must be non-empty printable ASCII without spaces"));
+    }
+    Ok(())
 }
 
 /// HTTPS next to plain HTTP. Either `cert` + `key` files, or `acme_domains`
@@ -2095,6 +2158,13 @@ impl Config {
             name_ok("[[srt.push]]", &p.stream)?;
             scheme_ok("[[srt.push]]", &p.url, &["srt"])?;
         }
+        for p in &self.webrtc.push {
+            name_ok("[[webrtc.push]]", &p.stream)?;
+            caudal_webrtc::whip_endpoint(&p.url).map_err(|e| format!("[[webrtc.push]] url {e}"))?;
+            if let Some(t) = &p.token {
+                whip_token_ok("[[webrtc.push]]", t)?;
+            }
+        }
         for r in &self.restream {
             name_ok("[[restream]]", &r.stream)?;
             scheme_ok("[[restream]]", &r.url, &["rtmp", "rtmps"])?;
@@ -2574,6 +2644,37 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         .validate()
         .unwrap_err();
         assert!(err.contains("one stream per destination"), "{err}");
+    }
+
+    #[test]
+    fn whip_pushes() {
+        let cfg: Config = toml::from_str(
+            "[webrtc]\nudp_bind = \"0.0.0.0:8189\"\n\
+             [[webrtc.push]]\nstream = \"main\"\nurl = \"whip://live.example/whip/main\"\ntoken = \"t0k\"\n\
+             [[webrtc.push]]\nstream = \"main\"\nurl = \"https://cf.example/0123456789abcdef0123/webRTC/publish\"\n\
+             [[push.auto]]\nstreams = [\"cam*\"]\nurl = \"whip+http://10.0.0.7:8080/whip/$stream\"\ntoken = \"x\"\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let t = cfg.webrtc.push_targets();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].token.as_deref(), Some("t0k"));
+        assert_eq!(cfg.push.auto[0].kind().unwrap(), AutoPushKind::Whip);
+        assert!(!format!("{cfg:?}").contains("t0k"), "Debug masks the token");
+
+        // Only the pushes changed: no restart.
+        let mut other = cfg.webrtc.clone();
+        other.push.clear();
+        assert!(!cfg.webrtc.listener_changed(&other));
+        other.threads = 2;
+        assert!(cfg.webrtc.listener_changed(&other));
+
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[webrtc.push]]\nstream = \"a\"\nurl = \"rtmp://h/a/k\"\n").contains("whip://"));
+        assert!(bad("[[webrtc.push]]\nstream = \"a b\"\nurl = \"whip://h/w\"\n").contains("stream name"));
+        assert!(bad("[[webrtc.push]]\nstream = \"a\"\nurl = \"whip://h/w\"\ntoken = \"a b\"\n").contains("token"));
+        assert!(bad("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\ntoken = \"x\"\n").contains("only applies"));
+        assert!(bad("[[push.auto]]\nstreams = [\"a\"]\nurl = \"whip://\"\n").contains("host"));
     }
 
     #[test]

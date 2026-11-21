@@ -1,6 +1,6 @@
 [package]
 name = "caudal-webrtc"
-description = "WebRTC for Caudal: WHIP ingest and WHEP playback"
+description = "WebRTC for Caudal: WHIP ingest, WHEP playback and WHIP push"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,9 @@ mp4-atom = "0.15"
 if-addrs = "0.15"
 getrandom = "0.3"
 socket2 = "0.6"
+parking_lot.workspace = true
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 quinn-udp = { version = "0.5.15", default-features = false, features = ["tracing"] }
 
 [dev-dependencies]

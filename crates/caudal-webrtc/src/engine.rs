@@ -625,12 +625,14 @@ fn on_event(slot: &mut Slot, ev: Event) {
             }
         }
         Event::PeerStats(s) => {
-            if let Role::Whep(e) = &slot.peer.role {
+            if let Role::Whep(e) = &slot.peer.role
+                && let Some(q) = &e.quality
+            {
                 if let Some(rtt) = s.rtt {
-                    e.quality.set_rtt(rtt);
+                    q.set_rtt(rtt);
                 }
                 if let Some(loss) = s.egress_loss_fraction {
-                    e.quality.set_loss(f64::from(loss));
+                    q.set_loss(f64::from(loss));
                 }
             }
         }

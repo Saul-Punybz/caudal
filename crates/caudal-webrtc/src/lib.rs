@@ -6,6 +6,9 @@
 //! - `DELETE /whip/{name}/{session}`
 //! - `POST /whep/{name}`, `DELETE /whep/{name}/{session}`
 //!
+//! Out: [`start_pushes`] sends live streams to remote WHIP endpoints
+//! (`[[webrtc.push]]`, MistServer's `whip://` push); see `push`.
+//!
 //! Tokens: `Authorization: Bearer <token>` (as the WHIP/WHEP specs say) or
 //! `?token=`, checked with `Registry::authorize`.
 //!
@@ -19,6 +22,9 @@ mod egress;
 mod engine;
 mod ingest;
 mod net;
+mod push;
+
+pub use push::{WhipPush, WhipPushHandle, redact_url as redact_whip_url, start_pushes, whip_endpoint};
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -346,21 +352,27 @@ fn is_sdp(headers: &HeaderMap) -> bool {
         .is_some_and(|v| v.trim().to_ascii_lowercase().starts_with("application/sdp"))
 }
 
-fn build_rtc(candidates: &[SocketAddr]) -> Rtc {
+/// The codecs every peer uses: Opus and H.264 packetization-mode 1 only,
+/// the profiles browsers and ffmpeg offer. `ice_lite` for the server side
+/// (WHIP ingest, WHEP); a WHIP push is a full ICE agent.
+fn rtc_config(ice_lite: bool) -> RtcConfig {
     // Peer stats once a second: a WHEP viewer's RTT and the loss its
     // receiver reports (RTCP), for `GET /api/v1/sessions`.
     let mut cfg = RtcConfig::new()
-        .set_ice_lite(true)
+        .set_ice_lite(ice_lite)
         .clear_codecs()
         .enable_opus(true, false)
         .set_stats_interval(Some(std::time::Duration::from_secs(1)));
-    // H.264 packetization-mode 1 only, the profiles browsers and ffmpeg offer.
     for (pt, rtx, profile_level_id) in
         [(127u8, 121u8, 0x42001f), (108, 109, 0x42e01f), (123, 119, 0x4d001f), (114, 115, 0x64001f)]
     {
         cfg.codec_config().add_h264(pt.into(), Some(rtx.into()), true, profile_level_id);
     }
-    let mut rtc = cfg.build(std::time::Instant::now());
+    cfg
+}
+
+fn build_rtc(candidates: &[SocketAddr]) -> Rtc {
+    let mut rtc = rtc_config(true).build(std::time::Instant::now());
     for c in candidates {
         match Candidate::host(*c, "udp") {
             Ok(c) => {

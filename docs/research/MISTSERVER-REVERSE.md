@@ -504,7 +504,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | WHEP | has | `C:crates/caudal-webrtc/src/egress.rs` |
 | WebRTC WebSocket signalling | won't (WHIP/WHEP only) | — |
 | WebRTC data channel (metadata/subtitles) | missing | no sctp/datachannel |
-| WHIP push out (`whip://`) | missing | — |
+| WHIP push out (`whip://`) | has | `C:crates/caudal-webrtc/src/push.rs` (`[[webrtc.push]]`, docs/WHIP-PUSH.md) |
 | RTMP(S) push out | has | `C:crates/caudal-restream/src/lib.rs` |
 | RTMP play (viewers pull RTMP) | missing (not verified otherwise) | `C:crates/caudal-rtmp/src/lib.rs:26` is ingest-only |
 | SRT play / SRT push out | has | `C:crates/caudal-srt/src/play.rs`, `push.rs` |

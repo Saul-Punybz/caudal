@@ -793,6 +793,7 @@ dependencies = [
  "caudal-failover",
  "caudal-health",
  "caudal-hls",
+ "caudal-hls-pull",
  "caudal-http-pull",
  "caudal-moq",
  "caudal-multicast",
@@ -1030,6 +1031,20 @@ dependencies = [
  "tower",
  "tracing",
  "ureq",
+]
+
+[[package]]
+name = "caudal-hls-pull"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "caudal-core",
+ "caudal-ts",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

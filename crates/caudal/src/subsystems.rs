@@ -326,6 +326,7 @@ pub struct Supervisor {
     srt_pull: caudal_srt::PullHandle,
     udp_pull: caudal_udp::UdpPullHandle,
     http_pull: caudal_http_pull::HttpPullHandle,
+    hls_pull: caudal_hls_pull::HlsPullHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
     omt: Arc<crate::omt::OmtRuntime>,
     transcode: caudal_transcode::TranscodeHandle,
@@ -392,6 +393,7 @@ impl Supervisor {
         let srt_pull = caudal_srt::start_pulls(registry.clone(), buffer, cfg.srt.pull_targets());
         let udp_pull = caudal_udp::start_pulls(registry.clone(), buffer, cfg.udp.pull_targets());
         let http_pull = caudal_http_pull::start_pulls(registry.clone(), buffer, cfg.http.pull_targets());
+        let hls_pull = caudal_hls_pull::start_pulls(registry.clone(), buffer, cfg.hls.pull_targets());
         let rtsp_listen = Mutex::new(spawn_rtsp(registry.clone(), buffer, &cfg.rtsp));
         let rtsp_pull = caudal_rtsp::start_pulls(registry.clone(), buffer, cfg.rtsp.pull_targets());
         let omt = crate::omt::OmtRuntime::start(cfg, registry.clone(), buffer);
@@ -443,6 +445,7 @@ impl Supervisor {
             srt_pull,
             udp_pull,
             http_pull,
+            hls_pull,
             rtsp_pull,
             omt: omt.clone(),
             transcode,
@@ -520,6 +523,10 @@ impl Supervisor {
         if old.http.pull != new_cfg.http.pull {
             self.http_pull.reload(&self.registry, new_cfg.http.pull_targets());
             report.applied.push("http.pull".into());
+        }
+        if old.hls.pull != new_cfg.hls.pull {
+            self.hls_pull.reload(&self.registry, new_cfg.hls.pull_targets());
+            report.applied.push("hls.pull".into());
         }
         if old.srt.pull != new_cfg.srt.pull {
             self.srt_pull.reload(&self.registry, new_cfg.srt.pull_targets());
@@ -617,7 +624,7 @@ impl Supervisor {
         if old.moq != new_cfg.moq {
             report.requires_restart.push("moq".into());
         }
-        if old.hls != new_cfg.hls {
+        if old.hls.output() != new_cfg.hls.output() {
             report.requires_restart.push("hls".into());
         }
         if old.record != new_cfg.record {

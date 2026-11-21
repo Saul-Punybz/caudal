@@ -123,7 +123,7 @@ impl Default for SrtSection {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct HlsSection {
     #[serde(default = "default_part_ms")]
@@ -140,6 +140,32 @@ pub struct HlsSection {
     /// of the same name within them continues it. 0 ends it at once.
     #[serde(default = "default_reconnect_grace_secs")]
     pub reconnect_grace_secs: u32,
+    /// HLS or LL-HLS pulled in (`[[hls.pull]]`): a remote playlist with
+    /// MPEG-TS segments published as a stream. Reloadable, unlike the
+    /// output settings above.
+    #[serde(default)]
+    pub pull: Vec<HlsPullEntry>,
+}
+
+/// One `[[hls.pull]]`: poll the playlist at `url`
+/// (`https://cdn.example/live/index.m3u8`, a master or a media playlist)
+/// and publish its segments as `stream`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HlsPullEntry {
+    pub stream: String,
+    pub url: String,
+}
+
+impl HlsSection {
+    pub fn pull_targets(&self) -> Vec<caudal_hls_pull::HlsPull> {
+        self.pull.iter().map(|p| caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
+
+    /// The output settings alone: what a change of needs a restart.
+    pub fn output(&self) -> Self {
+        Self { pull: Vec::new(), ..self.clone() }
+    }
 }
 
 fn default_reconnect_grace_secs() -> u32 {
@@ -154,6 +180,7 @@ impl Default for HlsSection {
             cue_tags: true,
             cue_out_tags: false,
             reconnect_grace_secs: default_reconnect_grace_secs(),
+            pull: Vec::new(),
         }
     }
 }
@@ -1729,7 +1756,8 @@ impl Config {
             .map(|p| ("[[rtsp.pull]]", &p.stream, &p.url, &["rtsp", "rtsps"][..]))
             .chain(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &p.stream, &p.url, &["srt"][..])))
             .chain(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &p.stream, &p.url, &["udp", "rtp"][..])))
-            .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])));
+            .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])))
+            .chain(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &p.stream, &p.url, &["http", "https"][..])));
         for (section, stream, url, schemes) in pulls {
             name_ok(section, stream)?;
             scheme_ok(section, url, schemes)?;
@@ -1739,6 +1767,9 @@ impl Config {
         }
         for p in &self.http.pull {
             caudal_http_pull::parse_url(&p.url).map_err(|e| format!("[[http.pull]] url {e}"))?;
+        }
+        for p in &self.hls.pull {
+            caudal_hls_pull::parse_url(&p.url).map_err(|e| format!("[[hls.pull]] url {e}"))?;
         }
         let mut listening = std::collections::HashSet::new();
         for p in &self.udp.pull {
@@ -2071,8 +2102,25 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         assert_eq!(ok.http.pull_targets()[1].url, "https://encoder.example/live");
         let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"udp://h:1\"\n").contains("http://"));
-        assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/live/index.m3u8\"\n").contains("HLS"));
+        assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/live/index.m3u8\"\n").contains("[[hls.pull]]"));
         let twice = "[[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n";
+        assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
+    }
+
+    #[test]
+    fn hls_pulls_are_validated() {
+        let ok: Config = toml::from_str(
+            "[hls]\npart_ms = 100\n[[hls.pull]]\nstream = \"tv\"\nurl = \"https://cdn.example/live/master.m3u8\"\n",
+        )
+        .unwrap();
+        ok.validate().unwrap();
+        assert_eq!(ok.hls.part_ms, 100, "pulls sit beside the output settings");
+        assert_eq!(ok.hls.pull_targets()[0].stream, "tv");
+        assert_eq!(ok.hls.output(), HlsSection { part_ms: 100, ..HlsSection::default() });
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[hls.pull]]\nstream = \"a\"\nurl = \"rtmp://h/x.m3u8\"\n").contains("http://"));
+        assert!(bad("[[hls.pull]]\nstream = \"bad name\"\nurl = \"http://h/x.m3u8\"\n").contains("stream name"));
+        let twice = "[[hls.pull]]\nstream = \"a\"\nurl = \"http://h/x.m3u8\"\n[[http.pull]]\nstream = \"a\"\nurl = \"http://h/x.ts\"\n";
         assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
     }
 

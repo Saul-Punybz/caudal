@@ -11,7 +11,8 @@
 //! - [`IDLE`] without bytes, or the response ending, ends the stream; the
 //!   pull then reconnects with backoff ([`BACKOFF_MIN`]..[`BACKOFF_MAX`],
 //!   back to the minimum once data flowed).
-//! - An HLS playlist (`.m3u8`) is not a TS body: [`parse_url`] refuses it.
+//! - An HLS playlist (`.m3u8`) is not a TS body: [`parse_url`] refuses it
+//!   and points at `[[hls.pull]]` (crate `caudal-hls-pull`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +47,7 @@ pub fn parse_url(url: &str) -> Result<reqwest::Url, String> {
     if u.path().to_ascii_lowercase().ends_with(".m3u8") {
         return Err(format!(
             "{url:?}: an HLS playlist, not an MPEG-TS stream; [[http.pull]] takes a TS served over HTTP \
-             (VLC access=http,mux=ts), HLS pulls are not supported yet"
+             (VLC access=http,mux=ts): pull a playlist with [[hls.pull]]"
         ));
     }
     Ok(u)

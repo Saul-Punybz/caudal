@@ -52,7 +52,7 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
       (window as any).__fatal = [];
       (window as any).__events = [];
       const v = document.getElementById("v") as HTMLVideoElement;
-      for (const ev of ["ended", "waiting", "emptied", "durationchange"]) {
+      for (const ev of ["ended", "waiting", "emptied", "durationchange", "pause", "play", "playing"]) {
         v.addEventListener(ev, () =>
           (window as any).__events.push(`${ev}@${v.currentTime.toFixed(2)}/${v.duration}`),
         );
@@ -132,6 +132,10 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
     // (native HLS may catch up in small steps right after the seam).
     await page.waitForTimeout(2_000);
     const t0 = await time();
+    const latencyAtT0 = await page.evaluate(() => {
+      const hls = (window as any).__hlsInstance;
+      return hls && Number.isFinite(hls.latency) ? `${hls.latency.toFixed(2)}/${hls.targetLatency?.toFixed(2)}` : "-";
+    });
     await page.waitForTimeout(3_000);
     const delta = (await time()) - t0;
 
@@ -152,7 +156,7 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
     const holds = info.seam.filter((l) => / pause@/.test(l)).length;
     const waits = info.seam.filter((l) => / waiting@/.test(l)).length;
     const errors = [...new Set(info.seam.filter((l) => l.includes("hls:ERROR")).map((l) => l.split("hls:ERROR ")[1]))];
-    console.log(`[${browserName}] seam window: ${waits} waiting, ${holds} pause(s), non-fatal hls.js errors ${JSON.stringify(errors)}`);
+    console.log(`[${browserName}] seam window: latency/target ${latencyAtT0} before the 3 s sample, ${waits} waiting, ${holds} pause(s), non-fatal hls.js errors ${JSON.stringify(errors)}`);
     if (delta < 2.4) console.log(`[${browserName}] seam log (since the republish):\n  ${info.seam.join("\n  ")}`);
     expect(await ended()).toBe(false);
     expect(delta, "playback stalled after the reconnect").toBeGreaterThanOrEqual(2.4);

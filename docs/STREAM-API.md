@@ -37,7 +37,7 @@ A pull can be `rtsp://`/`rtsps://` (`[[rtsp.pull]]`), `srt://` (`[[srt.pull]]`, 
 | | |
 |---|---|
 | `GET /api/v1/pushes` | `[{"stream", "url", "section"}]` |
-| `POST /api/v1/pushes` `{"stream": "show", "url": "rtmps://live.example/app/KEY"}` | `rtmp://`/`rtmps://` → `[[restream]]`, `srt://` → `[[srt.push]]` |
+| `POST /api/v1/pushes` `{"stream": "show", "url": "rtmps://live.example/app/KEY"}` | `rtmp://`/`rtmps://` → `[[restream]]`, `srt://` → `[[srt.push]]`, `udp://`/`rtp://` → `[[udp.push]]` (an IP address) |
 | `DELETE /api/v1/pushes/{stream}[?url=...]` | removes the stream's pushes (only that url when given) |
 
 A push starts when its stream is live and keeps retrying while it is.

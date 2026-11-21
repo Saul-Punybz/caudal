@@ -485,9 +485,10 @@ impl Supervisor {
             self.restream.reload(&self.registry, new_cfg.restream_targets());
             report.applied.push("restream".into());
         }
-        if old.multicast != new_cfg.multicast {
+        // One sender runs both [[multicast]] and [[udp.push]].
+        if old.multicast != new_cfg.multicast || old.udp.push != new_cfg.udp.push {
             self.multicast.reload(&self.registry, new_cfg.multicast_targets().expect("validated"));
-            report.applied.push("multicast".into());
+            report.applied.push(if old.multicast != new_cfg.multicast { "multicast" } else { "udp.push" }.into());
         }
         if old.channel != new_cfg.channel {
             self.channel.reload(caudal_channel::ChannelConfig {
@@ -509,7 +510,7 @@ impl Supervisor {
             self.srt_push.reload(&self.registry, new_cfg.srt.push_targets());
             report.applied.push("srt.push".into());
         }
-        if old.udp != new_cfg.udp {
+        if old.udp.pull != new_cfg.udp.pull {
             self.udp_pull.reload(&self.registry, new_cfg.udp.pull_targets());
             report.applied.push("udp.pull".into());
         }

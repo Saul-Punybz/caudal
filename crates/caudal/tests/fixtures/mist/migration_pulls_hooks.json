@@ -1,0 +1,36 @@
+{
+  "config": {
+    "protocols": [
+      {"connector": "HTTP", "port": 8080},
+      {"connector": "HLS"},
+      {"connector": "CMAF"},
+      {"connector": "HTTPTS"},
+      {"connector": "RTMP", "port": 1935},
+      {"connector": "TSSRT", "port": 8889}
+    ],
+    "triggers": {
+      "USER_NEW": [
+        {"handler": "https://auth.example.com/mist/user_new", "sync": true, "streams": [], "default": "false"}
+      ],
+      "PUSH_REWRITE": [
+        ["https://auth.example.com/mist/push_rewrite", true, "", ""]
+      ],
+      "STREAM_END": [
+        ["https://ops.example.com/hooks/end", false, []]
+      ]
+    }
+  },
+  "streams": {
+    "venue": {"source": "srt://203.0.113.7:9000?streamid=play/main&latency=200", "always_on": true},
+    "catv": {"source": "tsudp://239.1.1.1:5000"},
+    "news": {"source": "https://cdn.example.com/live/news/index.m3u8"},
+    "studio": {"source": "push://", "DVR": 60000}
+  },
+  "auto_push": {
+    "1": {"stream": "studio", "target": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"},
+    "2": {"stream": "studio", "target": "/var/lib/mist/rec/studio_$datetime.mkv",
+          "scheduletime": 1798149600, "completetime": 1798160400},
+    "3": {"stream": "venue", "target": "srt://198.51.100.20:9000?streamid=publish/venue",
+          "scheduletime": 1798149600, "completetime": 1798160400}
+  }
+}

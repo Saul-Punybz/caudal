@@ -548,7 +548,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | Livepeer, Composer | missing | — |
 | Capabilities endpoint | missing | — |
 | DVR window | has (`[buffer] window_secs`) | `C:crates/caudal/src/config.rs:155-159` |
-| MistServer config import | has | `C:crates/caudal/src/import_mist.rs` |
+| MistServer config import | has: connectors, pulls (SRT/UDP/HTTP-TS/HLS/RTMP/RTSP), auto-pushes, blocking and rewrite triggers; scheduled network pushes wait for `[[push.auto]]` time windows (`docs/IMPORT-MIST.md`) | `C:crates/caudal/src/import_mist.rs` |
 
 ### 6.4 Biggest gaps, ranked for migrating MistServer users
 

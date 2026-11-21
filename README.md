@@ -51,7 +51,11 @@ Migrating from MistServer: `caudal import-mist <mistserver.conf|config.json>`
 reads its config and writes a `caudal.toml` plus a report of every setting
 translated, approximated, or with no Caudal equivalent (user accounts, for
 one — hash new passwords with `caudal hash-password`). It fails without
-writing anything if the generated file doesn't pass `caudal check`.
+writing anything if the generated file doesn't pass `caudal check`. Pulls
+(SRT, TS over UDP/HTTP, HLS, RTMP, RTSP), auto-pushes and the blocking
+triggers (`USER_NEW`, `STREAM_PUSH`, `PUSH_REWRITE`, ...) carry over; see
+[docs/IMPORT-MIST.md](docs/IMPORT-MIST.md) for the full mapping and what a
+trigger handler has to change.
 
 ## Deploy
 

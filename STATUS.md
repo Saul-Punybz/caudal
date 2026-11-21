@@ -1,40 +1,53 @@
 # STATUS — Caudal
 
-**Last updated:** 20 Nov 2026 (MistServer gap points 1-5 merged; v0.1.0 tag still blocked by per-churn RSS growth)
+**Last updated:** 21 Nov 2026 (Rolando's MPEG-2 chain merged; Windows port in review; v0.1.0 tag still blocked by per-churn RSS growth)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (20 Nov 2026) — read this block first
+## RESUME HERE (21 Nov 2026) — read this block first
 
-**Nothing open.** Merged to `main` 19-20 Nov (all with CI green):
+**Goal of this batch: Rolando's ATSC chain on Caudal.** At CAtv, VLC sends MPEG-2 720p59.94 + MPEG
+audio over UDP to a Technalogix TP1000 multiplexer (ASI to the exciter), on a **Windows 10** tower PC.
+Merged 21 Nov (CI green):
+
+| PR | What |
+|---|---|
+| #26 | browser suite: real decoded-frame counter; the harness keeps the server log (it dropped stdout); Firefox MoQ flake instrumented (`tests/browser/NOTES.md`) |
+| #38 | MPEG-2 video + MPEG audio (MP2/MP3) pass through `caudal-ts`; one video + one audio PID per program (a second audio no longer interleaves) |
+| #39 | `[[udp.push]]`: MPEG-TS over UDP/RTP to one receiver's IP (the multiplexer's input) (`docs/MULTICAST.md`) |
+| #40 | transcode: an MPEG-2 feed gets a same-height H.264 + AAC copy (deinterlaced if 1080i); its master playlist offers the copy, so `/play/<stream>` works (`docs/PULL-INPUTS.md` has the full config) |
+
+**Open:** #41 Windows port (draft until its job is green): MSVC build, `.github/workflows/windows.yml`
+smoke test of `caudal.exe` (UDP in, LL-HLS out; MPEG-2 through `[[udp.push]]`; the H.264 copy), clean
+stop on console close/shutdown, `docs/WINDOWS.md` (firewall rule, NSSM service). Not tested: a real
+Windows 10 machine, running as a service, multicast on Windows.
+
+**Ask Rolando** (not verifiable from here): does VLC send to the TP1000's IP or to a multicast group,
+and on which port; his exact `--sout` line; 720p or 1080i; one NIC or two in the tower PC.
+
+**Browser suite:** WebKit reconnect has not failed since #35. Firefox MoQ: in the one failure captured
+with server logs, caudal never received a session and the browser logged no error (its WebTransport
+`ready` never settled); not caused by #28. Six green runs since; `tests/browser/NOTES.md` says how to
+read the next failure.
+
+**Next (proposed):** HTTP-TS / HLS and RTMP pulls (VLC's `access=http,mux=ts` is not received yet);
+`totals`-compatible stats, TS-HLS, thumbnails, auto-push rules. Soak (v0.1.0 blocker) still open; the
+weekly soak workflow is **disabled** (Saul, 19 Nov) until the leak is fixed.
+
+## Merged 19-20 Nov 2026
+
 | PR | What |
 |---|---|
 | #27 | M12 OMT, pinned to the last verified OMT `ec11ec2` (section below) |
 | #28 | dependency advisories: RUSTSEC 21 -> 1 (rsa via openidconnect, accepted) |
-| #29 | `[auth.hook]` blocking webhook before publish/play (cached, single-flight; `docs/AUTH-HOOK.md`) + per-account login lock (20 failures / 15 min) |
-| #30, #31 | viewer sessions: list/kick/block for SRT, RTSP, WHEP, LL-HLS, MoQ; RTT/loss; tags and bulk kick (`docs/SESSIONS.md`) |
-| #32 | `/api/v1/pulls` `/api/v1/pushes`: atomic `toml_edit` config writes, secrets redacted, pull/push validation (`docs/STREAM-API.md`) |
+| #29 | `[auth.hook]` blocking webhook before publish/play + per-account login lock (`docs/AUTH-HOOK.md`) |
+| #30, #31 | viewer sessions: list/kick/block for SRT, RTSP, WHEP, LL-HLS, MoQ; RTT/loss; tags (`docs/SESSIONS.md`) |
+| #32 | `/api/v1/pulls` `/api/v1/pushes` with atomic config writes (`docs/STREAM-API.md`) |
 | #33 | multicast loopback test reads while publishing (CI flake) |
-| #34 | `[[srt.pull]]` (caller to a remote listener) and `[[udp.pull]]` (MPEG-TS over UDP unicast/multicast, plain or RTP), `caudal-ts::ingest::TsIngest` (`docs/PULL-INPUTS.md`) |
-| #35 | play page `liveDurationInfinity: true` + gap event logging in `reconnect.spec.ts` |
-| #36 | `docs/research/MISTSERVER-REVERSE.md` (MistServer read from source, `ddd9bec`) |
-
-Points 1-5 of the MistServer gap list are done.
-
-**Browser suite is flaky, three different ways** (each also seen on `main`):
-- Firefox MoQ `tests/moq.spec.ts:70`: more frequent since #28 (quinn/rustls bump). Not verified.
-- WebKit `tests/reconnect.spec.ts:38` "the player ended during the gap": hypothesis is hls.js
-  MediaSource duration = playlist length; #35 sets `liveDurationInfinity`. **Not verified yet**: the
-  test now logs `ended`/`waiting`/`emptied`/`durationchange`/`BUFFER_EOS` during the gap, check them on
-  the next failure. The dashboard player (`ui/app/src/components/Player.tsx`) does not have the option
-  yet (needs a UI rebuild).
-- Chromium `tests/play.spec.ts:72`: `readyState` 2 at the sample (a rebuffer); passed on rerun.
-
-**Next (proposed):** (1) stabilise the browser suite; (2) MPEG-2 video + MP2 audio demux in
-`caudal-ts` (Rolando's ATSC chain uses them; today they are not demuxed); (3) HLS and RTMP pulls;
-then `totals`-compatible stats, TS-HLS, thumbnails, auto-push rules. Soak (v0.1.0 blocker) still
-open; the weekly soak workflow is **disabled** (Saul, 19 Nov) until the leak is fixed.
+| #34 | `[[srt.pull]]` and `[[udp.pull]]` (`docs/PULL-INPUTS.md`) |
+| #35 | play page `liveDurationInfinity: true` (WebKit reconnect flake) |
+| #36 | `docs/research/MISTSERVER-REVERSE.md` |
 
 ## M12 — Open Media Transport (merged in #27, 19 Nov 2026)
 

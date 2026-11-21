@@ -1,4 +1,4 @@
-2 translated, 3 approximated, 4 not imported
+2 translated, 4 approximated, 3 not imported
 
 Translated:
   config.protocols (no HLS connector): TS-HLS was off in MistServer -> `[hls] ts = false`
@@ -7,10 +7,10 @@ Translated:
 Approximated (imported, read the note before going live):
   config.protocols[connector=RTMP]: -> `[rtmp] bind = "0.0.0.0:1935"`; publish URLs are `rtmp://host/live/<stream>` (`[rtmp] app = "live"`); MistServer accepts any application name
   auto_push[stream=main]: file target `/records/main/$Y$m$d.mp4` -> `[record]` streams += ["main"]; MistServer's per-push path pattern (e.g. `$datetime`) is not reproduced — Caudal always writes to `<dir>/<stream>/<timestamp>/`
+  auto_push[stream=backup]: scheduletime 1767225600 (2026-01-01T00:00:00Z) -> `[[push.auto]]` streams = ["backup"], url = "rtmp://live.twitch.tv/app/live_xxxxxxxx", with `start`/`stop` (UTC). MistServer's `doAutoPush` compares `scheduletime` the wrong way round (a future time starts at once; docs/research/MISTSERVER-REVERSE.md §8): the rule uses the documented meaning, so it pushes only inside the window
   config.triggers.PUSH_REWRITE: -> `[auth.rewrite]` url = "http://ops.example.com/hooks/rewrite", publish = true: the answer is read as MistServer's is (plain text stream name, empty denies) or as JSON `{"stream": ...}`; the request is a signed JSON POST, not MistServer's newline-separated text/plain lines: port the handler (docs/IMPORT-MIST.md) (`data.stream`, `data.protocol`, `data.ip`, `data.token`; no full URL or host); a new `whsec_` secret was generated
 
 Not imported (no Caudal equivalent, or a different meaning):
-  auto_push[stream=backup]: scheduletime 1767225600 (2026-01-01T00:00:00Z): `[[push.auto]]` on this Caudal has no time window, and an always-on rule would push outside it; written commented out with `start`/`stop` filled in, for when PR #57 (feat/auto-push-schedule) is merged. MistServer's `doAutoPush` compares `scheduletime` the wrong way round (a future time starts at once; docs/research/MISTSERVER-REVERSE.md §8): the commented rule uses the documented meaning
   config.triggers.STREAM_BUFFER: 1 handler(s): closest is `[health]` (signed alerts on keyframe gaps, low bitrate, lost publisher), which notifies but cannot act on the stream
   account: 1 user(s) (ana) not migrated: MistServer hashes passwords with MD5 (controller.cpp's createAccount), Caudal uses argon2id. Run `caudal hash-password` for each user and fill in the commented `[admin]` block below.
   (none — always noted): a commented-out `[admin]` block is included below: without `[admin]`, Caudal refuses to listen on anything but loopback (see caudal.example.toml)

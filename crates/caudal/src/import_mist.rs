@@ -650,14 +650,12 @@ fn classify_srt(src: &str) -> Result<(Pull, Option<String>), String> {
 
 // ---- auto_push targets ----
 
-/// A `[[push.auto]]` rule to write, active or (when MistServer scheduled
-/// it and Caudal can't yet) commented out.
+/// A `[[push.auto]]` rule to write, with its MistServer time window if any.
 struct AutoPushOut {
     stream: String,
     url: String,
-    /// `Some((start, stop))` (RFC 3339) when the rule had a schedule this
-    /// Caudal cannot express: written commented out.
-    commented: Option<(Option<String>, Option<String>)>,
+    /// `Some((start, stop))` (RFC 3339) when MistServer had a schedule.
+    schedule: Option<(Option<String>, Option<String>)>,
 }
 
 struct ScheduleOut {
@@ -1188,12 +1186,21 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
                 continue;
             }
         };
-        let rule = config::AutoPushEntry {
-            streams: vec![stream.to_owned()],
-            url: url.clone(),
-            ttl: None,
-            interface: None,
-            pacing: None,
+        let start = schedule.map(rfc3339_utc);
+        let stop = complete.map(rfc3339_utc);
+        // Built through serde so fields added to `[[push.auto]]` later keep
+        // their defaults here instead of breaking the importer.
+        let rule: config::AutoPushEntry = match serde_json::from_value(serde_json::json!({
+            "streams": [stream],
+            "url": url,
+            "start": start,
+            "stop": stop,
+        })) {
+            Ok(r) => r,
+            Err(e) => {
+                notes.push(note(NoteKind::NoEquivalent, mist_key, format!("target `{target}`: {e}")));
+                continue;
+            }
         };
         if let Err(e) = rule.validate() {
             notes.push(note(NoteKind::NoEquivalent, mist_key, format!("target `{target}`: {e}")));
@@ -1222,9 +1229,9 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
                 mist_key,
                 format!(
                     "{}: `[[push.auto]]` on this Caudal has no variable conditions or inhibit, and pushing \
-                     without them would push when MistServer did not; not imported. TODO: `inhibit` maps to \
-                     `[[push.auto]] inhibit` once PR #57 (feat/auto-push-schedule) is merged; \
-                     `start_rule`/`end_rule` have no equivalent there either",
+                     without them would push when MistServer did not; not imported. `inhibit` is not mapped to \
+                     `[[push.auto]] inhibit` until its semantics are checked against a real MistServer; \
+                     `start_rule`/`end_rule` have no equivalent",
                     rules.join(", ")
                 ),
             ));
@@ -1232,23 +1239,19 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
         }
 
         if scheduled {
-            // TODO(PR #57): once `[[push.auto]] start`/`stop` are on main,
-            // write these active instead of commented out.
-            let start = schedule.map(rfc3339_utc);
-            let stop = complete.map(rfc3339_utc);
             notes.push(note(
-                NoteKind::NoEquivalent,
+                NoteKind::Approximated,
                 mist_key,
                 format!(
-                    "{}: `[[push.auto]]` on this Caudal has no time window, and an always-on rule would push \
-                     outside it; written commented out with `start`/`stop` filled in, for when PR #57 \
-                     (feat/auto-push-schedule) is merged. MistServer's `doAutoPush` compares \
-                     `scheduletime` the wrong way round (a future time starts at once; \
-                     docs/research/MISTSERVER-REVERSE.md §8): the commented rule uses the documented meaning",
-                    sched_text()
+                    "{} -> `[[push.auto]]` streams = [\"{stream}\"], url = {}, with `start`/`stop` (UTC). \
+                     MistServer's `doAutoPush` compares `scheduletime` the wrong way round (a future time \
+                     starts at once; docs/research/MISTSERVER-REVERSE.md §8): the rule uses the documented \
+                     meaning, so it pushes only inside the window",
+                    sched_text(),
+                    q(&url)
                 ),
             ));
-            b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, commented: Some((start, stop)) });
+            b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, schedule: Some((start, stop)) });
             continue;
         }
 
@@ -1261,7 +1264,7 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
             NoteKind::Translated
         };
         notes.push(note(kind, mist_key, detail));
-        b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, commented: None });
+        b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, schedule: None });
     }
 }
 
@@ -1368,10 +1371,10 @@ fn import_triggers(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>) 
             (
                 NoteKind::Approximated,
                 format!(
-                    "-> `[auth.hook]` url = {}, {action}: asked {when}; {fallback}. Caudal decides on the \
-                     status code, not the body: 2xx allows, 401/403 denies — a handler that answers \
-                     200 with `false` would ALLOW, so change it to answer 403 before going live; \
-                     {PAYLOAD_CAVEAT}; a new `whsec_` secret was generated, verify signatures with it",
+                    "-> `[auth.hook]` url = {}, {action}: asked {when}; {fallback}. `reply = \"mistserver\"`: \
+                     a 2xx allows only when the body reads as true (MistServer's rule), so a handler \
+                     answering 200 `false` still denies; {PAYLOAD_CAVEAT}; a new `whsec_` secret was \
+                     generated, verify signatures with it",
                     q(&h.url)
                 ),
             )
@@ -1530,24 +1533,15 @@ fn build_toml(c: &BuiltConfig) -> String {
     for (name, item) in &c.channels {
         let _ = write!(out, "\n[[channel]]\nname = {}\nitems = [{}]\n", q(name), q(item));
     }
-    for p in c.auto_pushes.iter().filter(|p| p.commented.is_none()) {
-        let _ = write!(out, "\n[[push.auto]]\nstreams = [{}]\nurl = {}\n", q(&p.stream), q(&p.url));
-    }
     for p in &c.auto_pushes {
-        let Some((start, stop)) = &p.commented else { continue };
-        let _ = write!(
-            out,
-            "\n# Scheduled in MistServer: uncomment once this Caudal has `[[push.auto]]`\n\
-             # `start`/`stop` (PR #57). Active without them it would push all the time.\n\
-             # [[push.auto]]\n# streams = [{}]\n# url = {}\n",
-            q(&p.stream),
-            q(&p.url)
-        );
-        if let Some(s) = start {
-            let _ = writeln!(out, "# start = \"{s}\"");
-        }
-        if let Some(s) = stop {
-            let _ = writeln!(out, "# stop = \"{s}\"");
+        let _ = write!(out, "\n[[push.auto]]\nstreams = [{}]\nurl = {}\n", q(&p.stream), q(&p.url));
+        if let Some((start, stop)) = &p.schedule {
+            if let Some(s) = start {
+                let _ = writeln!(out, "start = \"{s}\"");
+            }
+            if let Some(s) = stop {
+                let _ = writeln!(out, "stop = \"{s}\"");
+            }
         }
     }
     if !c.record_streams.is_empty() || !c.record_schedules.is_empty() {
@@ -1573,10 +1567,9 @@ fn build_toml(c: &BuiltConfig) -> String {
     if let Some(h) = &c.auth_hook {
         let _ = write!(
             out,
-            "\n# From MistServer's blocking triggers. Caudal reads the status code, not the\n\
-             # body: 2xx allows, 401/403 denies. Port the handler before going live (a\n\
-             # MistServer handler answering 200 `false` would allow). docs/AUTH-HOOK.md\n\
-             [auth.hook]\nurl = {}\nsecret = {}\non_error = {}\npublish = {}\nplay = {}\n",
+            "\n# From MistServer's blocking triggers. `reply = \"mistserver\"` reads the body the\n\
+             # way MistServer does: a 2xx allows only when it says true. docs/AUTH-HOOK.md\n\
+             [auth.hook]\nurl = {}\nsecret = {}\nreply = \"mistserver\"\non_error = {}\npublish = {}\nplay = {}\n",
             q(&h.url),
             q(&h.secret),
             q(h.on_error),
@@ -1941,15 +1934,15 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_network_push_is_written_commented_out() {
+    fn scheduled_network_push_gets_its_window() {
         let mist = r#"{"auto_push":[{"stream":"backup","target":"rtmp://live.twitch.tv/app/key",
             "scheduletime":1767225600,"completetime":1767229200}]}"#;
         let (result, cfg) = imported(mist);
-        assert!(cfg.push.auto.is_empty(), "never pushes outside its window: {}", result.toml);
-        assert!(result.toml.contains("# [[push.auto]]\n# streams = [\"backup\"]"), "{}", result.toml);
-        assert!(result.toml.contains("# start = \"2026-01-01T00:00:00Z\""), "{}", result.toml);
-        assert!(result.toml.contains("# stop = \"2026-01-01T01:00:00Z\""), "{}", result.toml);
-        assert!(has(&result, NoteKind::NoEquivalent, "backup", "PR #57"));
+        let r = &cfg.push.auto[0];
+        assert_eq!(r.streams, ["backup"]);
+        assert_eq!(r.start.as_deref(), Some("2026-01-01T00:00:00Z"), "{}", result.toml);
+        assert_eq!(r.stop.as_deref(), Some("2026-01-01T01:00:00Z"));
+        assert!(has(&result, NoteKind::Approximated, "backup", "only inside the window"));
     }
 
     #[test]
@@ -1981,7 +1974,8 @@ mod tests {
         assert!(hook.publish && hook.play);
         assert!(hook.secret.starts_with("whsec_") && hook.secret.len() > 40);
         assert_eq!(hook.on_error, "deny", "a false default fails closed");
-        assert!(has(&result, NoteKind::Approximated, "USER_NEW", "200 with `false` would ALLOW"));
+        assert_eq!(hook.reply, "mistserver", "the body decides, as in MistServer");
+        assert!(has(&result, NoteKind::Approximated, "USER_NEW", "200 `false` still denies"));
         assert!(has(&result, NoteKind::Approximated, "STREAM_PUSH", "publish = true"));
         // The secret is a valid Standard Webhooks key.
         caudal_auth::GateHook::new(hook.to_config().unwrap(), Default::default()).unwrap();

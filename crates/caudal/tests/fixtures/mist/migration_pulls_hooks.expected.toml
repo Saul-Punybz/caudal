@@ -32,13 +32,11 @@ url = "udp://239.1.1.1:5000"
 streams = ["studio"]
 url = "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"
 
-# Scheduled in MistServer: uncomment once this Caudal has `[[push.auto]]`
-# `start`/`stop` (PR #57). Active without them it would push all the time.
-# [[push.auto]]
-# streams = ["venue"]
-# url = "srt://198.51.100.20:9000?streamid=publish/venue"
-# start = "2026-12-24T22:00:00Z"
-# stop = "2026-12-25T01:00:00Z"
+[[push.auto]]
+streams = ["venue"]
+url = "srt://198.51.100.20:9000?streamid=publish/venue"
+start = "2026-12-24T22:00:00Z"
+stop = "2026-12-25T01:00:00Z"
 
 [record]
 enabled = true
@@ -50,12 +48,12 @@ streams = ["studio"]
 start = "2026-12-24T22:00:00Z"
 duration_secs = 10800
 
-# From MistServer's blocking triggers. Caudal reads the status code, not the
-# body: 2xx allows, 401/403 denies. Port the handler before going live (a
-# MistServer handler answering 200 `false` would allow). docs/AUTH-HOOK.md
+# From MistServer's blocking triggers. `reply = "mistserver"` reads the body the
+# way MistServer does: a 2xx allows only when it says true. docs/AUTH-HOOK.md
 [auth.hook]
 url = "https://auth.example.com/mist/user_new"
 secret = "whsec_GENERATED"
+reply = "mistserver"
 on_error = "deny"
 publish = false
 play = true

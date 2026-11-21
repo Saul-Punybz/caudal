@@ -14,12 +14,10 @@ ts = false
 streams = ["main"]
 url = "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"
 
-# Scheduled in MistServer: uncomment once this Caudal has `[[push.auto]]`
-# `start`/`stop` (PR #57). Active without them it would push all the time.
-# [[push.auto]]
-# streams = ["backup"]
-# url = "rtmp://live.twitch.tv/app/live_xxxxxxxx"
-# start = "2026-01-01T00:00:00Z"
+[[push.auto]]
+streams = ["backup"]
+url = "rtmp://live.twitch.tv/app/live_xxxxxxxx"
+start = "2026-01-01T00:00:00Z"
 
 [record]
 enabled = true

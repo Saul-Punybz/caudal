@@ -89,12 +89,12 @@ fn migration_pulls_hooks_maps_each_feature() {
         "[[srt.pull]]\nstream = \"venue\"\nurl = \"srt://203.0.113.7:9000?streamid=play/main&latency=200\"",
         "[[udp.pull]]\nstream = \"catv\"\nurl = \"udp://239.1.1.1:5000\"",
         "[[hls.pull]]\nstream = \"news\"\nurl = \"https://cdn.example.com/live/news/index.m3u8\"",
-        "[auth.hook]\nurl = \"https://auth.example.com/mist/user_new\"\nsecret = \"whsec_GENERATED\"\non_error = \"deny\"\npublish = false\nplay = true",
+        "[auth.hook]\nurl = \"https://auth.example.com/mist/user_new\"\nsecret = \"whsec_GENERATED\"\nreply = \"mistserver\"\non_error = \"deny\"\npublish = false\nplay = true",
         "[auth.rewrite]\nurl = \"https://auth.example.com/mist/push_rewrite\"\nsecret = \"whsec_GENERATED\"\non_error = \"deny\"\npublish = true\nplay = false",
         "[[push.auto]]\nstreams = [\"studio\"]\nurl = \"rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx\"",
         "[[record.schedule]]\nstreams = [\"studio\"]\nstart = \"2026-12-24T22:00:00Z\"\nduration_secs = 10800",
-        "# [[push.auto]]\n# streams = [\"venue\"]",
-        "# start = \"2026-12-24T22:00:00Z\"\n# stop = \"2026-12-25T01:00:00Z\"",
+        "[[push.auto]]\nstreams = [\"venue\"]",
+        "start = \"2026-12-24T22:00:00Z\"\nstop = \"2026-12-25T01:00:00Z\"",
     ] {
         assert!(toml.contains(expected), "missing {expected:?} in:\n{toml}");
     }

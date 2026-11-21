@@ -88,8 +88,8 @@ Schedules and conditions:
 | MistServer | Caudal |
 |---|---|
 | file target with `scheduletime` + `completetime` | `[[record.schedule]]` `start` (RFC 3339, UTC) + `duration_secs` |
-| network target with `scheduletime` / `completetime` | written **commented out**, with `start`/`stop` filled in. `[[push.auto]]` on `main` has no time window yet (PR #57, `feat/auto-push-schedule`); an active rule would push all the time. Uncomment once that is merged |
-| `start_rule`, `end_rule`, `inhibit` | not imported (the rule could push when MistServer would not). TODO: `inhibit` maps to `[[push.auto]] inhibit` once PR #57 is merged |
+| network target with `scheduletime` / `completetime` | `[[push.auto]]` with `start` / `stop` (UTC): it pushes only inside the window. MistServer's `doAutoPush` compares `scheduletime` the wrong way round; the rule uses the documented meaning |
+| `start_rule`, `end_rule`, `inhibit` | not imported (the rule could push when MistServer would not). `inhibit` is left out until its semantics are checked against a real MistServer; `[[push.auto]] inhibit` exists if you want to set it by hand |
 
 MistServer's `doAutoPush` compares `scheduletime` the wrong way round (a
 time in the future starts at once, `docs/research/MISTSERVER-REVERSE.md`
@@ -124,10 +124,10 @@ are `params`.
 JSON (Standard Webhooks; a new `whsec_` secret is generated into the TOML)
 and:
 
-- `[auth.hook]` decides on the **status code**: 2xx allows, 401/403 deny
-  ([AUTH-HOOK.md](AUTH-HOOK.md)). A MistServer handler that answers `200`
-  with the body `false` would be **allowed**. Change it to answer `403`
-  before switching traffic over.
+- `[auth.hook]` is written with `reply = "mistserver"`: a 2xx allows only
+  when the body reads as true, with MistServer's own rule, so a handler
+  answering `200` `false` still denies ([AUTH-HOOK.md](AUTH-HOOK.md)). The
+  request body still differs (signed JSON, not text lines).
 - `[auth.rewrite]` reads a plain-text stream name (empty denies), as
   MistServer does, or JSON `{"stream": ...}`
   ([REWRITE-HOOK.md](REWRITE-HOOK.md)).

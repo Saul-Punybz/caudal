@@ -1,0 +1,21 @@
+[package]
+name = "caudal-hls-pull"
+description = "HLS and LL-HLS pulled into Caudal: playlists polled, MPEG-TS segments demuxed and published"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+caudal-ts.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+axum.workspace = true
+tempfile = "3"

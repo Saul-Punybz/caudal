@@ -1048,6 +1048,7 @@ dependencies = [
  "mp4-atom",
  "roxmltree",
  "rustix",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tower",

@@ -6,12 +6,15 @@
 //! `exp` required. Keys: a shared HS256 secret, or a JWKS URL (RS256/ES256/
 //! EdDSA), cached and refreshed.
 
+mod blocking;
 mod claims;
 mod gate_hook;
 mod hooks_delivery;
 mod jwks;
+mod rewrite_hook;
 
 pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError};
+pub use rewrite_hook::{RewriteHook, RewriteHookConfig, RewriteHookMetric, RewriteHookStats};
 
 use std::sync::Arc;
 use std::time::Duration;

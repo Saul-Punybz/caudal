@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 caudal-core.workspace = true
+caudal-rtmp.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 bytes.workspace = true
@@ -16,12 +17,8 @@ parking_lot.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rml_rtmp = "0.8.0"
-rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-webpki-roots = "1.0"
 
 [dev-dependencies]
+rml_rtmp = "0.8.0"
 tokio = { workspace = true, features = ["full", "test-util"] }
-caudal-rtmp.workspace = true
 tower = { version = "0.5", features = ["util"] }

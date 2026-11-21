@@ -6,9 +6,9 @@
 //! for SRT out: one task per target, waiting for the source stream to
 //! publish (and picking up a stream that is already live), reconnecting
 //! with backoff while the source stays live, stopping cleanly when it
-//! ends. See `crate::push` for the state machine and `crate::client` for
-//! the RTMP/RTMPS transport (`rml_rtmp` plus our own tokio/rustls I/O; see
-//! `REUSE.md` for why).
+//! ends. See `crate::push` for the state machine and `caudal_rtmp::client`
+//! for the RTMP/RTMPS transport (`rml_rtmp` plus our own tokio/rustls I/O;
+//! see `REUSE.md` for why).
 //!
 //! Every push subscribes with `Stream::subscribe_internal`, so it is never
 //! counted as a viewer, and starts at the live edge, which
@@ -17,19 +17,18 @@
 //!
 //! The stream key never appears in a log line, an error message, or the
 //! status API: every place that could print the configured URL prints
-//! [`url::redact_url`]'s output instead. See `crate::url` and
+//! [`url::redact_url`]'s output instead. See `caudal_rtmp::url` and
 //! `crate::status`.
 
-mod client;
 mod flv;
 mod http;
 mod push;
 mod status;
-mod url;
 
 use std::sync::Arc;
 
 use caudal_core::Registry;
+use caudal_rtmp::url;
 use parking_lot::Mutex;
 use status::TargetStatus;
 

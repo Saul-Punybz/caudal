@@ -9,7 +9,7 @@ use std::time::Duration;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::broadcast;
 
-use crate::gate::{Access, Denied, Gate};
+use crate::gate::{Access, Denied, Gate, Rewrite, RewriteRequest};
 use crate::media::{Cue, Frame, TrackInfo, valid_stream_name};
 use crate::session::{Session, Sessions};
 use crate::stream::{BufferConfig, PushError, StartAt, Stream, Subscriber};
@@ -31,6 +31,9 @@ pub struct Registry {
     // publish/play request, never per frame, so this is not the hot path
     // rule 3 in the reload brief means to keep lock-free.
     gate: RwLock<Option<Arc<dyn Gate>>>,
+    /// Name routing asked before the gate (see [`Registry::resolve`]).
+    /// Same locking rationale as `gate`.
+    rewrite: RwLock<Option<Arc<dyn Rewrite>>>,
     /// Where a viewer's request for an unknown name goes (a cluster edge
     /// pulling from its origin). Same locking rationale as `gate`.
     demand: RwLock<Option<Arc<dyn Demand>>>,
@@ -62,6 +65,7 @@ impl Default for Registry {
             published: broadcast::channel(64).0,
             ended: broadcast::channel(64).0,
             gate: RwLock::new(None),
+            rewrite: RwLock::new(None),
             demand: RwLock::new(None),
             sessions: Arc::default(),
         }
@@ -98,8 +102,57 @@ impl Registry {
         *self.gate.write() = None;
     }
 
-    /// Asks the installed gate. Ingest calls this before `publish`, outputs
-    /// before serving a viewer. `ip` is the caller's resolved address, when
+    /// Installs (or replaces, on a reload) the name routing every
+    /// [`Registry::resolve`] asks first.
+    pub fn set_rewrite(&self, rewrite: Arc<dyn Rewrite>) {
+        *self.rewrite.write() = Some(rewrite);
+    }
+
+    /// Removes the name routing: every name resolves to itself again.
+    pub fn clear_rewrite(&self) {
+        *self.rewrite.write() = None;
+    }
+
+    /// The name a publish or play request really goes to, after the
+    /// installed [`Rewrite`] (if any) and the gate. Protocols call this
+    /// with the name the client sent and use the answer for `publish`,
+    /// `get_or_demand` and `open_session`.
+    ///
+    /// The gate judges the *final* name: a rewrite can never route a
+    /// client around `[[access.rules]]`, tokens or `[auth.hook]`. A
+    /// rewritten name must be a valid stream name or the request is
+    /// refused.
+    pub async fn resolve(
+        &self,
+        access: Access,
+        protocol: &'static str,
+        stream: &str,
+        token: Option<&str>,
+        ip: Option<std::net::IpAddr>,
+    ) -> Result<String, Denied> {
+        let rewrite = self.rewrite.read().clone();
+        let name = match rewrite {
+            Some(r) => {
+                let name = r.rewrite(RewriteRequest { access, protocol, stream, token, ip }).await?;
+                if name != stream && !valid_stream_name(&name) {
+                    tracing::warn!(requested = stream, rewritten = %name, "rewrite returned an invalid stream name");
+                    return Err(Denied::Refused("rewritten to an invalid stream name".into()));
+                }
+                if name != stream {
+                    tracing::debug!(requested = stream, stream = %name, protocol, action = ?access, "stream name rewritten");
+                }
+                name
+            }
+            None => stream.to_owned(),
+        };
+        self.authorize(access, &name, token, ip).await?;
+        Ok(name)
+    }
+
+    /// Asks the installed gate, without the rewrite: protocols call
+    /// [`Registry::resolve`] for a new publish or play, and this to
+    /// re-check a name they already resolved (RTSP `PLAY`) or for requests
+    /// that are not routed (control endpoints, recordings). `ip` is the caller's resolved address, when
     /// the protocol has one to give (see [`Gate::check`]).
     pub async fn authorize(
         &self,
@@ -275,5 +328,54 @@ mod tests {
         // Names that can never exist are not asked for.
         assert!(reg.get_or_demand("../x").await.is_none());
         assert_eq!(src.asked.load(Ordering::Relaxed), 1);
+    }
+
+    /// `alias` -> `real`, `gone` -> refused, anything else kept.
+    struct Router;
+
+    impl Rewrite for Router {
+        fn rewrite<'a>(&'a self, req: RewriteRequest<'a>) -> crate::gate::RewriteFuture<'a> {
+            Box::pin(async move {
+                match req.stream {
+                    "alias" => Ok("real".to_owned()),
+                    "bad" => Ok("../etc".to_owned()),
+                    "gone" => Err(Denied::Refused("no route".into())),
+                    other => Ok(other.to_owned()),
+                }
+            })
+        }
+    }
+
+    /// Refuses every play of `real`.
+    struct NoReal;
+
+    impl Gate for NoReal {
+        fn check<'a>(
+            &'a self,
+            access: Access,
+            stream: &'a str,
+            _token: Option<&'a str>,
+            _ip: Option<std::net::IpAddr>,
+        ) -> crate::gate::GateFuture<'a> {
+            Box::pin(async move {
+                if access == Access::Play && stream == "real" { Err(Denied::Refused("no".into())) } else { Ok(()) }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_rewrites_then_gates_the_final_name() {
+        let reg = Registry::new();
+        assert_eq!(reg.resolve(Access::Play, "hls", "alias", None, None).await, Ok("alias".into()), "no rewrite");
+        reg.set_rewrite(Arc::new(Router));
+        assert_eq!(reg.resolve(Access::Publish, "rtmp", "alias", None, None).await, Ok("real".into()));
+        assert_eq!(reg.resolve(Access::Play, "hls", "cam", None, None).await, Ok("cam".into()));
+        assert!(reg.resolve(Access::Play, "hls", "gone", None, None).await.is_err());
+        assert!(reg.resolve(Access::Play, "hls", "bad", None, None).await.is_err(), "invalid rewritten name");
+        reg.set_gate(Arc::new(NoReal));
+        assert!(reg.resolve(Access::Play, "hls", "alias", None, None).await.is_err(), "the gate sees `real`");
+        assert_eq!(reg.resolve(Access::Publish, "rtmp", "alias", None, None).await, Ok("real".into()));
+        reg.clear_rewrite();
+        assert_eq!(reg.resolve(Access::Play, "hls", "alias", None, None).await, Ok("alias".into()));
     }
 }

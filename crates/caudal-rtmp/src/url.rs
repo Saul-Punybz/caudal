@@ -6,7 +6,7 @@
 //! replaces the key so it never reaches a log line or the status API.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ParsedUrl {
+pub struct ParsedUrl {
     pub tls: bool,
     pub host: String,
     pub port: u16,
@@ -18,7 +18,7 @@ pub(crate) struct ParsedUrl {
     pub tc_url: String,
 }
 
-pub(crate) fn parse_target_url(url: &str) -> Result<ParsedUrl, String> {
+pub fn parse_target_url(url: &str) -> Result<ParsedUrl, String> {
     let (scheme, rest) = url.split_once("://").ok_or("missing scheme (expected rtmp:// or rtmps://)")?;
     let tls = match scheme {
         "rtmp" => false,
@@ -29,10 +29,20 @@ pub(crate) fn parse_target_url(url: &str) -> Result<ParsedUrl, String> {
     if authority.is_empty() {
         return Err("missing host".to_owned());
     }
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (h.to_owned(), p.parse::<u16>().map_err(|_| "invalid port".to_owned())?),
+    // `[v6]` or `[v6]:port`: the colons inside the brackets are not a port.
+    let port_sep = match authority.rfind(']') {
+        Some(close) => authority[close..].rfind(':').map(|i| close + i),
+        None => authority.rfind(':'),
+    };
+    let (host, port) = match port_sep {
+        Some(i) => {
+            (authority[..i].to_owned(), authority[i + 1..].parse::<u16>().map_err(|_| "invalid port".to_owned())?)
+        }
         None => (authority.to_owned(), if tls { 443 } else { 1935 }),
     };
+    if host.is_empty() {
+        return Err("missing host".to_owned());
+    }
     let (app, stream_key) = match path.rsplit_once('/') {
         Some((a, k)) => (a.to_owned(), k.to_owned()),
         None => (String::new(), path.to_owned()),
@@ -46,7 +56,7 @@ pub(crate) fn parse_target_url(url: &str) -> Result<ParsedUrl, String> {
 }
 
 /// `scheme://host/app/****`: the key is never included, whatever it is.
-pub(crate) fn redact_url(url: &str) -> String {
+pub fn redact_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "****".to_owned();
     };
@@ -92,6 +102,26 @@ mod tests {
         assert!(parse_target_url("rtmp://").is_err());
         assert!(parse_target_url("rtmp://host").is_err());
         assert!(parse_target_url("rtmp://host/").is_err());
+    }
+
+    #[test]
+    fn pull_urls() {
+        // A query on the key is part of what `play` asks for (tokens).
+        let p = parse_target_url("rtmp://10.0.0.5:19350/live/cam1?token=abc").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("10.0.0.5", 19350));
+        assert_eq!(p.app, "live");
+        assert_eq!(p.stream_key, "cam1?token=abc");
+        assert_eq!(p.tc_url, "rtmp://10.0.0.5:19350/live");
+        // Multi-segment apps (Wowza `app/instance`).
+        let p = parse_target_url("rtmp://h/app/_definst_/key").unwrap();
+        assert_eq!((p.app.as_str(), p.stream_key.as_str()), ("app/_definst_", "key"));
+        // IPv6 literals, with and without a port.
+        let p = parse_target_url("rtmp://[::1]:1936/live/k").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("[::1]", 1936));
+        let p = parse_target_url("rtmps://[2001:db8::7]/live/k").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("[2001:db8::7]", 443));
+        assert!(parse_target_url("rtmp://:1935/live/k").is_err(), "no host");
+        assert!(parse_target_url("rtmp://h:notaport/live/k").is_err());
     }
 
     #[test]

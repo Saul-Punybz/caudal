@@ -13,7 +13,7 @@ mod hooks_delivery;
 mod jwks;
 mod rewrite_hook;
 
-pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError};
+pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError, ReplyMode, mist_bool};
 pub use rewrite_hook::{RewriteHook, RewriteHookConfig, RewriteHookMetric, RewriteHookStats};
 
 use std::sync::Arc;

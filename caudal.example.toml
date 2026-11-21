@@ -92,6 +92,7 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # secret = "whsec_..."
 # timeout_ms = 2000
 # on_error = "deny"
+# reply = "status"         # "mistserver": a 2xx must say true/1/yes (MistServer trigger handlers)
 
 # Ask your own service which stream a publish/play really goes to
 # (MistServer's PUSH_REWRITE / PLAY_REWRITE). See docs/REWRITE-HOOK.md.

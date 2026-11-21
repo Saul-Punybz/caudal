@@ -11,7 +11,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
-use caudal_auth::{Action, GateHook, GateHookConfig, GateHookStats, OnError};
+use caudal_auth::{Action, GateHook, GateHookConfig, GateHookStats, OnError, ReplyMode};
 
 const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
 
@@ -54,6 +54,7 @@ fn cfg(url: &str) -> GateHookConfig {
         secret: SECRET.into(),
         timeout: Duration::from_millis(300),
         on_error: OnError::Deny,
+        reply: ReplyMode::Status,
         publish: true,
         play: true,
         allow_cache: Duration::from_secs(30),
@@ -187,4 +188,66 @@ async fn a_refusing_hook_refuses_everything() {
     let h = GateHook::refusing(Arc::default());
     assert!(h.check(Action::Publish, "cam", None, None).await.is_err());
     assert!(h.check(Action::Play, "cam", None, None).await.is_err());
+}
+
+/// How each reply mode reads a 2xx: `status` allows any of them,
+/// `mistserver` only a body MistServer's `stringToBool` reads as true.
+#[tokio::test]
+async fn reply_modes_read_a_2xx_body_differently() {
+    // (body, allowed with reply = "status", allowed with reply = "mistserver")
+    let cases = [("true", true, true), ("false", true, false), ("", true, false), ("TRUE\n", true, true)];
+    for (body, by_status, by_mist) in cases {
+        let (url, m) = serve(StatusCode::OK, body, Duration::ZERO).await;
+        for (reply, want) in [(ReplyMode::Status, by_status), (ReplyMode::MistServer, by_mist)] {
+            for (action, name) in [(Action::Publish, "publish"), (Action::Play, "play")] {
+                let (h, stats) = hook(GateHookConfig { reply, ..cfg(&url) });
+                let r = h.check(action, "cam", Some("tok"), None).await;
+                let what = format!("{reply:?} {action:?} 200 {body:?}");
+                if want {
+                    assert_eq!(r, Ok(()), "{what}");
+                    assert_eq!(count(&stats, name, "allow"), 1, "{what}");
+                } else {
+                    assert_eq!(r, Err("refused by the authorization service".into()), "{what}");
+                    assert_eq!(count(&stats, name, "deny"), 1, "{what}");
+                }
+                // Signed request, same body in both modes.
+                assert_eq!(m.last.lock().clone().unwrap()["type"], format!("gate.{name}"));
+            }
+        }
+    }
+}
+
+/// A non-2xx is a failure in both modes, and `on_error` decides it.
+#[tokio::test]
+async fn a_500_follows_on_error_in_both_reply_modes() {
+    let (url, _m) = serve(StatusCode::INTERNAL_SERVER_ERROR, "true", Duration::ZERO).await;
+    for reply in [ReplyMode::Status, ReplyMode::MistServer] {
+        let (h, stats) = hook(GateHookConfig { reply, ..cfg(&url) });
+        assert_eq!(h.check(Action::Publish, "cam", None, None).await, Err("authorization service unavailable".into()));
+        assert_eq!(count(&stats, "publish", "error_denied"), 1, "{reply:?}");
+
+        let (h, stats) = hook(GateHookConfig { reply, on_error: OnError::Allow, ..cfg(&url) });
+        assert_eq!(h.check(Action::Play, "cam", None, None).await, Ok(()), "{reply:?}");
+        assert_eq!(count(&stats, "play", "error_allowed"), 1, "{reply:?}");
+    }
+}
+
+/// In `mistserver` mode a 403 still denies, and a `false` is cached like
+/// any other denial: asked again only after `deny_cache`.
+#[tokio::test]
+async fn mistserver_denials_are_cached_and_403_still_denies() {
+    let (url, m) = serve(StatusCode::OK, "false", Duration::ZERO).await;
+    let (h, stats) = hook(GateHookConfig { reply: ReplyMode::MistServer, ..cfg(&url) });
+    for _ in 0..3 {
+        assert!(h.check(Action::Play, "cam", None, None).await.is_err());
+    }
+    assert_eq!(m.calls.load(Ordering::SeqCst), 1, "denial cached");
+    assert_eq!(stats.cached()[1], ("play", 2));
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(h.check(Action::Play, "cam", None, None).await.is_err());
+    assert_eq!(m.calls.load(Ordering::SeqCst), 2, "asked again after deny_cache");
+
+    let (url, _m) = serve(StatusCode::FORBIDDEN, r#"{"reason":"banned"}"#, Duration::ZERO).await;
+    let (h, _) = hook(GateHookConfig { reply: ReplyMode::MistServer, on_error: OnError::Allow, ..cfg(&url) });
+    assert_eq!(h.check(Action::Publish, "cam", None, None).await, Err("banned".into()));
 }

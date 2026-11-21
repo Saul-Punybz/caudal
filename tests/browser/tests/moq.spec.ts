@@ -38,7 +38,7 @@ test.describe("MoQ playback in a real browser", () => {
     // Debug for the MoQ/QUIC stack: printed only when the test fails (the
     // firefox flake is a session that never comes up; NOTES.md).
     server = await startCaudal({
-      rustLog: "info,caudal_moq=debug,moq_native=debug,moq_net=debug,web_transport_quinn=debug,quinn=info",
+      rustLog: "info,caudal_moq=debug,moq_native=debug,moq_net=debug,web_transport_quinn=debug,quinn=debug,quinn_proto=debug",
     });
     publisher = startFfmpegPublisher(server.rtmpUrl(STREAM));
     const deadline = Date.now() + 15_000;
@@ -99,6 +99,44 @@ test.describe("MoQ playback in a real browser", () => {
     page.on("pageerror", (err) => console.log(`[${browserName}][pageerror] ${err.stack || err.message}`));
     logMachineLoad();
 
+    // The firefox flake: the server never sees a session, and @moq/net only
+    // logs in dev builds. Wrap the two transports it races so the page log
+    // says what the browser did: which URL, and whether WebTransport's
+    // `ready` resolved, rejected, or never settled (a hung handshake never
+    // reaches @moq/net's retry loop). Logged as `[wt]` / `[ws]` lines.
+    await page.addInitScript(() => {
+      const t0 = performance.now();
+      const at = () => `+${Math.round(performance.now() - t0)}ms`;
+      const WT = (window as any).WebTransport;
+      if (WT) {
+        (window as any).WebTransport = new Proxy(WT, {
+          construct(target, args) {
+            const opts = args[1] ?? {};
+            console.log(`[wt] new ${args[0]} ${at()} hashes=${(opts.serverCertificateHashes ?? []).length} protocols=${(opts.protocols ?? []).length}`);
+            const wt = new target(...args);
+            wt.ready.then(
+              () => console.log(`[wt] ready ${at()}`),
+              (e: unknown) => console.log(`[wt] ready rejected ${at()}: ${e}`),
+            );
+            wt.closed.then(
+              (i: unknown) => console.log(`[wt] closed ${at()}: ${JSON.stringify(i)}`),
+              (e: unknown) => console.log(`[wt] closed with error ${at()}: ${e}`),
+            );
+            return wt;
+          },
+        });
+      }
+      const WS = window.WebSocket;
+      (window as any).WebSocket = new Proxy(WS, {
+        construct(target, args) {
+          console.log(`[ws] new ${args[0]} ${at()}`);
+          const ws = new target(...(args as [string]));
+          ws.addEventListener("open", () => console.log(`[ws] open ${at()}`));
+          ws.addEventListener("error", () => console.log(`[ws] error ${at()}`));
+          return ws;
+        },
+      });
+    });
     await page.goto(`${server.baseUrl}/streams/${STREAM}`);
 
     const moqRadio = page.getByRole("radio", { name: "MoQ" });

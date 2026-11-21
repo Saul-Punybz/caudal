@@ -86,21 +86,42 @@ pub struct RtmpSection {
     /// other output. On by default.
     #[serde(default = "default_true")]
     pub play: bool,
+    /// RTMPS publish (`rtmps://host:port/{app}/{stream}`) on this address,
+    /// with `[tls]`'s certificate (files or ACME). Off when absent.
+    pub tls_bind: Option<SocketAddr>,
     /// Pull streams in from remote RTMP/RTMPS servers (Caudal plays them).
     pub pull: Vec<RtmpPullEntry>,
 }
 
 impl Default for RtmpSection {
     fn default() -> Self {
-        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), play: true, pull: Vec::new() }
+        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), play: true, tls_bind: None, pull: Vec::new() }
     }
 }
 
 impl RtmpSection {
-    /// Whether the listener itself (`bind`, `app`, `play`) differs: pulls
-    /// reload on their own without restarting it.
+    /// RTMPS needs a certificate, and the only place one is configured is
+    /// `[tls]`. `Ok(None)` when RTMPS is off.
+    pub fn tls_source(&self, tls: &TlsSection) -> Result<Option<(SocketAddr, caudal_tls::CertSource)>, String> {
+        let Some(bind) = self.tls_bind else { return Ok(None) };
+        if bind == self.bind {
+            return Err("[rtmp] tls_bind must differ from bind".into());
+        }
+        match tls.to_tls_config()? {
+            Some(t) if t.bind == bind => {
+                Err("[rtmp] tls_bind must differ from [tls] bind (one port, one protocol)".into())
+            }
+            Some(t) => Ok(Some((bind, t.source))),
+            None => Err("[rtmp] tls_bind needs a certificate in [tls] (cert + key, or acme_domains)".into()),
+        }
+    }
+}
+
+impl RtmpSection {
+    /// Whether the listeners themselves (`bind`, `app`, `play`, the RTMPS
+    /// `tls_bind`) differ: pulls reload on their own without restarting them.
     pub fn listener_changed(&self, other: &Self) -> bool {
-        self.bind != other.bind || self.app != other.app || self.play != other.play
+        self.bind != other.bind || self.app != other.app || self.play != other.play || self.tls_bind != other.tls_bind
     }
 
     /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
@@ -526,6 +547,36 @@ pub struct AutoPushEntry {
     /// `udp://` / `rtp://` only: as `[[udp.push]]` `pacing` (default on).
     #[serde(default)]
     pub pacing: Option<bool>,
+    /// Schedule, one-off: RFC 3339 instant from which the rule pushes
+    /// (MistServer's `scheduletime`). Without `stop`/`duration_secs` the
+    /// window never closes.
+    #[serde(default)]
+    pub start: Option<String>,
+    /// Schedule, one-off: RFC 3339 instant at which the rule stops pushing
+    /// (MistServer's `completetime`). Without `start` the window is open
+    /// from now until then.
+    #[serde(default)]
+    pub stop: Option<String>,
+    /// Schedule, recurring: a 5-field crontab (`min hour dom month dow`),
+    /// as in `[[record.schedule]]`; each window is `duration_secs` long.
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// IANA zone for `cron` (default UTC).
+    #[serde(default)]
+    pub tz: Option<String>,
+    /// Window length: required with `cron`, or with `start` instead of
+    /// `stop`.
+    #[serde(default)]
+    pub duration_secs: Option<u32>,
+    /// `false` keeps the rule in the file but pushes nothing. The API can
+    /// override it at runtime (`POST /api/v1/auto-pushes/{index}/enable`).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Stream patterns (as `streams`): while any live stream matches one,
+    /// the rule pushes nothing. E.g. a backup feed pushed only while the
+    /// main one is down.
+    #[serde(default)]
+    pub inhibit: Vec<String>,
 }
 
 /// Which push engine an auto-push URL goes to.
@@ -590,6 +641,29 @@ impl AutoPushEntry {
         self.streams.iter().any(|p| stream_pattern_matches(p, name))
     }
 
+    /// The first live stream in `live` that inhibits this rule.
+    pub fn inhibited_by<'a>(&self, live: &'a [String]) -> Option<&'a String> {
+        live.iter().find(|n| self.inhibit.iter().any(|p| stream_pattern_matches(p, n)))
+    }
+
+    /// The rule's time window, `None` when it has none (always on).
+    pub fn timetable(&self) -> Result<Option<caudal_record::Timetable>, String> {
+        let spec = caudal_record::TimetableConfig {
+            start: self.start.clone(),
+            stop: self.stop.clone(),
+            cron: self.cron.clone(),
+            tz: self.tz.clone(),
+            duration_secs: self.duration_secs,
+        };
+        if spec == caudal_record::TimetableConfig::default() {
+            return Ok(None);
+        }
+        if spec.tz.is_some() && spec.cron.is_none() {
+            return Err(self.ctx("`tz` only applies to `cron` (`start`/`stop` carry their own offset)"));
+        }
+        caudal_record::Timetable::parse(&spec).map(Some).map_err(|e| self.ctx(e))
+    }
+
     /// The UDP/RTP target for `stream`, through the same checks as
     /// `[[udp.push]]`.
     pub fn udp_target(&self, stream: &str) -> Result<caudal_multicast::MulticastTarget, String> {
@@ -611,7 +685,8 @@ impl AutoPushEntry {
         if self.streams.is_empty() {
             return Err(self.ctx("`streams` is empty"));
         }
-        for p in &self.streams {
+        self.timetable()?;
+        for p in self.streams.iter().chain(&self.inhibit) {
             let concrete = p.strip_suffix('*').unwrap_or(p);
             if p != "*" && (concrete.contains('*') || !caudal_core::media::valid_stream_name(concrete)) {
                 return Err(self.ctx(format!(
@@ -1902,6 +1977,7 @@ impl Config {
         self.record.to_record_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         self.rtsp.to_tls_config()?;
+        self.rtmp.tls_source(&self.tls)?;
         self.validate_pulls_and_pushes()?;
         if let Some(admin) = &self.admin {
             admin.validate()?;
@@ -2099,6 +2175,10 @@ impl Config {
         for p in &self.srt.push {
             name_ok("[[srt.push]]", &p.stream)?;
             scheme_ok("[[srt.push]]", &p.url, &["srt"])?;
+            caudal_srt::check_caller_url(&p.url).map_err(|e| format!("[[srt.push]] url {e}"))?;
+        }
+        for p in &self.srt.pull {
+            caudal_srt::check_caller_url(&p.url).map_err(|e| format!("[[srt.pull]] url {e}"))?;
         }
         for r in &self.restream {
             name_ok("[[restream]]", &r.stream)?;
@@ -2409,6 +2489,18 @@ origins = ["http://origin-a:8080", "https://origin-b"]
     }
 
     #[test]
+    fn rtmps_bind_change_restarts_the_listener() {
+        let a = RtmpSection::default();
+        let b = RtmpSection { tls_bind: Some("0.0.0.0:1936".parse().unwrap()), ..RtmpSection::default() };
+        assert!(a.listener_changed(&b), "turning RTMPS on must restart the listener");
+        let c = RtmpSection {
+            pull: vec![RtmpPullEntry { stream: "x".into(), url: "rtmp://h/a/k".into() }],
+            ..RtmpSection::default()
+        };
+        assert!(!a.listener_changed(&c), "a pull change alone does not");
+    }
+
+    #[test]
     fn http_pulls_are_validated() {
         let ok: Config = toml::from_str(
             "[[http.pull]]\nstream = \"web\"\nurl = \"http://10.0.0.5:8080/stream.ts\"\n\
@@ -2582,6 +2674,52 @@ origins = ["http://origin-a:8080", "https://origin-b"]
     }
 
     #[test]
+    fn auto_push_schedules_and_conditions() {
+        let cfg: Config = toml::from_str(
+            "[[push.auto]]\nstreams = [\"main\"]\nurl = \"srt://h:1\"\n\
+             start = \"2026-12-24T20:00:00-04:00\"\nstop = \"2026-12-24T23:00:00-04:00\"\n\
+             [[push.auto]]\nstreams = [\"backup\"]\nurl = \"srt://h:2\"\ninhibit = [\"main\", \"cam*\"]\n\
+             enabled = false\ncron = \"0 18 * * MON-FRI\"\ntz = \"America/Puerto_Rico\"\nduration_secs = 3600\n\
+             [[push.auto]]\nstreams = [\"x\"]\nurl = \"srt://h:3\"\nstop = \"2026-12-31T00:00:00Z\"\n\
+             [[push.auto]]\nstreams = [\"y\"]\nurl = \"srt://h:4\"\nstart = \"2026-12-31T00:00:00Z\"\nduration_secs = 60\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let r = &cfg.push.auto;
+        assert!(r[0].enabled && !r[1].enabled, "enabled defaults to true");
+        assert!(r[0].timetable().unwrap().is_some());
+        assert_eq!(r[1].inhibited_by(&["cam2".into()]).map(String::as_str), Some("cam2"));
+        assert!(r[1].inhibited_by(&["backup".into(), "main+720p".into()]).is_none());
+
+        let bad = |rule: &str| {
+            toml::from_str::<Config>(&format!("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\n{rule}"))
+                .unwrap()
+                .validate()
+                .unwrap_err()
+        };
+        assert!(bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T19:00:00Z\"\n").contains("after `start`"));
+        assert!(bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T20:00:00Z\"\n").contains("after `start`"));
+        assert!(bad("start = \"tomorrow\"\n").contains("bad `start`"));
+        assert!(bad("stop = \"2026-12-24 20:00\"\n").contains("bad `stop`"));
+        assert!(bad("cron = \"every day\"\nduration_secs = 60\n").contains("bad `cron`"));
+        assert!(bad("cron = \"0 18 * * *\"\n").contains("needs `duration_secs`"));
+        assert!(
+            bad("cron = \"0 18 * * *\"\nduration_secs = 60\nstart = \"2026-12-24T20:00:00Z\"\n").contains("not both")
+        );
+        assert!(bad("cron = \"0 18 * * *\"\nduration_secs = 60\ntz = \"Mars/Base\"\n").contains("bad `tz`"));
+        assert!(bad("cron = \"0 18 * * *\"\nduration_secs = 0\n").contains("at least 1"));
+        assert!(bad("tz = \"UTC\"\nstart = \"2026-12-24T20:00:00Z\"\n").contains("only applies to `cron`"));
+        assert!(bad("duration_secs = 60\n").contains("needs `start` or `cron`"));
+        assert!(
+            bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T21:00:00Z\"\nduration_secs = 60\n")
+                .contains("not both")
+        );
+        assert!(bad("inhibit = [\"c*m\"]\n").contains("pattern"));
+        // An unknown key is still refused.
+        assert!(toml::from_str::<Config>("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\nwhen = 1\n").is_err());
+    }
+
+    #[test]
     fn udp_push_to_one_receiver() {
         let cfg: Config = toml::from_str(
             "[[udp.push]]\nstream = \"tv\"\nurl = \"udp://10.0.0.20:5000\"\ninterface = \"10.0.0.5\"\n\
@@ -2642,6 +2780,28 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let ok: Config = toml::from_str("[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n[auth]\nsecret = \"0123456789abcdef0123456789abcdef\"\nplay = true").unwrap();
         assert!(ok.validate().is_ok());
         assert!(ok.auth.publish, "publish defaults to required once keys exist");
+    }
+
+    #[test]
+    fn rtmps_needs_tls_certificates() {
+        let parse = |t: &str| toml::from_str::<Config>(t).unwrap();
+        assert!(parse("").rtmp.tls_bind.is_none(), "RTMPS is off by default");
+        let no_tls = parse("[rtmp]\ntls_bind = \"0.0.0.0:1936\"").validate().unwrap_err();
+        assert!(no_tls.contains("[tls]"), "{no_tls}");
+        let tls = "[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n";
+        let clash = parse(&format!("{tls}[rtmp]\ntls_bind = \"0.0.0.0:8443\"")).validate().unwrap_err();
+        assert!(clash.contains("differ"), "{clash}");
+        let same = parse(&format!("{tls}[rtmp]\nbind = \"0.0.0.0:1936\"\ntls_bind = \"0.0.0.0:1936\"")).validate();
+        assert!(same.unwrap_err().contains("differ"));
+        let ok = parse(&format!("{tls}[rtmp]\ntls_bind = \"0.0.0.0:1936\""));
+        assert!(ok.validate().is_ok());
+        let (bind, source) = ok.rtmp.tls_source(&ok.tls).unwrap().unwrap();
+        assert_eq!(bind, "0.0.0.0:1936".parse().unwrap());
+        assert!(matches!(source, caudal_tls::CertSource::Files { .. }));
+        let acme = parse(
+            "[tls]\nbind = \"0.0.0.0:443\"\nacme_domains = [\"live.example\"]\n[rtmp]\ntls_bind = \"0.0.0.0:1936\"",
+        );
+        assert!(matches!(acme.rtmp.tls_source(&acme.tls).unwrap().unwrap().1, caudal_tls::CertSource::Acme { .. }));
     }
 
     #[test]

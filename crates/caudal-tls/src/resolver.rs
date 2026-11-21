@@ -36,15 +36,19 @@ impl FileCertResolver {
         Ok(Arc::new(Self { cert_path, key_path, current: ArcSwap::from_pointee(key) }))
     }
 
-    /// Spawns the polling reload task. Runs for the lifetime of the process;
-    /// there is nothing to cancel it, which is fine since it is cheap and
-    /// harmless to keep polling after `serve()`'s accept loop stops.
+    /// Spawns the polling reload task. It holds only a weak reference and
+    /// stops once the last `ServerConfig` using this resolver is dropped
+    /// (a restarted RTMPS/RTSPS listener builds a new one each time).
     pub(crate) fn spawn_reloader(self: &Arc<Self>) {
-        let resolver = self.clone();
+        let weak = Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut last = file_mtimes(&resolver.cert_path, &resolver.key_path);
+            let mut last = match weak.upgrade() {
+                Some(r) => file_mtimes(&r.cert_path, &r.key_path),
+                None => return,
+            };
             loop {
                 tokio::time::sleep(POLL_INTERVAL).await;
+                let Some(resolver) = weak.upgrade() else { return };
                 let now = file_mtimes(&resolver.cert_path, &resolver.key_path);
                 if now == last {
                     continue;

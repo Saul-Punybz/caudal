@@ -144,6 +144,26 @@ async fn list_auto_pushes(State(state): State<ReloadState>) -> Json<Vec<crate::a
     Json(state.supervisor.auto_pushes())
 }
 
+/// `POST /api/v1/auto-pushes/{index}/enable` or `/disable`: a runtime
+/// override of the rule's `enabled`, not written to the file. Kept across
+/// reloads that leave the rule unchanged; lost on restart or when the rule
+/// is edited. `200` with the rule as `GET` shows it, `404` for no such rule.
+async fn toggle_auto_push(State(state): State<ReloadState>, Path((index, action)): Path<(usize, String)>) -> Response {
+    let enabled = match action.as_str() {
+        "enable" => true,
+        "disable" => false,
+        _ => return error(StatusCode::NOT_FOUND, "expected /enable or /disable"),
+    };
+    if !state.supervisor.set_auto_push_enabled(index, enabled) {
+        return error(StatusCode::NOT_FOUND, format!("no [[push.auto]] rule {index}"));
+    }
+    tracing::info!(rule = index, enabled, "auto push rule toggled over the api");
+    match state.supervisor.auto_pushes().into_iter().find(|r| r.index == index) {
+        Some(rule) => (StatusCode::OK, Json(rule)).into_response(),
+        None => error(StatusCode::NOT_FOUND, format!("no [[push.auto]] rule {index}")),
+    }
+}
+
 async fn add_pull(State(state): State<ReloadState>, Json(b): Json<EntryBody>) -> Response {
     let kind = match Kind::for_pull(&b.url) {
         Ok(k) => k,
@@ -204,6 +224,7 @@ pub fn router(state: ReloadState) -> Router {
         .route("/api/v1/pushes", get(list_pushes).post(add_push))
         .route("/api/v1/pushes/{stream}", delete(remove_push))
         .route("/api/v1/auto-pushes", get(list_auto_pushes))
+        .route("/api/v1/auto-pushes/{index}/{action}", post(toggle_auto_push))
         .with_state(state)
 }
 
@@ -397,6 +418,21 @@ mod tests {
         assert_eq!(st, StatusCode::OK);
         assert_eq!(rules[0]["kind"], "rtmp");
         assert_eq!(rules[0]["active"], serde_json::json!([{"stream": "cam1", "url": "rtmp://127.0.0.1:9/live/****"}]));
+        assert_eq!((rules[0]["index"].clone(), rules[0]["enabled"].clone()), (0.into(), true.into()));
+        assert!(rules[0]["idle"].is_null() && rules[0]["schedule"].is_null());
+
+        // Runtime toggle: the push stops and the rule says why; the file
+        // is not touched.
+        let file = std::fs::read_to_string(&path).unwrap();
+        let (st, rule) = call(&app, "POST", "/api/v1/auto-pushes/0/disable", None).await;
+        assert_eq!(st, StatusCode::OK, "{rule}");
+        assert_eq!(rule["idle"]["reason"], "disabled");
+        assert_eq!(rule["active"], serde_json::json!([]));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), file);
+        let (_, rule) = call(&app, "POST", "/api/v1/auto-pushes/0/enable", None).await;
+        assert_eq!((rule["enabled"].clone(), rule["active"].as_array().unwrap().len()), (true.into(), 1));
+        assert_eq!(call(&app, "POST", "/api/v1/auto-pushes/7/enable", None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(call(&app, "POST", "/api/v1/auto-pushes/0/pause", None).await.0, StatusCode::NOT_FOUND);
 
         std::fs::write(&path, base).unwrap();
         let (st, _) = call(&app, "POST", "/api/v1/config/reload", None).await;

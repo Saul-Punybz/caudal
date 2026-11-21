@@ -34,3 +34,29 @@ pub trait Gate: Send + Sync + 'static {
         ip: Option<IpAddr>,
     ) -> GateFuture<'a>;
 }
+
+pub type RewriteFuture<'a> = Pin<Box<dyn Future<Output = Result<String, Denied>> + Send + 'a>>;
+
+/// What a [`Rewrite`] is asked about: one publish or play request, before
+/// any access check.
+#[derive(Debug, Clone, Copy)]
+pub struct RewriteRequest<'a> {
+    pub access: Access,
+    /// The protocol the request came in on (`"rtmp"`, `"srt"`, `"whip"`,
+    /// `"whep"`, `"rtsp"`, `"hls"`, `"moq"`).
+    pub protocol: &'static str,
+    /// The name the client asked for.
+    pub stream: &'a str,
+    pub token: Option<&'a str>,
+    pub ip: Option<IpAddr>,
+}
+
+/// Stream routing: maps the name a client asked for to the name it
+/// actually publishes to or plays (MistServer's `PUSH_REWRITE` and
+/// `PLAY_REWRITE`). The server installs one on the [`crate::Registry`];
+/// protocols reach it through [`crate::Registry::resolve`].
+pub trait Rewrite: Send + Sync + 'static {
+    /// `Ok(name)` to go on under `name` (the requested name to keep it),
+    /// `Err` to refuse the request.
+    fn rewrite<'a>(&'a self, req: RewriteRequest<'a>) -> RewriteFuture<'a>;
+}

@@ -123,8 +123,30 @@ async fn run_push_session(socket: SrtSocket, stream: &Arc<Stream>) -> bool {
 /// Parses `srt://host:port[?streamid=&passphrase=&latency=]` and connects
 /// as a caller.
 pub(crate) async fn connect(url: &str) -> Result<SrtSocket, String> {
+    check_caller_url(url)?;
     let (addr, opts) = parse_url(url).ok_or_else(|| format!("invalid SRT URL: {url}"))?;
     SrtSocket::connect(addr, opts).await.map_err(|err| err.to_string())
+}
+
+/// Pulls and pushes are SRT callers. `mode=rendezvous` (and `mode=listener`)
+/// in the URL, as ffmpeg and srt-live-transmit spell it, is refused rather
+/// than silently dialled as a caller: `rsrt` implements caller and listener
+/// only, no rendezvous handshake (WAVEAHAND is dropped).
+pub fn check_caller_url(url: &str) -> Result<(), String> {
+    let query = url.split_once('?').map_or("", |(_, q)| q);
+    for kv in query.split('&') {
+        let Some(("mode", value)) = kv.split_once('=') else { continue };
+        match value.to_ascii_lowercase().as_str() {
+            "caller" | "client" => {}
+            "rendezvous" => {
+                return Err(format!(
+                    "{url}: SRT rendezvous mode is not supported (the SRT library, rsrt, has caller and listener only)"
+                ));
+            }
+            other => return Err(format!("{url}: SRT mode={other} not supported here; pulls and pushes are callers")),
+        }
+    }
+    Ok(())
 }
 
 fn parse_url(url: &str) -> Option<(String, SrtOptions)> {
@@ -186,6 +208,15 @@ mod tests {
     fn rejects_non_srt_scheme() {
         assert!(parse_url("http://example.com:9000").is_none());
         assert!(parse_url("srt://").is_none());
+    }
+
+    #[test]
+    fn refuses_rendezvous_and_listener_modes() {
+        assert!(check_caller_url("srt://h:9000?streamid=x").is_ok());
+        assert!(check_caller_url("srt://h:9000?mode=caller&latency=200").is_ok());
+        let err = check_caller_url("srt://h:9000?mode=rendezvous").unwrap_err();
+        assert!(err.contains("rendezvous"), "{err}");
+        assert!(check_caller_url("srt://h:9000?latency=1&mode=listener").is_err());
     }
 
     #[test]

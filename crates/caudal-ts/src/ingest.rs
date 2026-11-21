@@ -99,9 +99,12 @@ fn spawn_announce_deadline(shared: &Arc<Shared>) {
     });
 }
 
-/// Keeps the timeline continuous across [`TsIngest::discontinuity`].
+/// Keeps the timeline continuous across [`TsIngest::discontinuity`]; also
+/// used by the HLS pull of fMP4 segments. Register every track with
+/// [`Rebase::timescale`], call [`Rebase::splice`] at a discontinuity and
+/// pass every frame through [`Rebase::apply`].
 #[derive(Default)]
-struct Rebase {
+pub struct Rebase {
     /// Added to every frame (and cue) time, microseconds.
     offset_us: i64,
     /// Set by a discontinuity: the next frame decides the new offset.
@@ -112,7 +115,8 @@ struct Rebase {
 }
 
 impl Rebase {
-    fn timescale(&mut self, info: &TrackInfo) {
+    /// Registers (or updates) a track's timescale.
+    pub fn timescale(&mut self, info: &TrackInfo) {
         match self.tracks.iter_mut().find(|t| t.0 == info.id) {
             Some(t) => t.1 = info.timescale,
             None => self.tracks.push((info.id, info.timescale, i64::MIN, 0)),
@@ -124,7 +128,19 @@ impl Rebase {
         self.tracks.iter().filter(|t| t.2 != i64::MIN).map(|t| t.2 + t.3.max(0)).max()
     }
 
-    fn apply(&mut self, frame: &mut Frame) {
+    /// The source is spliced: the next frame continues where the latest
+    /// frame so far ended, whatever its own timestamp says.
+    pub fn splice(&mut self) {
+        self.pending = true;
+    }
+
+    /// The offset added to frame times, microseconds (for cues).
+    pub fn offset_us(&self) -> i64 {
+        self.offset_us
+    }
+
+    /// Shifts `frame` onto the continuous timeline.
+    pub fn apply(&mut self, frame: &mut Frame) {
         let Some(idx) = self.tracks.iter().position(|t| t.0 == frame.track) else { return };
         let scale = i128::from(self.tracks[idx].1.max(1));
         let to_us = |ticks: i64| (i128::from(ticks) * 1_000_000 / scale) as i64;

@@ -8,8 +8,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use arc_swap::ArcSwapOption;
 use rustls::ServerConfig;
-use rustls::server::Acceptor;
+use rustls::server::{Acceptor, ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
+use rustls_acme::ResolvesServerCertAcme;
 use rustls_acme::caches::DirCache;
 use rustls_acme::{AcmeConfig, is_tls_alpn_challenge};
 use tokio::io::AsyncWriteExt;
@@ -19,6 +22,31 @@ use tokio_rustls::server::TlsStream;
 use tokio_stream::StreamExt;
 
 use crate::accept::{self, Handshake};
+
+/// The certificate resolver of the running ACME client (set by
+/// [`serve_acme`]; at most one HTTPS listener runs per process).
+static ACME_RESOLVER: ArcSwapOption<ResolvesServerCertAcme> = ArcSwapOption::const_empty();
+
+/// Resolves through [`ACME_RESOLVER`] at handshake time, so a listener
+/// built before the HTTPS listener starts, or before the first certificate
+/// is issued, starts presenting it as soon as it exists.
+#[derive(Debug)]
+pub(crate) struct SharedAcmeResolver;
+
+impl ResolvesServerCert for SharedAcmeResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        // An `acme-tls/1` hello would get the challenge certificate; that
+        // only makes sense on the HTTPS listener the CA validates against.
+        if is_tls_alpn_challenge(&client_hello) {
+            return None;
+        }
+        let resolver = ACME_RESOLVER.load_full();
+        if resolver.is_none() {
+            tracing::debug!("tls handshake: no ACME certificate yet");
+        }
+        resolver?.resolve(client_hello)
+    }
+}
 
 pub(crate) async fn serve_acme(
     bind: SocketAddr,
@@ -38,6 +66,8 @@ pub(crate) async fn serve_acme(
         config = config.contact([format!("mailto:{email}")]);
     }
     let mut state = config.state();
+    // Shared with non-HTTP TLS listeners (RTMPS), see `SharedAcmeResolver`.
+    ACME_RESOLVER.store(Some(state.resolver()));
 
     // `default_rustls_config()` builds a ServerConfig around the ACME
     // resolver with no ALPN set; clone it and set our own so normal

@@ -17,6 +17,7 @@ url = "https://auth.example.com/caudal"
 secret = "whsec_..."        # Standard Webhooks secret, as in [hooks]
 timeout_ms = 2000           # one attempt, no retries (100..=10000)
 on_error = "deny"           # or "allow": what a timeout or a 5xx means
+reply = "status"            # or "mistserver": how a 2xx is read (below)
 publish = true              # ask before a publish
 play = true                 # ask before a play
 allow_cache_secs = 30       # remember an allow this long
@@ -60,11 +61,49 @@ the machine. Redirects are never followed, so the token only goes to `url`.
 
 ## The answer
 
-| Your service answers | Caudal |
-|---|---|
-| any 2xx | allows |
-| 401 or 403 | refuses; an optional `{"reason": "..."}` body is logged |
-| anything else, a timeout, a connection error | `on_error` decides (`deny` by default) |
+`reply` says how a 2xx is read. The rest is the same in both modes.
+
+| Your service answers | `reply = "status"` (default) | `reply = "mistserver"` |
+|---|---|---|
+| 2xx, body true (below) | allows | allows |
+| 2xx, any other body (`false`, `0`, empty...) | allows | refuses |
+| 401 or 403 | refuses; an optional `{"reason": "..."}` body is logged | same |
+| anything else, a timeout, a connection error | `on_error` decides (`deny` by default) | same |
+| 2xx whose body is over 4 KiB or not read within `timeout` | (body not read) | `on_error` decides |
+
+### `reply = "mistserver"`
+
+A MistServer blocking trigger handler (`USER_NEW`, `STREAM_PUSH`,
+`CONN_PLAY`...) answers `200` with `true` or `false` in the body. Under the
+default `status` mode every one of those answers is a 2xx, so a handler moved
+over from MistServer that answers `200 false` would let everyone in. Set
+`reply = "mistserver"` for such a handler.
+
+The body is read exactly as MistServer reads it (`Util::stringToBool`,
+`lib/bitfields.cpp:62-73` at the commit pinned in
+[`research/MISTSERVER-REVERSE.md`](research/MISTSERVER-REVERSE.md), applied
+to trigger answers at `lib/triggers.cpp:291-297`):
+
+1. Drop every whitespace byte, wherever it is (space, tab, `\n`, `\v`, `\f`,
+   `\r`).
+2. Lowercase the first four bytes left.
+3. True if they start with `1`, `yes`, `true` or `cont`. Anything else is
+   false, including an empty body.
+
+So `true`, `TRUE\n`, ` yes`, `1`, `10` and `continue` allow; `false`, `0`,
+`no`, `ok` and an empty body refuse.
+
+Two differences from MistServer, both on purpose:
+
+- MistServer reads a body only from a 2xx (`lib/downloader.cpp:45-48`,
+  `lib/triggers.cpp:78-87`); any other status, or no answer, makes it use the
+  handler's `default`, which is `true` when unset (`lib/triggers.cpp:289-290`).
+  Here those cases follow `on_error`, which fails closed unless you say
+  otherwise. A MistServer `default` of `false` is `on_error = "deny"`.
+- 401 and 403 still refuse, as in `status` mode.
+
+The cache never mixes the two modes: the mode is part of every cache key, and
+a reload starts with an empty cache anyway.
 
 ## Caching
 

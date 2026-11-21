@@ -118,8 +118,13 @@ ffmpeg -i "http://caudal:8080/ts/cam.ts?token=JWT" -c copy cam.ts
   runs continuously, with PSI and PCR on the media clock. It ends when the
   stream ends; a republish is a new request.
 - A slow client never grows memory: at most 32 muxed frames wait for its
-  socket; behind that the stream's own buffer moves it forward to the next
-  keyframe. A client that reads nothing for 15 s is disconnected.
+  socket (plus whatever the OS buffers on the connection); behind that the
+  stream's own buffer (`[buffer] window_secs`) moves it forward to the
+  next keyframe. A client that reads nothing for 15 s is disconnected.
+- When the stream ends the response ends with a proper chunked
+  terminator (curl exits 0). `ffmpeg -xerror` reading it live still
+  reports an I/O error at that point: it does so for any endless HTTP
+  body that ends, from any server.
 - Auth and sessions: the same `?token=` / `Authorization: Bearer` and
   `[auth]` / `[[access.rules]]` decision as every playback route (401
   without a token where one is required, 403 when refused, 404 for an

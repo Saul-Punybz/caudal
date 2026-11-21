@@ -275,3 +275,75 @@ async fn http_pull_reads_the_output_into_another_registry() {
     assert_eq!(origin.sessions().list(Some("live")).first().map(|s| s.protocol), Some("http-ts"));
     pulls.reload(&edge, Vec::new());
 }
+
+/// A client that stops reading falls behind the stream's buffer; when it
+/// reads again it resumes at a later keyframe instead of the server holding
+/// everything for it. In-process (`tower::oneshot`, no socket), so the
+/// kernel's socket buffers cannot absorb the stall.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_client_skips_ahead_to_a_keyframe() {
+    use tokio_stream::StreamExt;
+    use tower::ServiceExt;
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("SKIP: ffmpeg/ffprobe not installed");
+        return;
+    }
+    let src = source(12, "320x240:rate=25", &["-c:v", "libx264", "-preset", "veryfast", "-g", "25", "-c:a", "aac"]);
+    let (tracks, frames) = demux(&src);
+    let video = tracks.iter().find(|t| t.codec == Codec::H264).unwrap().id;
+    let registry = Registry::new();
+    let buffer = BufferConfig { window: Duration::from_secs(1), ..BufferConfig::default() };
+    let publisher = registry.publish("slow", buffer).unwrap();
+    publisher.set_tracks(tracks.clone()).unwrap();
+    // The first two seconds go in before the viewer joins.
+    let split = frames.iter().position(|f| f.track == video && f.dts >= 2 * 90_000 && f.keyframe).unwrap();
+    let mut frames = frames.into_iter();
+    for f in frames.by_ref().take(split) {
+        publisher.push(f).unwrap();
+    }
+
+    let app = caudal_hls::http_ts::router(registry.clone(), Vec::new());
+    let req = axum::http::Request::get("/ts/slow.ts").body(axum::body::Body::empty()).unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let mut body = resp.into_body().into_data_stream();
+    let mut out = body.next().await.unwrap().unwrap().to_vec();
+
+    // The viewer stops reading while the remaining 10 s arrive at once,
+    // ten times the buffer window; then the stream ends.
+    for f in frames {
+        publisher.push(f).unwrap();
+    }
+    drop(publisher);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(5), body.next()).await.expect("body ends") {
+        out.extend_from_slice(&chunk.unwrap());
+    }
+    assert!(out.len() < src.len() / 2, "skipped ahead: {} of {} bytes", out.len(), src.len());
+
+    let path = std::env::temp_dir().join(format!("caudal_http_ts_stall_{}.ts", std::process::id()));
+    std::fs::write(&path, &out).unwrap();
+    let packets = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=dts_time,flags", "-of", "csv=p=0"])
+        .arg(&path)
+        .output()
+        .expect("run ffprobe packets");
+    let (_, _, decoded) = judge(&out, "stall");
+    let _ = std::fs::remove_file(&path);
+    let packets = String::from_utf8_lossy(&packets.stdout).into_owned();
+    // (dts seconds, keyframe) per video packet.
+    let v: Vec<(f64, bool)> = packets
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split(',');
+            Some((it.next()?.parse().ok()?, it.next()?.starts_with('K')))
+        })
+        .collect();
+    // Frames are 40 ms apart; a gap of more than a few means frames were
+    // skipped. Depending on scheduling the viewer skips once or once per
+    // GOP; either way every resume point is a keyframe.
+    let gaps: Vec<&[(f64, bool)]> = v.windows(2).filter(|w| w[1].0 - w[0].0 > 0.2).collect();
+    assert!(!gaps.is_empty(), "frames were skipped: {packets}");
+    assert!(gaps.iter().all(|w| w[1].1), "every resume is a keyframe: {packets}");
+    decoded.expect("ffmpeg -xerror decodes across the jump");
+}

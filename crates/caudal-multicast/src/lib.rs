@@ -68,13 +68,15 @@ pub enum Interface {
     V6Index(u32),
 }
 
-/// Send `stream` to the multicast `group` while it is live.
+/// Send `stream` to `group` while it is live: a multicast group, or one
+/// receiver's unicast address (`[[udp.push]]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MulticastTarget {
     pub stream: String,
     pub group: SocketAddr,
     pub format: Format,
-    /// IP TTL / IPv6 hop limit: how many routers the datagrams may cross.
+    /// IP TTL / IPv6 hop limit: how many routers the datagrams may cross
+    /// (`IP_MULTICAST_TTL` for a group, `IP_TTL` for a unicast address).
     pub ttl: u32,
     pub interface: Interface,
     /// `IP_MULTICAST_LOOP`: also deliver to receivers on this host.
@@ -86,17 +88,20 @@ pub struct MulticastTarget {
 
 impl MulticastTarget {
     /// Checks everything that would otherwise only fail once the stream is
-    /// live: a multicast group address, a port, a TTL that fits, an
-    /// interface of the group's address family.
+    /// live: a destination that can be sent to, a port, a TTL that fits, an
+    /// interface of the destination's address family. The destination is a
+    /// multicast group or, for `[[udp.push]]`, one receiver's address (an
+    /// ATSC multiplexer, an IRD, another server); the sender is the same.
     pub fn validate(&self) -> Result<(), String> {
         let group = self.group;
         if self.stream.is_empty() {
             return Err(format!("multicast {group}: `stream` is empty"));
         }
-        if !group.ip().is_multicast() {
-            return Err(format!(
-                "multicast group {group} is not a multicast address (IPv4 224.0.0.0/4, IPv6 ff00::/8)"
-            ));
+        if group.ip().is_unspecified() {
+            return Err(format!("udp destination {group}: not an address to send to"));
+        }
+        if !group.ip().is_multicast() && matches!(self.interface, Interface::V6Index(_)) {
+            return Err(format!("udp destination {group}: an interface index only applies to IPv6 multicast"));
         }
         if group.port() == 0 {
             return Err(format!("multicast group {group}: port 0"));
@@ -246,7 +251,9 @@ mod tests {
     fn validates_groups() {
         assert!(target("a", "239.1.1.1:5000").validate().is_ok());
         assert!(target("a", "[ff15::1]:5000").validate().is_ok());
-        assert!(target("a", "10.0.0.1:5000").validate().unwrap_err().contains("not a multicast"));
+        // A unicast receiver is a valid destination (`[[udp.push]]`);
+        // `[[multicast]]` itself still insists on a group (caudal config).
+        assert!(target("a", "10.0.0.1:5000").validate().is_ok());
         assert!(target("a", "239.1.1.1:0").validate().unwrap_err().contains("port 0"));
         assert!(target("", "239.1.1.1:5000").validate().is_err());
         let mut t = target("a", "239.1.1.1:5000");

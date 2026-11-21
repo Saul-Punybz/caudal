@@ -309,3 +309,45 @@ async fn rejoins_on_republish() {
     handle.render_metrics(&mut body);
     assert!(body.contains("caudal_multicast_send_errors_total{stream=\"tv4\",group=\""), "{body}");
 }
+
+/// `[[udp.push]]`: the same sender to one receiver's unicast address (an
+/// ATSC multiplexer's IP input, in Rolando's chain), no group involved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ts_over_udp_unicast_to_one_receiver() {
+    let registry = Registry::new();
+    let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+    rx.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let dest = rx.local_addr().unwrap();
+    let mut t = target("tv4", dest, Format::Ts);
+    t.loopback = false;
+    t.interface = Interface::V4(Ipv4Addr::LOCALHOST);
+    t.validate().expect("a unicast destination is valid");
+    let handle = caudal_multicast::start(registry.clone(), vec![t]);
+
+    let collector = collecting(rx, Duration::from_millis(600));
+    let publisher = registry.publish("tv4", BufferConfig::default()).unwrap();
+    publisher.set_tracks(tracks()).unwrap();
+    publish(&publisher, 0, 2, true).await;
+    drop(publisher);
+
+    let got = collector.await.unwrap();
+    assert!(got.len() > 50, "received {} datagrams", got.len());
+    let payloads: Vec<&[u8]> = got.iter().map(|(_, d)| d.as_slice()).collect();
+    let ts = check_ts(&payloads);
+    assert_eq!(ts.cc_errors, 0, "continuity counters are continuous");
+    assert!(ts.pat >= 15 && ts.pmt >= 15, "PAT {} / PMT {}", ts.pat, ts.pmt);
+    let mut body = String::new();
+    handle.render_metrics(&mut body);
+    assert!(body.contains("caudal_multicast_packets_total{stream=\"tv4\""), "{body}");
+}
+
+#[test]
+fn unicast_destinations_are_checked() {
+    let ok = |s: &str| target("s", s.parse().unwrap(), Format::Ts).validate();
+    assert!(ok("10.0.0.20:5000").is_ok());
+    assert!(ok("[2001:db8::20]:5000").is_ok());
+    assert!(ok("0.0.0.0:5000").unwrap_err().contains("not an address"));
+    let mut v6_index = target("s", "10.0.0.20:5000".parse().unwrap(), Format::Ts);
+    v6_index.interface = Interface::V6Index(2);
+    assert!(v6_index.validate().is_err());
+}

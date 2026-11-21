@@ -321,12 +321,13 @@ mod tests {
         let sections: Vec<&str> = list.as_array().unwrap().iter().map(|e| e["section"].as_str().unwrap()).collect();
         assert_eq!(sections, ["[[srt.push]]", "[[restream]]"]);
 
-        // Refusals: duplicate, unknown scheme, invalid stream name. None of
+        // Refusals: duplicate, a UDP push to a hostname, invalid stream name. None of
         // them touches the file.
         let before = std::fs::read_to_string(&path).unwrap();
         let dup = r#"{"stream":"show","url":"srt://127.0.0.1:9"}"#;
         assert_eq!(call(&app, "POST", "/api/v1/pushes", Some(dup)).await.0, StatusCode::CONFLICT);
-        let udp = r#"{"stream":"show","url":"udp://239.1.1.1:5000"}"#;
+        // udp:// needs an IP address: refused by the config check.
+        let udp = r#"{"stream":"show","url":"udp://mux.local:5000"}"#;
         assert_eq!(call(&app, "POST", "/api/v1/pushes", Some(udp)).await.0, StatusCode::BAD_REQUEST);
         let (st, body) =
             call(&app, "POST", "/api/v1/pulls", Some(r#"{"stream":"bad name","url":"rtsp://10.0.0.5/x"}"#)).await;

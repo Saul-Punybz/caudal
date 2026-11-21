@@ -304,11 +304,75 @@ impl ClusterSection {
 /// One restream target: push `stream` to `url` (`rtmp://` or `rtmps://`,
 /// `host[:port]/app/key`) while it is live. The key never reaches logs or
 /// the API.
-/// `[udp]`: only `[[udp.pull]]` today.
+/// `[udp]`: `[[udp.pull]]` (MPEG-TS in) and `[[udp.push]]` (MPEG-TS out to
+/// one receiver).
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct UdpSection {
     pub pull: Vec<UdpPullEntry>,
+    pub push: Vec<UdpPushEntry>,
+}
+
+/// One `[[udp.push]]`: send `stream` as MPEG-TS over UDP (`udp://10.0.0.20:5000`)
+/// or RTP/MP2T (`rtp://...`) to one receiver's address while it is live: an
+/// ATSC/DVB multiplexer's IP input, an IRD, a playout or another server.
+/// A multicast address works too (then `[[multicast]]` has more options).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UdpPushEntry {
+    pub stream: String,
+    pub url: String,
+    /// IP TTL: how many routers the datagrams may cross.
+    #[serde(default = "default_udp_push_ttl")]
+    pub ttl: u32,
+    /// This host's IPv4 address on the video network: the source address
+    /// of the datagrams, which picks the NIC. Absent: the OS's route.
+    #[serde(default)]
+    pub interface: Option<std::net::Ipv4Addr>,
+    /// Pace datagrams to the stream's own clock (receivers with small
+    /// buffers, and switches, drop bursts).
+    #[serde(default = "default_true")]
+    pub pacing: bool,
+}
+
+/// The usual unicast default (Linux, macOS, Windows).
+fn default_udp_push_ttl() -> u32 {
+    64
+}
+
+impl UdpPushEntry {
+    pub fn to_target(&self) -> Result<caudal_multicast::MulticastTarget, String> {
+        let ctx = |e: String| format!("[[udp.push]] `{}`: {e}", self.stream);
+        let (format, rest) = if let Some(r) = self.url.strip_prefix("udp://") {
+            (caudal_multicast::Format::Ts, r)
+        } else if let Some(r) = self.url.strip_prefix("rtp://") {
+            (caudal_multicast::Format::Rtp, r)
+        } else {
+            return Err(ctx(format!("url {:?}: expected udp://host:port or rtp://host:port", self.url)));
+        };
+        let rest = rest.trim_end_matches('/');
+        let dest: std::net::SocketAddr = rest.parse().map_err(|_| {
+            ctx(format!("url {:?}: expected an IP address and a port (udp://10.0.0.20:5000)", self.url))
+        })?;
+        let interface = match (self.interface, dest) {
+            (None, _) => caudal_multicast::Interface::Default,
+            (Some(a), std::net::SocketAddr::V4(_)) => caudal_multicast::Interface::V4(a),
+            (Some(_), std::net::SocketAddr::V6(_)) => {
+                return Err(ctx("`interface` is an IPv4 address; this destination is IPv6".into()));
+            }
+        };
+        let target = caudal_multicast::MulticastTarget {
+            stream: self.stream.clone(),
+            group: dest,
+            format,
+            ttl: self.ttl,
+            interface,
+            loopback: false,
+            pacing: self.pacing,
+        };
+        target.validate().map_err(ctx)?;
+        Ok(target)
+    }
 }
 
 /// One `[[udp.pull]]`: listen on `url` (`udp://239.1.1.1:5000`,
@@ -401,6 +465,12 @@ impl MulticastEntry {
             loopback: self.loopback,
             pacing: self.pacing,
         };
+        if !group.ip().is_multicast() {
+            return Err(ctx(format!(
+                "group {group} is not a multicast address (IPv4 224.0.0.0/4, IPv6 ff00::/8); \
+                 to send to one receiver's address use [[udp.push]]"
+            )));
+        }
         target.validate().map_err(ctx)?;
         Ok(target)
     }
@@ -1520,15 +1590,24 @@ impl Config {
         taken
     }
 
-    /// `[[multicast]]` as the runtime type `caudal-multicast` takes,
-    /// checked: parseable, multicast groups, one output per group.
+    /// `[[multicast]]` and `[[udp.push]]` as the runtime type
+    /// `caudal-multicast` takes (one sender for both), checked: parseable,
+    /// multicast groups for `[[multicast]]`, one output per destination.
     pub fn multicast_targets(&self) -> Result<Vec<caudal_multicast::MulticastTarget>, String> {
         let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::with_capacity(self.multicast.len());
-        for e in &self.multicast {
-            let t = e.to_target()?;
+        let mut out = Vec::with_capacity(self.multicast.len() + self.udp.push.len());
+        let targets = self
+            .multicast
+            .iter()
+            .map(MulticastEntry::to_target)
+            .chain(self.udp.push.iter().map(UdpPushEntry::to_target));
+        for t in targets {
+            let t = t?;
             if !seen.insert(t.group) {
-                return Err(format!("[[multicast]] group {} is used twice", t.group));
+                return Err(format!(
+                    "UDP destination {} is used twice ([[multicast]] / [[udp.push]]): one stream per destination",
+                    t.group
+                ));
             }
             out.push(t);
         }
@@ -2002,6 +2081,41 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(err("[auth.hook]\nurl = \"auth.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
         assert!(err("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"hunter2\"\n").contains("whsec_"));
+    }
+
+    #[test]
+    fn udp_push_to_one_receiver() {
+        let cfg: Config = toml::from_str(
+            "[[udp.push]]\nstream = \"tv\"\nurl = \"udp://10.0.0.20:5000\"\ninterface = \"10.0.0.5\"\n\
+             [[udp.push]]\nstream = \"tv\"\nurl = \"rtp://[2001:db8::7]:5004\"\nttl = 8\npacing = false\n\
+             [[multicast]]\nstream = \"tv\"\ngroup = \"239.1.1.1:5000\"\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let t = cfg.multicast_targets().unwrap();
+        assert_eq!(t.len(), 3, "one sender for both sections");
+        let unicast = t.iter().find(|t| t.group == "10.0.0.20:5000".parse().unwrap()).unwrap();
+        assert_eq!(unicast.format, caudal_multicast::Format::Ts);
+        assert_eq!(unicast.ttl, 64, "the usual unicast default");
+        assert_eq!(unicast.interface, caudal_multicast::Interface::V4("10.0.0.5".parse().unwrap()));
+        assert!(unicast.pacing && !unicast.loopback);
+        let rtp = t.iter().find(|t| t.group.is_ipv6()).unwrap();
+        assert_eq!((rtp.format, rtp.ttl, rtp.pacing), (caudal_multicast::Format::Rtp, 8, false));
+
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[udp.push]]\nstream = \"a\"\nurl = \"srt://h:1\"\n").contains("udp://host:port"));
+        assert!(bad("[[udp.push]]\nstream = \"a\"\nurl = \"udp://mux.local:5000\"\n").contains("IP address"));
+        assert!(bad("[[udp.push]]\nstream = \"a\"\nurl = \"udp://10.0.0.20:0\"\n").contains("port 0"));
+        assert!(bad("[[udp.push]]\nstream = \"a\"\nurl = \"udp://0.0.0.0:5000\"\n").contains("not an address"));
+        assert!(
+            bad("[[udp.push]]\nstream = \"a\"\nurl = \"udp://[2001:db8::7]:5000\"\ninterface = \"10.0.0.5\"\n")
+                .contains("IPv6")
+        );
+        let twice = "[[udp.push]]\nstream = \"a\"\nurl = \"udp://239.1.1.1:5000\"\n\
+                     [[multicast]]\nstream = \"b\"\ngroup = \"239.1.1.1:5000\"\n";
+        assert!(bad(twice).contains("used twice"));
+        // [[multicast]] still wants a group, and says where a unicast goes.
+        assert!(bad("[[multicast]]\nstream = \"a\"\ngroup = \"10.0.0.20:5000\"\n").contains("[[udp.push]]"));
     }
 
     #[test]

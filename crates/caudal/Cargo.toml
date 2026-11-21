@@ -22,6 +22,7 @@ dhat-heap = ["dep:dhat"]
 caudal-core.workspace = true
 caudal-rtmp.workspace = true
 caudal-hls.workspace = true
+caudal-audio.workspace = true
 caudal-srt.workspace = true
 caudal-ui.workspace = true
 caudal-tls.workspace = true
@@ -85,6 +86,8 @@ time = "0.3"
 serde_json.workspace = true
 tower = { version = "0.5", features = ["util"] }
 hex = "=0.4.3"
+# Verifies the signature on [auth.rewrite] calls in rewrite_e2e.rs.
+standardwebhooks = "1"
 # Builds a tiny in-memory .mmdb for the [access] geoip_db config test.
 maxminddb-writer = "0.1"
 # In-process MoQ "encoder" for the ingest e2e test (no publisher CLI ships

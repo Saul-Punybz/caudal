@@ -3,24 +3,24 @@ import type { Stream } from '../api';
 import { formatBitrate } from '../bitrate';
 import { formatCount, formatSeconds, summarizeTracks } from '../format';
 import { LiveBadge } from './LiveBadge';
+import { Thumbnail } from './Thumbnail';
 
 interface Props {
   stream: Stream;
   bitrate: number | null;
 }
 
-/** Right-hand summary for the row selected in the streams table. No
- * thumbnail: the API doesn't provide one, so a placeholder icon stands in
- * rather than a fake frame. The real preview lives on the detail page's
- * hls.js player. */
+/** Right-hand summary for the row selected in the streams table. The
+ * picture is the server's keyframe thumbnail, refreshed every few seconds
+ * (a camera icon until the first one arrives); only the selected stream
+ * gets one, so the dashboard asks for one picture at a time. The real
+ * preview lives on the detail page's hls.js player. */
 export function PreviewCard({ stream, bitrate }: Props) {
   return (
     <aside aria-label="Selected stream" className="flex w-full flex-col gap-4 lg:w-[360px]">
       <div className="flex flex-col overflow-hidden rounded-lg bg-surface-container">
-        <div className="relative flex h-40 items-center justify-center bg-[var(--md-sys-color-surface-container-lowest)]">
-          <span className="ms text-5xl text-on-surface-variant" aria-hidden="true">
-            videocam
-          </span>
+        <div className="relative">
+          <Thumbnail key={stream.name} stream={stream.name} className="aspect-video w-full" />
           <LiveBadge live className="absolute left-3 top-3" />
         </div>
         <div className="flex flex-col gap-3 p-5">

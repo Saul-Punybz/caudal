@@ -67,7 +67,7 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 
 # Pull streams in (docs/PULL-INPUTS.md): call a remote SRT listener, take
 # MPEG-TS over UDP (unicast or multicast, plain or RTP), GET it over HTTP,
-# or follow a remote HLS playlist.
+# follow a remote HLS playlist, or play it from another RTMP server.
 # [[srt.pull]]
 # stream = "venue"
 # url = "srt://203.0.113.7:9000?streamid=play/main"
@@ -77,6 +77,9 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # [[http.pull]]                  # MPEG-TS served over HTTP (VLC access=http)
 # stream = "web"
 # url = "http://10.0.0.5:8080/stream.ts"
+# [[rtmp.pull]]                  # play from a remote RTMP(S) server
+# stream = "remote"
+# url = "rtmp://203.0.113.7/live/cam1"
 # [[hls.pull]]                   # HLS / LL-HLS with MPEG-TS segments
 # stream = "cdn"
 # url = "https://cdn.example/live/master.m3u8"
@@ -88,6 +91,15 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # secret = "whsec_..."
 # timeout_ms = 2000
 # on_error = "deny"
+
+# Ask your own service which stream a publish/play really goes to
+# (MistServer's PUSH_REWRITE / PLAY_REWRITE). See docs/REWRITE-HOOK.md.
+# [auth.rewrite]
+# url = "https://route.example.com/caudal"
+# secret = "whsec_..."
+# timeout_ms = 2000
+# on_error = "deny"
+# cache_secs = 30
 
 # Signed webhooks (standardwebhooks.com) on stream.started / stream.ended.
 # [hooks]

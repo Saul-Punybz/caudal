@@ -130,12 +130,15 @@ async fn serve_ingest(
     // moq-native 0.19.19 doesn't expose the peer address here either (see
     // `allowed` below); an IP/CIDR `[[access.rules]]` entry denies with
     // `no_ip`, same as playback.
-    if let Err(d) = registry.authorize(Access::Publish, &name, token.as_deref(), None).await {
-        let code = status(d);
-        tracing::debug!(stream = %name, code, %transport, "moq: publish refused");
-        let _ = request.close(code).await;
-        return;
-    }
+    let name = match registry.resolve(Access::Publish, "moq", &name, token.as_deref(), None).await {
+        Ok(n) => n,
+        Err(d) => {
+            let code = status(d);
+            tracing::debug!(stream = %name, code, %transport, "moq: publish refused");
+            let _ = request.close(code).await;
+            return;
+        }
+    };
     let Some(scoped) = ingest.origin.with_root(name.as_str()) else {
         tracing::warn!(stream = %name, "moq: could not scope the ingest origin");
         let _ = request.close(500).await;
@@ -179,7 +182,15 @@ async fn allowed(
         if !caudal_core::media::valid_stream_name(path) {
             return Err(404);
         }
-        registry.authorize(Access::Play, path, token, ip).await.map_err(status)?;
+        // A MoQ viewer subscribes to broadcasts by path inside this origin;
+        // nothing here can serve `real` under the path `alias`, so a play
+        // the rewrite hook routes elsewhere is refused instead of being
+        // served under the name it asked for.
+        let name = registry.resolve(Access::Play, "moq", path, token, ip).await.map_err(status)?;
+        if name != path {
+            tracing::info!(requested = path, stream = %name, "moq: cannot play a rewritten name; refused");
+            return Err(404);
+        }
         return all.scope(&[moq_net::Path::new(path)]).ok_or(403);
     }
     if registry.authorize(Access::Play, "", token, ip).await.is_ok() {

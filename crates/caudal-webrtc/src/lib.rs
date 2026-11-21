@@ -450,9 +450,10 @@ async fn whip_post(
     }
     let tok = token(&headers, &uri);
     let ip = client_ip(&extensions, &headers, &st.trusted_proxies);
-    if let Err(d) = st.registry.authorize(Access::Publish, &name, tok.as_deref(), ip).await {
-        return denied(d);
-    }
+    let name = match st.registry.resolve(Access::Publish, "whip", &name, tok.as_deref(), ip).await {
+        Ok(n) => n,
+        Err(d) => return denied(d),
+    };
     let (rtc, sdp) = match negotiate(&st, &body) {
         Ok(v) => v,
         Err((code, msg)) => return plain(code, &msg),
@@ -491,9 +492,10 @@ async fn whep_post(
     }
     let tok = token(&headers, &uri);
     let ip = client_ip(&extensions, &headers, &st.trusted_proxies);
-    if let Err(d) = st.registry.authorize(Access::Play, &name, tok.as_deref(), ip).await {
-        return denied(d);
-    }
+    let name = match st.registry.resolve(Access::Play, "whep", &name, tok.as_deref(), ip).await {
+        Ok(n) => n,
+        Err(d) => return denied(d),
+    };
     // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
     let Some(sub) = st.registry.get_or_demand(&name).await.map(|s| s.subscribe(StartAt::LiveEdge)) else {
         return plain(StatusCode::NOT_FOUND, "no such stream");

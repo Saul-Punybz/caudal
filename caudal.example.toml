@@ -64,14 +64,17 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # publish = true
 # play = false
 
-# Pull streams in (docs/PULL-INPUTS.md): call a remote SRT listener, or
-# take MPEG-TS over UDP (unicast or multicast, plain or RTP).
+# Pull streams in (docs/PULL-INPUTS.md): call a remote SRT listener, take
+# MPEG-TS over UDP (unicast or multicast, plain or RTP), or GET it over HTTP.
 # [[srt.pull]]
 # stream = "venue"
 # url = "srt://203.0.113.7:9000?streamid=play/main"
 # [[udp.pull]]
 # stream = "tv"
 # url = "udp://239.1.1.1:5000"
+# [[http.pull]]                  # MPEG-TS served over HTTP (VLC access=http)
+# stream = "web"
+# url = "http://10.0.0.5:8080/stream.ts"
 
 # Ask your own service before every publish/play (blocking, cached).
 # See docs/AUTH-HOOK.md.

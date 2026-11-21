@@ -1,0 +1,19 @@
+[package]
+name = "caudal-http-pull"
+description = "MPEG-TS over HTTP(S) into Caudal: what VLC's `access=http,mux=ts` and MistServer's `http-ts://` serve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+caudal-ts.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

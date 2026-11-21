@@ -325,6 +325,7 @@ pub struct Supervisor {
     srt_push: caudal_srt::PushHandle,
     srt_pull: caudal_srt::PullHandle,
     udp_pull: caudal_udp::UdpPullHandle,
+    http_pull: caudal_http_pull::HttpPullHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
     omt: Arc<crate::omt::OmtRuntime>,
     transcode: caudal_transcode::TranscodeHandle,
@@ -390,6 +391,7 @@ impl Supervisor {
         let srt_push = caudal_srt::start_pushes(registry.clone(), cfg.srt.push_targets());
         let srt_pull = caudal_srt::start_pulls(registry.clone(), buffer, cfg.srt.pull_targets());
         let udp_pull = caudal_udp::start_pulls(registry.clone(), buffer, cfg.udp.pull_targets());
+        let http_pull = caudal_http_pull::start_pulls(registry.clone(), buffer, cfg.http.pull_targets());
         let rtsp_listen = Mutex::new(spawn_rtsp(registry.clone(), buffer, &cfg.rtsp));
         let rtsp_pull = caudal_rtsp::start_pulls(registry.clone(), buffer, cfg.rtsp.pull_targets());
         let omt = crate::omt::OmtRuntime::start(cfg, registry.clone(), buffer);
@@ -440,6 +442,7 @@ impl Supervisor {
             srt_push,
             srt_pull,
             udp_pull,
+            http_pull,
             rtsp_pull,
             omt: omt.clone(),
             transcode,
@@ -513,6 +516,10 @@ impl Supervisor {
         if old.udp.pull != new_cfg.udp.pull {
             self.udp_pull.reload(&self.registry, new_cfg.udp.pull_targets());
             report.applied.push("udp.pull".into());
+        }
+        if old.http.pull != new_cfg.http.pull {
+            self.http_pull.reload(&self.registry, new_cfg.http.pull_targets());
+            report.applied.push("http.pull".into());
         }
         if old.srt.pull != new_cfg.srt.pull {
             self.srt_pull.reload(&self.registry, new_cfg.srt.pull_targets());

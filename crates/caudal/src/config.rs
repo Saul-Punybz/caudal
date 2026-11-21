@@ -203,6 +203,9 @@ pub struct Config {
     pub restream: Vec<RestreamEntry>,
     /// MPEG-TS over UDP in (`[[udp.pull]]`): unicast or multicast, plain or RTP.
     pub udp: UdpSection,
+    /// MPEG-TS served over HTTP(S) in (`[[http.pull]]`): VLC's
+    /// `access=http,mux=ts`, an encoder's HTTP output, MistServer's `http-ts://`.
+    pub http: HttpSection,
     /// IP multicast output: `[[multicast]]` entries, each sending one
     /// stream to a multicast group as MPEG-TS over UDP or RTP.
     pub multicast: Vec<MulticastEntry>,
@@ -372,6 +375,28 @@ impl UdpPushEntry {
         };
         target.validate().map_err(ctx)?;
         Ok(target)
+    }
+}
+
+/// `[http]`: only `[[http.pull]]` today.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct HttpSection {
+    pub pull: Vec<HttpPullEntry>,
+}
+
+/// One `[[http.pull]]`: GET `url` (`http://10.0.0.5:8080/stream.ts`) and
+/// publish the MPEG-TS body as `stream`; reconnects when it ends.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpPullEntry {
+    pub stream: String,
+    pub url: String,
+}
+
+impl HttpSection {
+    pub fn pull_targets(&self) -> Vec<caudal_http_pull::HttpPull> {
+        self.pull.iter().map(|p| caudal_http_pull::HttpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
     }
 }
 
@@ -1703,13 +1728,17 @@ impl Config {
             .iter()
             .map(|p| ("[[rtsp.pull]]", &p.stream, &p.url, &["rtsp", "rtsps"][..]))
             .chain(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &p.stream, &p.url, &["srt"][..])))
-            .chain(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &p.stream, &p.url, &["udp", "rtp"][..])));
+            .chain(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &p.stream, &p.url, &["udp", "rtp"][..])))
+            .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])));
         for (section, stream, url, schemes) in pulls {
             name_ok(section, stream)?;
             scheme_ok(section, url, schemes)?;
             if !pulled.insert(stream.as_str()) {
                 return Err(format!("{section} stream {stream:?} is pulled twice"));
             }
+        }
+        for p in &self.http.pull {
+            caudal_http_pull::parse_url(&p.url).map_err(|e| format!("[[http.pull]] url {e}"))?;
         }
         let mut listening = std::collections::HashSet::new();
         for p in &self.udp.pull {
@@ -2029,6 +2058,22 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let bc = cfg.buffer.to_buffer_config();
         assert_eq!(bc.window, Duration::from_secs(10));
         assert_eq!(bc.max_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn http_pulls_are_validated() {
+        let ok: Config = toml::from_str(
+            "[[http.pull]]\nstream = \"web\"\nurl = \"http://10.0.0.5:8080/stream.ts\"\n\
+             [[http.pull]]\nstream = \"enc\"\nurl = \"https://encoder.example/live\"\n",
+        )
+        .unwrap();
+        ok.validate().unwrap();
+        assert_eq!(ok.http.pull_targets()[1].url, "https://encoder.example/live");
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"udp://h:1\"\n").contains("http://"));
+        assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/live/index.m3u8\"\n").contains("HLS"));
+        let twice = "[[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n";
+        assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
     }
 
     #[test]

@@ -24,6 +24,7 @@ const CFG: HlsConfig = HlsConfig {
     cue_out_tags: false,
     reconnect_grace: Duration::ZERO,
     ts: false,
+    ll_dash: super::LlDash::DEFAULT,
 };
 
 fn fixture() -> Demuxed {
@@ -222,6 +223,106 @@ fn an_ended_stream_stops_asking_for_updates() {
     assert!(mpd(&pkg, None).contains("minimumUpdatePeriod="));
     pkg.end();
     assert!(!mpd(&pkg, None).contains("minimumUpdatePeriod="));
+}
+
+fn ll_mpd(pkg: &Packager) -> String {
+    let snap = dash::Snap::ll(pkg).expect("complete segments");
+    let ctx = dash::Ctx {
+        token: None,
+        time_url: Some("http://example.test/dash/time".into()),
+        now: SystemTime::UNIX_EPOCH + Duration::from_secs(2_000),
+    };
+    dash::render(("cam", &snap), &[], &ctx)
+}
+
+#[test]
+fn ll_service_description_defaults_and_repairs() {
+    let d = super::LlDash::DEFAULT.resolve(2000);
+    assert_eq!((d.target_latency_ms, d.min_latency_ms, d.max_latency_ms), (3000, 1500, 6000));
+    assert_eq!((d.min_playback_rate, d.max_playback_rate), (0.95, 1.05));
+    let odd = super::LlDash {
+        target_latency_ms: 2000,
+        min_latency_ms: 5000,
+        max_latency_ms: 1000,
+        min_playback_rate: 1.5,
+        max_playback_rate: f64::NAN,
+    }
+    .resolve(2000);
+    assert_eq!((odd.target_latency_ms, odd.min_latency_ms, odd.max_latency_ms), (2000, 2000, 2000));
+    assert_eq!((odd.min_playback_rate, odd.max_playback_rate), (0.95, 1.05));
+}
+
+#[test]
+fn ll_mpd_announces_the_open_segment_with_its_availability_offset() {
+    let fx = fixture();
+    let mut pkg = Packager::new(CFG);
+    pkg.set_tracks(&fx.tracks);
+    feed(&mut pkg, &fx, 0..3, SystemTime::UNIX_EPOCH + Duration::from_secs(1_000));
+    // Part of a fourth loop: the segment being built has parts.
+    for f in fx.looped(3).take(20) {
+        pkg.push(&f, SystemTime::UNIX_EPOCH + Duration::from_secs(1_000) + Duration::from_micros(fx.micros(&f) as u64));
+    }
+    let open = pkg.segments.back().unwrap();
+    assert!(open.full.is_none() && !open.parts.is_empty(), "an open segment with parts");
+    let complete: Vec<_> = pkg.segments.iter().filter(|s| s.full.is_some()).collect();
+
+    // The plain manifest is unchanged: complete segments, no LL signalling.
+    let plain = mpd(&pkg, None);
+    for absent in ["availabilityTimeOffset", "ServiceDescription", "ProducerReferenceTime"] {
+        assert!(!plain.contains(absent), "{absent} in the plain MPD: {plain}");
+    }
+
+    let text = ll_mpd(&pkg);
+    let doc = roxmltree::Document::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    let root = doc.root_element();
+    assert_eq!(root.attribute("minimumUpdatePeriod"), Some("PT0.500S"), "{text}");
+    assert_eq!(root.attribute("suggestedPresentationDelay"), Some("PT6.000S"), "the plain delay: {text}");
+    let sd = children(root, "ServiceDescription").next().expect("ServiceDescription");
+    let lat = children(sd, "Latency").next().unwrap();
+    assert_eq!(
+        (lat.attribute("referenceId"), lat.attribute("target"), lat.attribute("min"), lat.attribute("max")),
+        (Some("0"), Some("3000"), Some("1500"), Some("6000"))
+    );
+    let rate = children(sd, "PlaybackRate").next().unwrap();
+    assert_eq!((rate.attribute("min"), rate.attribute("max")), (Some("0.95"), Some("1.05")));
+    // Schema order: ServiceDescription before the Periods, UTCTiming after.
+    let order: Vec<&str> = root.children().filter(|n| n.is_element()).map(|n| n.tag_name().name()).collect();
+    assert_eq!(order.first(), Some(&"ServiceDescription"), "{order:?}");
+    assert_eq!(order.last(), Some(&"UTCTiming"), "{order:?}");
+
+    let period = children(root, "Period").next().unwrap();
+    for (lane, set) in children(period, "AdaptationSet").enumerate() {
+        let rep = children(set, "Representation").next().unwrap();
+        let prt = children(rep, "ProducerReferenceTime").next().expect("ProducerReferenceTime");
+        let tpl = children(rep, "SegmentTemplate").next().unwrap();
+        assert_eq!(prt.attribute("id"), Some("0"));
+        assert_eq!(prt.attribute("type"), Some("encoder"));
+        assert_eq!(prt.attribute("wallClockTime"), Some("1970-01-01T00:16:40.000Z"), "period start = epoch");
+        assert_eq!(prt.attribute("presentationTime"), tpl.attribute("presentationTimeOffset"));
+        let utc = children(prt, "UTCTiming").next().unwrap();
+        assert_eq!(utc.attribute("value"), Some("http://example.test/dash/time"));
+        assert_eq!(tpl.attribute("availabilityTimeOffset"), Some("1.800"), "2 s segments, 200 ms parts");
+        assert_eq!(tpl.attribute("availabilityTimeComplete"), Some("false"));
+
+        let ts: u64 = num(tpl, "timescale");
+        let (start, entries) = timeline(tpl);
+        assert_eq!(start, complete[0].msn);
+        assert_eq!(entries.len(), complete.len() + 1, "complete segments plus the open one: {text}");
+        let last = *entries.last().unwrap();
+        let prev = entries[entries.len() - 2];
+        assert_eq!(last.0, open.run(lane).map_or(prev.0 + prev.1 as i64, |r| r.start));
+        assert!(last.1 >= 2 * ts, "the open segment gets its nominal 2 s: {last:?}");
+        // The complete ones are what the plain MPD says.
+        for (s, seg) in entries.iter().zip(&complete) {
+            let run = seg.run(lane).unwrap();
+            assert_eq!(*s, (run.start, run.dur));
+        }
+    }
+    // Ended: nothing is open any more, and nothing is announced early.
+    pkg.end();
+    let text = ll_mpd(&pkg);
+    let n = text.matches("<S ").count();
+    assert_eq!(n, 2 * pkg.segments.iter().filter(|s| s.full.is_some()).count(), "{text}");
 }
 
 struct Reply {

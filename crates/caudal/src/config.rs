@@ -173,7 +173,7 @@ impl Default for SrtSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct HlsSection {
     #[serde(default = "default_part_ms")]
@@ -194,6 +194,22 @@ pub struct HlsSection {
     /// `/hls/{name}/ts.m3u8` (older set-top boxes, MPEG-2 + MP2 feeds).
     #[serde(default = "default_true")]
     pub ts: bool,
+    /// LL-DASH (`/hls/{name}/ll.mpd`) `ServiceDescription`: the latency
+    /// players aim for, in milliseconds. 0 = `segment_ms` + 1000.
+    #[serde(default)]
+    pub dash_target_latency_ms: u32,
+    /// Lowest latency players should go to. 0 = half the target.
+    #[serde(default)]
+    pub dash_min_latency_ms: u32,
+    /// Highest latency players should accept. 0 = twice the target.
+    #[serde(default)]
+    pub dash_max_latency_ms: u32,
+    /// Slowest playback rate players may use to rebuild buffer.
+    #[serde(default = "default_dash_min_playback_rate")]
+    pub dash_min_playback_rate: f64,
+    /// Fastest playback rate players may use to catch up with the target.
+    #[serde(default = "default_dash_max_playback_rate")]
+    pub dash_max_playback_rate: f64,
     /// HLS or LL-HLS pulled in (`[[hls.pull]]`): a remote playlist with
     /// MPEG-TS segments published as a stream. Reloadable, unlike the
     /// output settings above.
@@ -216,6 +232,17 @@ impl HlsSection {
         self.pull.iter().map(|p| caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
     }
 
+    /// The LL-DASH settings as `caudal-hls` takes them.
+    pub fn ll_dash(&self) -> caudal_hls::LlDash {
+        caudal_hls::LlDash {
+            target_latency_ms: self.dash_target_latency_ms,
+            min_latency_ms: self.dash_min_latency_ms,
+            max_latency_ms: self.dash_max_latency_ms,
+            min_playback_rate: self.dash_min_playback_rate,
+            max_playback_rate: self.dash_max_playback_rate,
+        }
+    }
+
     /// The output settings alone: what a change of needs a restart.
     pub fn output(&self) -> Self {
         Self { pull: Vec::new(), ..self.clone() }
@@ -224,6 +251,14 @@ impl HlsSection {
 
 fn default_reconnect_grace_secs() -> u32 {
     10
+}
+
+fn default_dash_min_playback_rate() -> f64 {
+    caudal_hls::LlDash::DEFAULT.min_playback_rate
+}
+
+fn default_dash_max_playback_rate() -> f64 {
+    caudal_hls::LlDash::DEFAULT.max_playback_rate
 }
 
 impl Default for HlsSection {
@@ -235,6 +270,11 @@ impl Default for HlsSection {
             cue_out_tags: false,
             reconnect_grace_secs: default_reconnect_grace_secs(),
             ts: true,
+            dash_target_latency_ms: 0,
+            dash_min_latency_ms: 0,
+            dash_max_latency_ms: 0,
+            dash_min_playback_rate: default_dash_min_playback_rate(),
+            dash_max_playback_rate: default_dash_max_playback_rate(),
             pull: Vec::new(),
         }
     }
@@ -2517,6 +2557,15 @@ encoder_threads = 4
         let cfg: Config = toml::from_str("[hls]\nreconnect_grace_secs = 0\n").unwrap();
         assert_eq!(cfg.hls.reconnect_grace_secs, 0);
         assert!(HlsSection::default().ts && toml::from_str::<Config>("").unwrap().hls.ts, "ts-hls defaults on");
+        let cfg: Config = toml::from_str(
+            "[hls]\ndash_target_latency_ms = 2500\ndash_min_playback_rate = 0.9\ndash_max_playback_rate = 1.1\n",
+        )
+        .unwrap();
+        let ll = cfg.hls.ll_dash();
+        assert_eq!((ll.target_latency_ms, ll.min_latency_ms, ll.max_latency_ms), (2500, 0, 0));
+        assert_eq!((ll.min_playback_rate, ll.max_playback_rate), (0.9, 1.1));
+        let ll = HlsSection::default().ll_dash();
+        assert_eq!((ll.min_playback_rate, ll.max_playback_rate), (0.95, 1.05));
         let cfg: Config = toml::from_str("[hls]\nts = false\n").unwrap();
         assert!(!cfg.hls.ts);
     }

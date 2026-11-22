@@ -195,73 +195,79 @@ async fn dash_family_plays_in_real_players() {
     probed.sort();
     assert_eq!(probed, ["aac,audio", "h264,video", "h264,video"], "one track per Representation");
 
+    // The plain manifest and the low-latency one (`ll.mpd`: the open
+    // segment announced early with `availabilityTimeOffset`, and streamed
+    // chunk by chunk when a player asks for it before it is complete).
+    let ll_url = format!("{base}/hls/dashcam/ll.mpd");
     let mut players = 0;
-    if ffmpeg_has_dash() {
-        // ffprobe sees every Representation of the live MPD.
-        let out = run(
-            Command::new("ffprobe").args([
-                "-v",
-                "error",
-                "-show_entries",
-                "stream=codec_type",
-                "-of",
-                "json",
-                &mpd_url,
-            ]),
-            Duration::from_secs(60),
-        );
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success() && stderr.trim().is_empty(), "ffprobe MPD: {stderr}");
-        // JSON, top-level `streams` only: ffmpeg's DASH demuxer makes one
-        // program per Representation, and the csv writer prints each
-        // program's streams again (plus an empty program line).
-        let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("ffprobe json");
-        let mut kinds: Vec<String> = json["streams"]
-            .as_array()
-            .expect("streams")
-            .iter()
-            .map(|s| s["codec_type"].as_str().unwrap_or_default().to_owned())
-            .collect();
-        kinds.sort();
-        assert_eq!(kinds, ["audio", "video", "video"]);
+    for mpd_url in [&ll_url, &mpd_url] {
+        if ffmpeg_has_dash() {
+            // ffprobe sees every Representation of the live MPD.
+            let out = run(
+                Command::new("ffprobe").args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_type",
+                    "-of",
+                    "json",
+                    mpd_url,
+                ]),
+                Duration::from_secs(60),
+            );
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success() && stderr.trim().is_empty(), "ffprobe MPD: {stderr}");
+            // JSON, top-level `streams` only: ffmpeg's DASH demuxer makes one
+            // program per Representation, and the csv writer prints each
+            // program's streams again (plus an empty program line).
+            let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("ffprobe json");
+            let mut kinds: Vec<String> = json["streams"]
+                .as_array()
+                .expect("streams")
+                .iter()
+                .map(|s| s["codec_type"].as_str().unwrap_or_default().to_owned())
+                .collect();
+            kinds.sort();
+            assert_eq!(kinds, ["audio", "video", "video"]);
 
-        // ffmpeg plays 3 s of the live MPD, stopping on the first error.
-        let out = run(
-            Command::new("ffmpeg").args(["-v", "error", "-xerror", "-i", &mpd_url, "-t", "3", "-f", "null", "-"]),
-            Duration::from_secs(90),
-        );
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success(), "ffmpeg -xerror on the live MPD failed:\n{stderr}");
-        eprintln!("ffmpeg -xerror on the live MPD: ok");
-        players += 1;
-    } else {
-        eprintln!("SKIP: this ffmpeg has no dash demuxer (built without libxml2)");
+            // ffmpeg plays 3 s of the live MPD, stopping on the first error.
+            let out = run(
+                Command::new("ffmpeg").args(["-v", "error", "-xerror", "-i", mpd_url, "-t", "3", "-f", "null", "-"]),
+                Duration::from_secs(90),
+            );
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "ffmpeg -xerror on {mpd_url} failed:\n{stderr}");
+            eprintln!("ffmpeg -xerror on {mpd_url}: ok");
+            players += 1;
+        } else {
+            eprintln!("SKIP: this ffmpeg has no dash demuxer (built without libxml2)");
+        }
+        if gst_has_dash() {
+            // GStreamer's dashdemux plays the live MPD in real time for 8 s
+            // (clock-synced fake sinks); every buffer reaching a sink is logged.
+            let sink = |n: &str| format!("fakesink name={n} sync=true silent=false");
+            let out = run(
+                Command::new("gst-launch-1.0").args([
+                    "-v",
+                    "playbin",
+                    &format!("uri={mpd_url}"),
+                    &format!("video-sink={}", sink("vs")),
+                    &format!("audio-sink={}", sink("as")),
+                ]),
+                Duration::from_secs(8),
+            );
+            let log = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+            assert!(!log.contains("ERROR:"), "GStreamer reported an error on {mpd_url}:\n{log}");
+            let frames = |n: &str| log.matches(&format!("GstFakeSink:{n}: last-message = chain")).count();
+            let (video, audio) = (frames("vs"), frames("as"));
+            assert!(video >= 90 && audio >= 90, "GStreamer rendered too little: {video} video, {audio} audio buffers");
+            eprintln!("GStreamer playbin on {mpd_url}: {video} video, {audio} audio buffers in 8 s");
+            players += 1;
+        } else {
+            eprintln!("SKIP: GStreamer dashdemux not installed");
+        }
     }
-    if gst_has_dash() {
-        // GStreamer's dashdemux plays the live MPD in real time for 8 s
-        // (clock-synced fake sinks); every buffer reaching a sink is logged.
-        let sink = |n: &str| format!("fakesink name={n} sync=true silent=false");
-        let out = run(
-            Command::new("gst-launch-1.0").args([
-                "-v",
-                "playbin",
-                &format!("uri={mpd_url}"),
-                &format!("video-sink={}", sink("vs")),
-                &format!("audio-sink={}", sink("as")),
-            ]),
-            Duration::from_secs(8),
-        );
-        let log = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
-        assert!(!log.contains("ERROR:"), "GStreamer reported an error:\n{log}");
-        let frames = |n: &str| log.matches(&format!("GstFakeSink:{n}: last-message = chain")).count();
-        let (video, audio) = (frames("vs"), frames("as"));
-        assert!(video >= 90 && audio >= 90, "GStreamer rendered too little: {video} video, {audio} audio buffers");
-        eprintln!("GStreamer playbin on the live MPD: {video} video, {audio} audio buffers in 8 s");
-        players += 1;
-    } else {
-        eprintln!("SKIP: GStreamer dashdemux not installed");
-    }
-    assert!(players > 0 || std::env::var_os("CI").is_none(), "CI must play the MPD with at least one player");
+    assert!(players >= 2 || std::env::var_os("CI").is_none(), "CI must play both MPDs with at least one player");
 
     feeder.abort();
     let _ = std::fs::remove_dir_all(&dir);

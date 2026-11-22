@@ -22,6 +22,7 @@ const CFG: HlsConfig = HlsConfig {
     cue_out_tags: false,
     reconnect_grace: Duration::ZERO,
     ts: true,
+    ll_dash: super::LlDash::DEFAULT,
 };
 
 /// 4 s of 256x144 H.264 (30 fps, GOP 60, B-frames) + 48 kHz AAC.

@@ -17,6 +17,10 @@ captions = ["dep:caudal-captions"]
 # allocation is recorded with its backtrace, and `dhat-heap.json` is written
 # when the server exits. Slow; never for production builds.
 dhat-heap = ["dep:dhat"]
+# `caudal_heap_in_use_bytes` / `caudal_heap_free_bytes` in /metrics, from
+# glibc's mallinfo2 (glibc 2.33+). For soaks (bench/soak.py); no effect
+# on other platforms.
+heap-metrics = []
 
 [dependencies]
 caudal-core.workspace = true

@@ -100,7 +100,18 @@ def fetch_metrics():
     m = re.search(r"^caudal_streams (\d+)", body, re.M)
     viewers = sum(int(v) for v in re.findall(r'^caudal_viewers\{[^}]*\} (\d+)', body, re.M))
     bytes_in = sum(int(v) for v in re.findall(r'^caudal_bytes_in_total\{[^}]*\} (\d+)', body, re.M))
-    return {"streams": int(m.group(1)) if m else None, "viewers": viewers, "bytes_in": bytes_in}
+    out = {"streams": int(m.group(1)) if m else None, "viewers": viewers, "bytes_in": bytes_in}
+    # Memory as the server sees it, next to the RSS the OS reports. The
+    # heap pair is only there in a `--features heap-metrics` glibc build.
+    buffered = re.findall(r'^caudal_buffered_bytes\{[^}]*\} (\d+)', body, re.M)
+    out["buffered_mb"] = round(sum(int(v) for v in buffered) / 1e6, 2) if buffered else None
+    for key, metric, scale in (("stream_objects", "caudal_stream_objects", 1),
+                               ("objects_mb", "caudal_stream_objects_bytes", 1e6),
+                               ("heap_mb", "caudal_heap_in_use_bytes", 1e6),
+                               ("heap_free_mb", "caudal_heap_free_bytes", 1e6)):
+        g = re.search(rf"^{metric} (\d+)", body, re.M)
+        out[key] = round(int(g.group(1)) / scale, 2) if g else None
+    return out
 
 
 def hls_url(stream):
@@ -314,7 +325,8 @@ def run(argv):
 
     rows = []
     fieldnames = ["t_s", "ts", "rss_mb", "fd_count", "threads", "cpu_s",
-                  "streams", "viewers", "bytes_in", "client_errors", "client_timeouts", "client_reconnected"]
+                  "streams", "viewers", "bytes_in", "client_errors", "client_timeouts", "client_reconnected",
+                  "buffered_mb", "stream_objects", "objects_mb", "heap_mb", "heap_free_mb"]
     with open(csv_path, "w", newline="") as cf:
         writer = csv.DictWriter(cf, fieldnames=fieldnames)
         writer.writeheader()
@@ -346,6 +358,8 @@ def run(argv):
                     "bytes_in": m.get("bytes_in"), "client_errors": errs, "client_timeouts": tos,
                     "client_reconnected": recs_,
                 }
+                for k in ("buffered_mb", "stream_objects", "objects_mb", "heap_mb", "heap_free_mb"):
+                    row[k] = m.get(k)
                 writer.writerow(row)
                 cf.flush()
                 rows.append(row)
@@ -466,7 +480,9 @@ def read_csv(path):
         out.append({"t_s": num("t_s"), "ts": r.get("ts"), "rss_mb": num("rss_mb"), "fd_count": num("fd_count"),
                      "threads": num("threads"), "cpu_s": num("cpu_s"), "streams": num("streams"),
                      "viewers": num("viewers"), "bytes_in": num("bytes_in"), "client_errors": num("client_errors"),
-                     "client_timeouts": num("client_timeouts"), "client_reconnected": num("client_reconnected")})
+                     "client_timeouts": num("client_timeouts"), "client_reconnected": num("client_reconnected"),
+                     "buffered_mb": num("buffered_mb"), "stream_objects": num("stream_objects"),
+                     "objects_mb": num("objects_mb"), "heap_mb": num("heap_mb"), "heap_free_mb": num("heap_free_mb")})
     return out
 
 
@@ -539,6 +555,17 @@ def verdict(csv_path, meta_path=None):
             fails.append(f"thread count slope {th_slope:.1f}/h, not flat")
         if slope is not None and growth_pct is not None:
             notes.append(f"RSS slope {slope:.3f} MB/h, growth {growth_pct:.1f}%")
+        # Informational, never a failure: the server's own view of its
+        # memory, to tell a leak (these grow too) from allocator retention
+        # (only RSS grows).
+        for key, label in (("objects_mb", "stream buffers (all Stream objects)"), ("buffered_mb", "live buffers"),
+                           ("heap_mb", "heap in use (glibc)"), ("heap_free_mb", "heap free but kept (glibc)"),
+                           ("stream_objects", "Stream objects")):
+            vals = [(r["t_s"] / 3600.0, r[key]) for r in post if r.get(key) is not None]
+            if len(vals) >= 3:
+                ks = lstsq_slope([a for a, _ in vals], [b for _, b in vals])
+                mean = sum(b for _, b in vals) / len(vals)
+                notes.append(f"{label}: slope {ks:+.3f}/h, mean {mean:.1f}, max {max(b for _, b in vals):.1f}")
 
     log_path = meta.get("server_log")
     if log_path and os.path.exists(log_path):

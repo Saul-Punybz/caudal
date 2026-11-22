@@ -45,6 +45,38 @@ pub fn render(
         let _ = writeln!(out, "caudal_frames_in_total{{stream=\"{}\"}} {}", escape(s.name()), stats.frames_in);
     }
 
+    let _ = writeln!(out, "# HELP caudal_buffered_bytes Payload bytes in a live stream's buffer.");
+    let _ = writeln!(out, "# TYPE caudal_buffered_bytes gauge");
+    for s in &streams {
+        let stats = s.stats();
+        let _ = writeln!(out, "caudal_buffered_bytes{{stream=\"{}\"}} {}", escape(s.name()), stats.bytes_buffered);
+    }
+
+    // Ended streams still held by a reader count here too: these two
+    // staying above the live figures is a retention bug.
+    let totals = caudal_core::buffer_totals();
+    let _ = writeln!(
+        out,
+        "# HELP caudal_stream_objects Stream buffers alive in the process, ended ones still held included."
+    );
+    let _ = writeln!(out, "# TYPE caudal_stream_objects gauge");
+    let _ = writeln!(out, "caudal_stream_objects {}", totals.streams);
+    let _ = writeln!(
+        out,
+        "# HELP caudal_stream_objects_bytes Payload bytes held by all stream buffers alive in the process."
+    );
+    let _ = writeln!(out, "# TYPE caudal_stream_objects_bytes gauge");
+    let _ = writeln!(out, "caudal_stream_objects_bytes {}", totals.bytes);
+
+    if let Some((in_use, free)) = crate::malloc_trim::heap() {
+        let _ = writeln!(out, "# HELP caudal_heap_in_use_bytes Heap bytes allocated, as glibc malloc counts them.");
+        let _ = writeln!(out, "# TYPE caudal_heap_in_use_bytes gauge");
+        let _ = writeln!(out, "caudal_heap_in_use_bytes {in_use}");
+        let _ = writeln!(out, "# HELP caudal_heap_free_bytes Freed heap bytes glibc malloc still holds.");
+        let _ = writeln!(out, "# TYPE caudal_heap_free_bytes gauge");
+        let _ = writeln!(out, "caudal_heap_free_bytes {free}");
+    }
+
     if let Some(health) = health {
         let _ = writeln!(out, "# HELP caudal_alerts_active Stream health alerts currently active.");
         let _ = writeln!(out, "# TYPE caudal_alerts_active gauge");

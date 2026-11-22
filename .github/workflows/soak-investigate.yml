@@ -16,20 +16,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Round 3, the proofs: 70 min = 60 min after the verdict's 10-min
-        # warm-up, churn every 2 min. Round 2 (run 44952665812, 30 min):
-        # glibc control +31.1 MB/h, fixed mmap_threshold +21.1, two arenas
-        # +9.0, malloc_trim every 10 s -63.8 (PASS), musl's malloc +723.5.
-        # Round 1 (run 44944552859): publisher restarts alone +28.9,
-        # viewer batches alone +14.5, mimalloc on glibc +9.6 over 60 min.
+        # Round 4: the same 70-min churn run, now recording the server's own
+        # memory figures next to RSS (stream buffers alive, glibc heap in
+        # use vs free), with malloc_trim on and off. Round 3 (run
+        # 44957285864, 70 min): glibc + trim +42.6 MB/h (one +35 MB step
+        # at ~37 min, flat before and after), musl + mimalloc +16.3.
+        # Round 2 (run 44952665812, 30 min): glibc control +31.1, fixed
+        # mmap_threshold +21.1, two arenas +9.0, trim every 10 s -63.8,
+        # musl's malloc +723.5. Round 1 (run 44944552859): publisher
+        # restarts alone +28.9, viewer batches alone +14.5, mimalloc on
+        # glibc +9.6 over 60 min.
         include:
-          # The default glibc build: malloc_trim every 10 s.
-          - name: glibc-trim-70m
+          - name: glibc-trim-heap-70m
             minutes: 70
-          # The release build: musl + mimalloc.
-          - name: musl-mimalloc-70m
+            features: heap-metrics
+          - name: glibc-notrim-heap-70m
             minutes: 70
-            musl: true
+            features: heap-metrics
+            env: CAUDAL_MALLOC_TRIM_SECS=0
     name: soak ${{ matrix.name }}
     env:
       MINUTES: ${{ matrix.minutes || 30 }}
@@ -63,6 +67,8 @@ jobs:
             cargo zigbuild --release -p caudal --target x86_64-unknown-linux-musl
             mkdir -p target/release
             cp target/x86_64-unknown-linux-musl/release/caudal target/release/caudal
+          elif [ -n "${{ matrix.features }}" ]; then
+            cargo build --release -p caudal --features "${{ matrix.features }}"
           else
             cargo build --release -p caudal
           fi

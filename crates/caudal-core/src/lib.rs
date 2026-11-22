@@ -14,4 +14,6 @@ pub use media::{AudioParams, Codec, Cue, CueKind, Frame, TrackId, TrackInfo, Tra
 pub use net::Cidr;
 pub use registry::{DEMAND_TIMEOUT, Demand, DemandFuture, PublishError, Publisher, Registry};
 pub use session::{KickResult, Quality, Selector, Session, SessionInfo, Sessions};
-pub use stream::{BufferConfig, Event, PushError, StartAt, Stream, StreamStats, Subscriber};
+pub use stream::{
+    BufferConfig, BufferTotals, Event, PushError, StartAt, Stream, StreamStats, Subscriber, buffer_totals,
+};

@@ -58,3 +58,19 @@ pub fn spawn() {
 /// Other platforms: nothing to do (musl uses mimalloc, see main.rs).
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub fn spawn() {}
+
+/// glibc's own count of heap bytes in use and free-but-kept, from
+/// `mallinfo2` (glibc 2.33+, hence opt-in: `--features heap-metrics`).
+/// For soaks: RSS growing while `in_use` stays flat is the allocator
+/// keeping freed memory, not a leak.
+#[cfg(all(feature = "heap-metrics", target_os = "linux", target_env = "gnu"))]
+pub fn heap() -> Option<(usize, usize)> {
+    // SAFETY: mallinfo2 takes no arguments and returns a plain struct.
+    let m = unsafe { libc::mallinfo2() };
+    Some((m.uordblks + m.hblkhd, m.fordblks))
+}
+
+#[cfg(not(all(feature = "heap-metrics", target_os = "linux", target_env = "gnu")))]
+pub fn heap() -> Option<(usize, usize)> {
+    None
+}

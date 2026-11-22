@@ -654,6 +654,9 @@ fn classify_srt(src: &str) -> Result<(Pull, Option<String>), String> {
 struct AutoPushOut {
     stream: String,
     url: String,
+    /// WHIP only: MistServer's `?auth=` target parameter, sent as
+    /// `Authorization: Bearer`; Caudal's `token`.
+    token: Option<String>,
     /// `Some((start, stop))` (RFC 3339) when MistServer had a schedule.
     schedule: Option<(Option<String>, Option<String>)>,
 }
@@ -673,11 +676,33 @@ fn json_unix(v: Option<&Json>) -> Option<i64> {
     .filter(|&t| t > 0)
 }
 
+/// What [`auto_push_url`] makes of a target: the URL, a caveat for the
+/// report, and a WHIP bearer token.
+type AutoPushUrl = (String, Option<String>, Option<String>);
+
 /// MistServer push target -> the URL `[[push.auto]]` takes, or why not.
-fn auto_push_url(target: &str) -> Result<(String, Option<String>), String> {
+fn auto_push_url(target: &str) -> Result<AutoPushUrl, String> {
     let lower = target.to_ascii_lowercase();
-    let (url, caveat) = if lower.starts_with("rtmp://") || lower.starts_with("rtmps://") || lower.starts_with("srt://")
-    {
+    let mut token = None;
+    let (url, caveat) = if let Some(rest) = strip_scheme(target, &["whips://", "whip://"]) {
+        // MistServer (`output_webrtc.cpp`): `whip://` POSTs over plain HTTP,
+        // `whips://` over HTTPS. Caudal: `whip://` is HTTPS, `whip+http://`
+        // plain HTTP. The target's query is MistServer's target parameters
+        // (stripped before the POST); `auth` is the bearer token.
+        let scheme = if lower.starts_with("whips://") { "whip" } else { "whip+http" };
+        let (base, query) = rest.split_once('?').map_or((rest, None), |(b, q)| (b, Some(q)));
+        let mut dropped = Vec::new();
+        for kv in query.into_iter().flat_map(|q| q.split('&')).filter(|kv| !kv.is_empty()) {
+            match kv.split_once('=') {
+                Some(("auth", v)) if !v.is_empty() => token = Some(v.to_owned()),
+                _ => dropped.push(kv.split_once('=').map_or(kv, |(k, _)| k).to_owned()),
+            }
+        }
+        let caveat = (!dropped.is_empty()).then(|| {
+            format!("MistServer target parameters {dropped:?} dropped (Caudal reads only `auth`, as `token`)")
+        });
+        (format!("{scheme}://{base}"), caveat)
+    } else if lower.starts_with("rtmp://") || lower.starts_with("rtmps://") || lower.starts_with("srt://") {
         (target.to_owned(), None)
     } else if let Some(rest) = strip_scheme(target, &["tsudp://", "udp://"]) {
         split_udp_query(&format!("udp://{rest}"))
@@ -687,7 +712,7 @@ fn auto_push_url(target: &str) -> Result<(String, Option<String>), String> {
         let scheme = target.split_once("://").map_or(target, |(s, _)| s);
         return Err(format!(
             "`{scheme}://` targets have no Caudal push engine (it pushes rtmp(s)://, srt://, and MPEG-TS over \
-             udp:// / rtp://; `whip://`, `tstcp://`, `rist://`, `cmaf://` and HTTP targets are not built)"
+             udp:// / rtp://, and WebRTC over whip:// / whips://; `tstcp://`, `rist://`, `cmaf://` and HTTP targets are not built)"
         ));
     };
     let vars = mist_variables_in(&url);
@@ -696,7 +721,7 @@ fn auto_push_url(target: &str) -> Result<(String, Option<String>), String> {
             "uses MistServer target variables {vars:?}; `[[push.auto]]` expands only `$stream` and `$basename`"
         ));
     }
-    Ok((url, caveat))
+    Ok((url, caveat, token))
 }
 
 fn split_udp_query(url: &str) -> (String, Option<String>) {
@@ -1179,7 +1204,7 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
             continue;
         }
 
-        let (url, caveat) = match auto_push_url(target) {
+        let (url, caveat, token) = match auto_push_url(target) {
             Ok(v) => v,
             Err(reason) => {
                 notes.push(note(NoteKind::NoEquivalent, mist_key, format!("target `{target}`: {reason}")));
@@ -1195,6 +1220,7 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
             "url": url,
             "start": start,
             "stop": stop,
+            "token": token,
         })) {
             Ok(r) => r,
             Err(e) => {
@@ -1251,7 +1277,7 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
                     q(&url)
                 ),
             ));
-            b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, schedule: Some((start, stop)) });
+            b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, token, schedule: Some((start, stop)) });
             continue;
         }
 
@@ -1264,7 +1290,7 @@ fn import_auto_push(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>)
             NoteKind::Translated
         };
         notes.push(note(kind, mist_key, detail));
-        b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, schedule: None });
+        b.auto_pushes.push(AutoPushOut { stream: stream.to_owned(), url, token, schedule: None });
     }
 }
 
@@ -1535,6 +1561,9 @@ fn build_toml(c: &BuiltConfig) -> String {
     }
     for p in &c.auto_pushes {
         let _ = write!(out, "\n[[push.auto]]\nstreams = [{}]\nurl = {}\n", q(&p.stream), q(&p.url));
+        if let Some(t) = &p.token {
+            let _ = writeln!(out, "token = {}", q(t));
+        }
         if let Some((start, stop)) = &p.schedule {
             if let Some(s) = start {
                 let _ = writeln!(out, "start = \"{s}\"");
@@ -1896,9 +1925,28 @@ mod tests {
     }
 
     #[test]
+    fn auto_push_whip_targets_become_webrtc_pushes() {
+        let mist = r##"{"auto_push":[
+            {"stream":"cam1","target":"whip://10.0.0.7:8080/whip/cam1"},
+            {"stream":"main","target":"whips://edge.example/whip/$stream?auth=s3cret&rate=2"}
+        ]}"##;
+        let (result, cfg) = imported(mist);
+        let rules: Vec<_> = cfg.push.auto.iter().map(|r| (r.url.as_str(), r.token.as_deref())).collect();
+        assert_eq!(
+            rules,
+            [("whip+http://10.0.0.7:8080/whip/cam1", None), ("whip://edge.example/whip/$stream", Some("s3cret"))],
+            "MistServer whip:// is plain HTTP, whips:// HTTPS; ?auth= is the bearer token\n{}",
+            result.toml
+        );
+        assert!(cfg.push.auto.iter().all(|r| r.kind() == Ok(config::AutoPushKind::Whip)));
+        assert!(has(&result, NoteKind::Translated, "cam1", "whip+http://"));
+        assert!(has(&result, NoteKind::Approximated, "main", "rate"));
+    }
+
+    #[test]
     fn auto_push_unsupported_targets_and_selectors_are_reported() {
         let mist = r##"{"auto_push":[
-            {"stream":"main","target":"whip://edge.example/whip/main"},
+            {"stream":"main","target":"tstcp://edge.example:9000"},
             {"stream":"main","target":"rtmp://x.example/live/$datetime"},
             {"stream":"#cams","target":"rtmp://x.example/live/$stream"},
             {"stream":"live+","target":"rtmp://x.example/live/$stream"},
@@ -1906,7 +1954,7 @@ mod tests {
         ]}"##;
         let (result, cfg) = imported(mist);
         assert!(cfg.push.auto.is_empty(), "{}", result.toml);
-        assert!(has(&result, NoteKind::NoEquivalent, "main", "whip://"));
+        assert!(has(&result, NoteKind::NoEquivalent, "main", "tstcp://"));
         assert!(has(&result, NoteKind::NoEquivalent, "main", "datetime"));
         assert!(has(&result, NoteKind::NoEquivalent, "#cams", "tag"));
         assert!(has(&result, NoteKind::NoEquivalent, "live+", "wildcard"));

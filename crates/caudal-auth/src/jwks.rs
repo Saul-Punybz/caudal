@@ -41,7 +41,7 @@ impl JwksCache {
                 handle.spawn(async move {
                     loop {
                         if let Err(err) = cache.refresh_now().await {
-                            tracing::warn!(url = %cache.url, error = %err, "jwks fetch failed, keeping last good keys");
+                            tracing::warn!(url = %caudal_core::net::redact_url(&cache.url), error = %err.without_url(), "jwks fetch failed, keeping last good keys");
                         }
                         tokio::time::sleep(refresh).await;
                     }
@@ -79,7 +79,7 @@ impl JwksCache {
             return;
         }
         if let Err(err) = self.refresh_now().await {
-            tracing::warn!(url = %self.url, error = %err, "jwks refetch on unknown kid failed");
+            tracing::warn!(url = %caudal_core::net::redact_url(&self.url), error = %err.without_url(), "jwks refetch on unknown kid failed");
         }
     }
 

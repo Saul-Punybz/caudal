@@ -77,7 +77,8 @@ is reported and skipped.
 | `rtmp://`, `rtmps://`, `srt://` | `[[push.auto]]` `streams = ["<stream>"]`, same URL (`$stream`, `$basename` work) |
 | `tsudp://host:port`, `tsrtp://host:port` | `[[push.auto]]` with `udp://` / `rtp://` (unicast or multicast) |
 | a file path | `[record]` `streams += ["<stream>"]` (Caudal picks the file layout: `<dir>/<stream>/<timestamp>/`) |
-| `whip://`, `tstcp://`, `rist://`, `cmaf://`, HTTP | not imported |
+| `whip://host/path` (MistServer: WHIP over plain HTTP), `whips://` (HTTPS) | `[[push.auto]]` with `whip+http://` / `whip://` (Caudal's names for the same two); `?auth=<token>` becomes `token`, other target parameters are reported and dropped |
+| `tstcp://`, `rist://`, `cmaf://`, HTTP | not imported |
 
 Also not imported: `#tag` and `name+` stream selectors, and targets that
 use MistServer-only variables (`$datetime`, `$year`, `$wildcard`, `$uuid`,

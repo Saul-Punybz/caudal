@@ -96,7 +96,11 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # publish = true
 # play = true
 # streams = ["live-*"]
-# [[auth.key_permissions]]        # for a JWKS key, by kid
+
+# With JWKS instead of `secret`, the same limits per signing key, by kid:
+# [auth]
+# jwks_url = "https://auth.example.com/.well-known/jwks.json"
+# [[auth.key_permissions]]
 # kid = "encoders-2026"
 # publish = true
 # play = false

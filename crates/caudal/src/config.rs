@@ -2530,7 +2530,11 @@ mod tests {
         let block_with =
             |needle: &str| *blocks.iter().find(|&&(a, b)| lines[a..b].iter().any(|l| l.contains(needle))).unwrap();
         // Blocks that only make sense together with another one.
-        let needs = [("# tls_bind = \"0.0.0.0:1936\"", "# [tls]"), ("# [[access.rules]]", "# [access]")];
+        let needs = [
+            ("# tls_bind = \"0.0.0.0:1936\"", "# [tls]"),
+            ("# [[access.rules]]", "# [access]"),
+            ("# [auth.secret_permissions]", "# [auth]"),
+        ];
         // Placeholders the reader replaces, with values of the right shape.
         let phc = caudal_admin::hash_password("example passphrase").unwrap();
         let placeholders =

@@ -99,6 +99,25 @@ pub fn render_auth_hook(out: &mut String, stats: &caudal_auth::GateHookStats) {
     }
 }
 
+/// `caudal_stream_key_requests_total`: publish/play requests checked
+/// against the stream key table. Labels are the action and the result,
+/// never a key or a stream name.
+pub fn render_stream_keys(out: &mut String, stats: &caudal_auth::StreamKeyStats) {
+    let _ = writeln!(
+        out,
+        "# HELP caudal_stream_key_requests_total Requests checked against the stream keys, by action and result \
+         (hit: came with a key; miss: the name was not a key; refused: the stream takes its key only)."
+    );
+    let _ = writeln!(out, "# TYPE caudal_stream_key_requests_total counter");
+    for m in stats.snapshot() {
+        let _ = writeln!(
+            out,
+            "caudal_stream_key_requests_total{{action=\"{}\",result=\"{}\"}} {}",
+            m.action, m.result, m.count
+        );
+    }
+}
+
 /// `caudal_rewrite_hook_*`: calls to `[auth.rewrite]` by outcome, requests
 /// answered from its cache, and time spent waiting on it.
 pub fn render_rewrite_hook(out: &mut String, stats: &caudal_auth::RewriteHookStats) {

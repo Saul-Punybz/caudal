@@ -902,6 +902,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "caudal-core",
  "ed25519-dalek 2.2.0",
  "http",
  "jsonwebtoken",
@@ -911,7 +912,9 @@ dependencies = [
  "rsa 0.9.10",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "standardwebhooks",
+ "subtle",
  "thiserror 2.0.20",
  "time",
  "tokio",

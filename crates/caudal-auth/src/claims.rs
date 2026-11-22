@@ -1,5 +1,9 @@
 //! Token claims shape: `sub` (stream name or `prefix*` pattern), `act`
-//! (a single action or an array of them) and the standard `exp`/`nbf`.
+//! (a single action or an array of them), the standard `exp`/`nbf`, and
+//! the optional `ipa` (MistServer's claim: the client IP or CIDR the token
+//! is bound to).
+
+use std::net::IpAddr;
 
 use serde::Deserialize;
 
@@ -15,6 +19,39 @@ pub(crate) struct Claims {
     #[serde(default)]
     #[allow(dead_code)]
     pub nbf: Option<i64>,
+    /// Absent: the token is good from any address (as before `ipa`).
+    #[serde(default)]
+    pub ipa: Option<OneOrMany>,
+}
+
+/// A claim that is a bare string or an array of strings.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn items(&self) -> &[String] {
+        match self {
+            OneOrMany::One(s) => std::slice::from_ref(s),
+            OneOrMany::Many(v) => v,
+        }
+    }
+}
+
+/// Whether `ip` is inside one of the `ipa` entries (an address or a CIDR).
+/// `Err` when an entry does not parse: the token is malformed. An
+/// IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is judged as IPv4.
+pub(crate) fn ipa_allows(ipa: &OneOrMany, ip: IpAddr) -> Result<bool, ()> {
+    let ip = ip.to_canonical();
+    let mut any = false;
+    for entry in ipa.items() {
+        let cidr = caudal_core::Cidr::parse(entry).map_err(|_| ())?;
+        any |= cidr.contains(ip);
+    }
+    Ok(any)
 }
 
 /// `act` is either a bare string or an array of strings.
@@ -64,6 +101,19 @@ mod tests {
     fn wildcard_match() {
         assert!(sub_matches("*", "anything"));
         assert!(sub_matches("*", ""));
+    }
+
+    #[test]
+    fn ipa_entries() {
+        let one = OneOrMany::One("203.0.113.7".into());
+        assert_eq!(ipa_allows(&one, "203.0.113.7".parse().unwrap()), Ok(true));
+        assert_eq!(ipa_allows(&one, "::ffff:203.0.113.7".parse().unwrap()), Ok(true), "mapped v4");
+        assert_eq!(ipa_allows(&one, "203.0.113.8".parse().unwrap()), Ok(false));
+        let many = OneOrMany::Many(vec!["10.0.0.0/8".into(), "2001:db8::/32".into()]);
+        assert_eq!(ipa_allows(&many, "10.1.2.3".parse().unwrap()), Ok(true));
+        assert_eq!(ipa_allows(&many, "2001:db8::1".parse().unwrap()), Ok(true));
+        assert_eq!(ipa_allows(&many, "192.0.2.1".parse().unwrap()), Ok(false));
+        assert_eq!(ipa_allows(&OneOrMany::One("nope".into()), "10.0.0.1".parse().unwrap()), Err(()));
     }
 
     #[test]

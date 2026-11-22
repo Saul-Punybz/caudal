@@ -27,8 +27,11 @@ deny_cache_secs = 5         # remember a denial or a failure this long
 ## Order
 
 Every protocol goes through the same check, in this order. The first refusal
-ends it. If `[auth.rewrite]` is set ([REWRITE-HOOK.md](REWRITE-HOOK.md)), it
-runs first and every step below judges the name it returned:
+ends it. A stream key ([STREAM-KEYS.md](STREAM-KEYS.md)) is looked up first:
+it names the stream, skips the rewrite and stands in for the token (step 3),
+and the hook then gets no token. Otherwise, if `[auth.rewrite]` is set
+([REWRITE-HOOK.md](REWRITE-HOOK.md)), it runs first and every step below
+judges the name it returned:
 
 1. Cluster node tokens (play only, inside a `[cluster]`).
 2. `[[access.rules]]` (IP / CIDR / country).

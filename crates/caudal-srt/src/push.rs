@@ -64,16 +64,16 @@ async fn send_until_ended(push: &SrtPush, stream: &Arc<Stream>) {
     while !stream.is_ended() {
         match connect(&push.url).await {
             Ok(socket) => {
-                tracing::info!(url = %push.url, stream = %push.stream, "srt push connected");
+                tracing::info!(url = %caudal_core::net::redact_url(&push.url), stream = %push.stream, "srt push connected");
                 let sent_any = run_push_session(socket, stream).await;
                 if stream.is_ended() {
                     return;
                 }
-                tracing::info!(url = %push.url, stream = %push.stream, "srt push connection ended; reconnecting");
+                tracing::info!(url = %caudal_core::net::redact_url(&push.url), stream = %push.stream, "srt push connection ended; reconnecting");
                 backoff = if sent_any { BACKOFF_MIN } else { (backoff * 2).min(BACKOFF_MAX) };
             }
             Err(err) => {
-                tracing::warn!(url = %push.url, stream = %push.stream, %err, "srt push connect failed");
+                tracing::warn!(url = %caudal_core::net::redact_url(&push.url), stream = %push.stream, %err, "srt push connect failed");
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
         }
@@ -124,7 +124,8 @@ async fn run_push_session(socket: SrtSocket, stream: &Arc<Stream>) -> bool {
 /// as a caller.
 pub(crate) async fn connect(url: &str) -> Result<SrtSocket, String> {
     check_caller_url(url)?;
-    let (addr, opts) = parse_url(url).ok_or_else(|| format!("invalid SRT URL: {url}"))?;
+    let (addr, opts) =
+        parse_url(url).ok_or_else(|| format!("invalid SRT URL: {}", caudal_core::net::redact_url(url)))?;
     SrtSocket::connect(addr, opts).await.map_err(|err| err.to_string())
 }
 
@@ -140,10 +141,16 @@ pub fn check_caller_url(url: &str) -> Result<(), String> {
             "caller" | "client" => {}
             "rendezvous" => {
                 return Err(format!(
-                    "{url}: SRT rendezvous mode is not supported (the SRT library, rsrt, has caller and listener only)"
+                    "{}: SRT rendezvous mode is not supported (the SRT library, rsrt, has caller and listener only)",
+                    caudal_core::net::redact_url(url)
                 ));
             }
-            other => return Err(format!("{url}: SRT mode={other} not supported here; pulls and pushes are callers")),
+            other => {
+                return Err(format!(
+                    "{}: SRT mode={other} not supported here; pulls and pushes are callers",
+                    caudal_core::net::redact_url(url)
+                ));
+            }
         }
     }
     Ok(())

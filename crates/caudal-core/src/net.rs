@@ -1,7 +1,7 @@
 //! IP address helpers shared by every protocol: CIDR parsing/matching (used
 //! by `[server] trusted_proxies` and by `caudal-access`'s `[[access]]`
 //! rules) and resolving the real client address behind a trusted reverse
-//! proxy.
+//! proxy. Also [`redact_url`], for showing a configured URL in logs.
 
 use std::net::IpAddr;
 
@@ -90,9 +90,65 @@ pub fn resolve_forwarded(peer: IpAddr, forwarded_for: Option<&str>, trusted: &[C
     peer
 }
 
+/// `url` safe to log: the password of a `user:pass@` and every query value
+/// (`?token=****&passphrase=****`; a bare `?key` becomes `?****`) masked.
+/// For URLs whose secrets live there: HTTP(S) pulls with a signed CDN
+/// token, SRT `passphrase` / `streamid`. Not for RTMP, whose key is the
+/// last path segment. Anything without `://` is returned unchanged.
+pub fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_owned() };
+    let (rest, fragment) = rest.split_once('#').map_or((rest, None), |(r, f)| (r, Some(f)));
+    let (before_query, query) = rest.split_once('?').map_or((rest, None), |(b, q)| (b, Some(q)));
+    let (authority, path) = before_query.split_once('/').map_or((before_query, None), |(a, p)| (a, Some(p)));
+    let mut out = format!("{scheme}://");
+    match authority.rsplit_once('@') {
+        Some((userinfo, host)) => match userinfo.split_once(':') {
+            Some((user, _)) => out.push_str(&format!("{user}:****@{host}")),
+            None => out.push_str(&format!("{userinfo}@{host}")),
+        },
+        None => out.push_str(authority),
+    }
+    if let Some(p) = path {
+        out.push('/');
+        out.push_str(p);
+    }
+    if let Some(q) = query {
+        out.push('?');
+        let masked: Vec<String> = q
+            .split('&')
+            .map(|kv| match kv.split_once('=') {
+                Some((k, _)) => format!("{k}=****"),
+                None if kv.is_empty() => String::new(),
+                None => "****".to_owned(),
+            })
+            .collect();
+        out.push_str(&masked.join("&"));
+    }
+    if fragment.is_some() {
+        out.push_str("#****");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_url_masks_passwords_and_query_values() {
+        assert_eq!(
+            redact_url("https://u:hunter2@cdn.example/live/index.m3u8?token=abc&exp=1"),
+            "https://u:****@cdn.example/live/index.m3u8?token=****&exp=****"
+        );
+        assert_eq!(
+            redact_url("srt://203.0.113.7:9000?streamid=publish/main&passphrase=s3cret"),
+            "srt://203.0.113.7:9000?streamid=****&passphrase=****"
+        );
+        assert_eq!(redact_url("http://10.0.0.5:8080/stream.ts"), "http://10.0.0.5:8080/stream.ts");
+        assert_eq!(redact_url("http://h/a?sig"), "http://h/a?****");
+        assert_eq!(redact_url("http://user@h/a#frag"), "http://user@h/a#****");
+        assert_eq!(redact_url("not a url"), "not a url");
+    }
 
     #[test]
     fn parses_bare_address_as_host_route() {

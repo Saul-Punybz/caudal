@@ -287,7 +287,8 @@ pub enum EditError {
 
 /// Parses and validates `text` as a whole config.
 pub fn check(text: &str) -> Result<Config, String> {
-    let cfg: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+    let mut cfg: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+    cfg.read_external()?;
     cfg.validate()?;
     Ok(cfg)
 }

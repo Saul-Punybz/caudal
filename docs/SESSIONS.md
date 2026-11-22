@@ -67,3 +67,19 @@ cannot be blocked.
 Answers: `200 {"kicked": 17, "blocked": true}`, `404` for an unknown id,
 `400` for a block over a day. Blocks and tags live in memory and end on
 restart.
+
+## Metrics
+
+`GET /metrics` reports the same session table, per protocol:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `caudal_sessions{protocol}` | gauge | Viewer sessions open now. A protocol that has had a session stays listed at 0. |
+| `caudal_bytes_out_total{protocol}` | counter | Media bytes sent to viewers since start. A session's bytes stay in the total after it closes; each byte is counted once. |
+
+`/metrics` also carries the standard process metrics: `process_cpu_seconds_total`,
+`process_resident_memory_bytes`, `process_virtual_memory_bytes`,
+`process_open_fds`, `process_start_time_seconds` and `process_threads`. A
+platform that cannot report one leaves it out instead of printing a made-up
+value: Windows has no `process_virtual_memory_bytes` or `process_threads`, and
+there `process_open_fds` is the handle count.

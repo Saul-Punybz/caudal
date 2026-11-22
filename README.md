@@ -6,12 +6,20 @@ people actually use in 2026. It is a rewrite of
 drops its crash classes.
 
 **Status:** pre-release, v0.1 in progress. Every core protocol is wired up and
-tested: RTMP/E-RTMP, SRT, WHIP, RTSP and MoQ ingest; LL-HLS, classic TS-segment
+tested: RTMP/E-RTMP (and RTMPS), SRT, WHIP, RTSP and MoQ ingest, plus pulls from
+SRT, UDP/RTP, HTTP-TS, HLS, RTMP(S) and RTSP sources
+([docs/PULL-INPUTS.md](docs/PULL-INPUTS.md)); LL-HLS, classic TS-segment
 HLS ([docs/HLS.md](docs/HLS.md)), WHEP, MoQ, SRT, RTSP and RTMP
 ([docs/RTMP.md](docs/RTMP.md)) output, audio-only internet radio URLs
 ([docs/AUDIO.md](docs/AUDIO.md)), progressive fMP4 over HTTP
-([docs/MP4.md](docs/MP4.md)), plus IP multicast; recording/VOD/clips, transcoding ladders, 24/7
-channels from files, origin-edge clustering, admin login, and live captions.
+([docs/MP4.md](docs/MP4.md)), plus IP multicast; pushes out over RTMP(S), SRT,
+UDP and WHIP ([docs/WHIP-PUSH.md](docs/WHIP-PUSH.md)), with pattern-matched,
+scheduled auto-pushes ([docs/AUTO-PUSH.md](docs/AUTO-PUSH.md));
+recording/VOD/clips, transcoding ladders, 24/7 channels from files,
+origin-edge clustering, admin login, blocking auth and rewrite hooks
+([docs/AUTH-HOOK.md](docs/AUTH-HOOK.md), [docs/REWRITE-HOOK.md](docs/REWRITE-HOOK.md)),
+viewer sessions ([docs/SESSIONS.md](docs/SESSIONS.md)) and live captions.
+Linux and macOS, plus Windows builds ([docs/WINDOWS.md](docs/WINDOWS.md)).
 See [PLAN.md](PLAN.md) for the full milestone list and [STATUS.md](STATUS.md)
 for exactly where things stand. A side-by-side benchmark against MediaMTX
 v1.21 is in [docs/research/BENCH-MEDIAMTX.md](docs/research/BENCH-MEDIAMTX.md)

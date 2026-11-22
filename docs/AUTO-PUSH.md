@@ -167,7 +167,9 @@ connection; only added, removed or changed ones start or stop.
   `caudal_multicast_*`.
 
 Secrets are masked in every listing as for static pushes: the last path
-segment of an RTMP URL (the stream key), SRT `passphrase` and `streamid`.
+segment of an RTMP URL (the stream key), SRT `passphrase` and `streamid`,
+a WHIP URL's key-like path segments and query values; `token` is never
+listed.
 
 ## Not yet
 
@@ -175,7 +177,6 @@ MistServer's general `start_rule`/`end_rule` conditions (`[variable,
 operator, value]`) are not implemented, nor conditions on tracks or viewer
 counts (see above). `inhibit` here takes stream patterns; whether this
 matches MistServer's `inhibit` semantics exactly was not checked against a
-running MistServer. `caudal import-mist` does not yet translate
-`scheduletime`/`completetime` into `start`/`stop`. Runtime overrides of
+running MistServer. Runtime overrides of
 `enabled` do not survive a restart. Adding rules from the API is not
 implemented either.

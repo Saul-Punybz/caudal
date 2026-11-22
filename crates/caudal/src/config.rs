@@ -2357,10 +2357,10 @@ mod tests {
                 // Features compiled out reject their section with a clear
                 // message; a file the example names (the GeoIP database) is
                 // not on this machine.
-                assert!(
-                    e.contains(crate::captions::NOT_BUILT) || e.contains("(os error 2)"),
-                    "{what}: does not validate: {e}"
-                );
+                // Not found: os error 2 on Unix; on Windows 2 (file) or 3
+                // (a directory of the path is missing, as `/etc/caudal/`).
+                let missing_file = e.contains("(os error 2)") || (cfg!(windows) && e.contains("(os error 3)"));
+                assert!(e.contains(crate::captions::NOT_BUILT) || missing_file, "{what}: does not validate: {e}");
             }
         };
         check("the file as shipped", EXAMPLE);

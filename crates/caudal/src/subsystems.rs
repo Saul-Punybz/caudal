@@ -90,12 +90,40 @@ impl caudal_core::Gate for CombinedGate {
                 caudal_core::Access::Publish => caudal_auth::Action::Publish,
                 caudal_core::Access::Play => caudal_auth::Action::Play,
             };
-            self.auth.check(action, stream, token).await.map_err(|e| match e {
+            self.auth.check_request(action, stream, token, ip).await.map_err(|e| match e {
                 caudal_auth::AuthError::Missing => caudal_core::Denied::Missing,
                 other => caudal_core::Denied::Refused(other.to_string()),
             })?;
             if let Some(hook) = &self.hook {
                 hook.check(action, stream, token, ip).await.map_err(caudal_core::Denied::Refused)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// A valid stream key stands in for the token; the network rules and
+    /// `[auth.hook]` still judge the stream (the hook gets no token, so a
+    /// key never reaches it).
+    fn check_keyed<'a>(
+        &'a self,
+        access: caudal_core::Access,
+        stream: &'a str,
+        ip: Option<std::net::IpAddr>,
+    ) -> caudal_core::GateFuture<'a> {
+        Box::pin(async move {
+            if let Err(denied) = self.access.check(access, stream, ip) {
+                tracing::info!(
+                    stream, ip = ?ip, reason = denied.reason, detail = %denied.detail,
+                    action = ?access, "access denied",
+                );
+                return Err(caudal_core::Denied::Refused(denied.to_string()));
+            }
+            if let Some(hook) = &self.hook {
+                let action = match access {
+                    caudal_core::Access::Publish => caudal_auth::Action::Publish,
+                    caudal_core::Access::Play => caudal_auth::Action::Play,
+                };
+                hook.check(action, stream, None, ip).await.map_err(caudal_core::Denied::Refused)?;
             }
             Ok(())
         })
@@ -132,12 +160,13 @@ impl caudal_core::Rewrite for RewriteRouter {
     }
 }
 
-/// The `[auth.hook]` and `[auth.rewrite]` counters: one set for the
-/// process, so `/metrics` survives reloads of `[auth]`.
+/// The `[auth.hook]`, `[auth.rewrite]` and stream key counters: one set
+/// for the process, so `/metrics` survives reloads of `[auth]`.
 #[derive(Clone, Default)]
 pub struct HookStats {
     pub gate: Arc<caudal_auth::GateHookStats>,
     pub rewrite: Arc<caudal_auth::RewriteHookStats>,
+    pub stream_keys: Arc<caudal_auth::StreamKeyStats>,
 }
 
 /// Applies the loaded `[auth]` section to the registry: reinstalls the
@@ -189,6 +218,18 @@ fn apply_auth(
             registry.set_rewrite(Arc::new(RewriteRouter { hook: Arc::new(hook), cluster: cluster.clone() }));
         }
         None => registry.clear_rewrite(),
+    }
+    let keys = section.stream_keys().expect("validated");
+    if keys.is_empty() {
+        registry.clear_stream_keys();
+    } else {
+        // Counts only, never the keys.
+        tracing::info!(keys = keys.len(), keys_only = section.stream_keys_only, "stream keys enabled");
+        registry.set_stream_keys(Arc::new(caudal_auth::StreamKeyTable::new(
+            &keys,
+            section.stream_keys_only,
+            hook_stats.stream_keys.clone(),
+        )));
     }
     registry.set_gate(Arc::new(CombinedGate {
         auth: caudal_auth::Authorizer::new(auth),
@@ -785,6 +826,7 @@ mod tests {
             keys: Some(caudal_auth::KeySource::Secret(secret.into())),
             publish: true,
             play: false,
+            ..Default::default()
         };
         let access = caudal_access::AccessConfig {
             rules: vec![caudal_access::Rule {
@@ -872,7 +914,12 @@ mod tests {
         )
         .unwrap();
         let gate = CombinedGate {
-            auth: caudal_auth::Authorizer::new(caudal_auth::AuthConfig { keys: None, publish: false, play: false }),
+            auth: caudal_auth::Authorizer::new(caudal_auth::AuthConfig {
+                keys: None,
+                publish: false,
+                play: false,
+                ..Default::default()
+            }),
             access: caudal_access::AccessConfig { rules: Vec::new(), geoip_db: None }.checker().unwrap(),
             cluster: None,
             hook: Some(Arc::new(hook)),
@@ -898,6 +945,7 @@ mod tests {
             keys: Some(caudal_auth::KeySource::Secret("0123456789abcdef0123456789abcdef".into())),
             publish: true,
             play: true,
+            ..Default::default()
         };
         let access = caudal_access::AccessConfig { rules: Vec::new(), geoip_db: None }.checker().unwrap();
         let gate = CombinedGate {
@@ -914,5 +962,56 @@ mod tests {
         let other = caudal_cluster::Secret::new("some-other-secret!").unwrap().mint("edge-1");
         assert!(matches!(gate.check(Access::Play, "cam", Some(&other), None).await, Err(Denied::Refused(_))));
         assert_eq!(gate.check(Access::Play, "cam", None, None).await, Err(Denied::Missing));
+    }
+
+    /// Through `Registry::resolve` with the real gate, from a TOML
+    /// `[auth]`: a key stands in for the token but not for
+    /// `[[access.rules]]`; an `ipa` token plays only from its address.
+    #[tokio::test]
+    async fn stream_keys_and_ipa_through_resolve() {
+        let secret = "0123456789abcdef0123456789abcdef";
+        let cfg: Config = toml::from_str(&format!(
+            "[auth]\nsecret = \"{secret}\"\npublish = true\nplay = true\n\
+             [[auth.stream_keys]]\nkey = \"sk_cam_000111222333\"\nstream = \"cam\"\n\
+             [[access.rules]]\nstreams = [\"cam\"]\npublish_deny = [\"192.0.2.0/24\"]\n"
+        ))
+        .unwrap();
+        cfg.validate().unwrap();
+        let registry = caudal_core::Registry::new();
+        let access = cfg.access.to_access_config().unwrap().checker().unwrap();
+        apply_auth(&registry, &access, &None, &HookStats::default(), &cfg.auth);
+
+        let ok_ip = "198.51.100.4".parse().ok();
+        let blocked_ip = "192.0.2.9".parse().ok();
+        let key = "sk_cam_000111222333";
+        assert_eq!(registry.resolve(Access::Publish, "rtmp", key, None, ok_ip).await, Ok("cam".into()));
+        assert!(matches!(
+            registry.resolve(Access::Publish, "rtmp", key, None, blocked_ip).await,
+            Err(Denied::Refused(_))
+        ));
+        assert_eq!(registry.resolve(Access::Publish, "rtmp", "cam", None, ok_ip).await, Err(Denied::Missing));
+        assert_eq!(
+            registry.resolve(Access::Publish, "rtmp", "sk_cam_000111222334", None, ok_ip).await,
+            Err(Denied::Missing),
+            "a wrong key is a name like any other"
+        );
+
+        let exp = jsonwebtoken::get_current_timestamp() + 600;
+        let ipa = jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &serde_json::json!({ "sub": "cam", "act": "play", "exp": exp, "ipa": "198.51.100.0/24" }),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(registry.resolve(Access::Play, "hls", "cam", Some(&ipa), ok_ip).await, Ok("cam".into()));
+        let elsewhere = "203.0.113.1".parse().ok();
+        assert!(matches!(
+            registry.resolve(Access::Play, "hls", "cam", Some(&ipa), elsewhere).await,
+            Err(Denied::Refused(_))
+        ));
+        assert!(matches!(
+            registry.resolve(Access::Play, "moq", "cam", Some(&ipa), None).await,
+            Err(Denied::Refused(_))
+        ));
     }
 }

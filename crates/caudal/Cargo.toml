@@ -108,3 +108,9 @@ mp4-atom = "0.15.0"
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
+# `process_*` metrics (sysconf, getrusage, proc_pidinfo); already in the tree.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# `process_*` metrics (GetProcessTimes, GetProcessMemoryInfo); already in the tree.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }

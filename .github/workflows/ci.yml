@@ -34,6 +34,12 @@ jobs:
       # checked by `caudal captions fetch-model`) is cached between runs, so
       # the engine and e2e caption tests run instead of printing SKIP.
       - run: sudo apt-get install -y espeak-ng
+      # GStreamer's dashdemux plays the live DASH manifest in real time
+      # (crates/caudal-hls/tests/dash.rs): playbin needs dashdemux
+      # (plugins-bad) and H.264/AAC decoders (libav).
+      - run: >-
+          sudo apt-get install -y --no-install-recommends gstreamer1.0-tools
+          gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       - uses: actions/cache@v4
         with:
           path: ~/.cache/caudal-models

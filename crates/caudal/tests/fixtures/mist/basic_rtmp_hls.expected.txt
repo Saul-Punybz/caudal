@@ -1,14 +1,14 @@
-3 translated, 2 approximated, 1 with no Caudal equivalent
+1 translated, 4 approximated, 1 not imported
 
 Translated:
-  config.protocols[connector=RTMP]: -> `[rtmp] bind` on port 1935
-  config.protocols[connector=HLS]: served on `[server] http_bind` already: MistServer's HLS output has no port of its own either (`capa["deps"] = "HTTP"` in output_hls.cpp), it rides the HTTP connector
   streams.live-main.source: `push://10.0.0.5` -> `[[access.rules]]` streams=["live-main"] publish_allow=["10.0.0.5"]
 
-Approximated:
-  config.protocols[connector=HTTP]: -> `[server] http_bind` on port 8080; bound to 127.0.0.1, not MistServer's usual 0.0.0.0: without `[admin]` Caudal refuses to start on a non-loopback address — set up `[admin]` (commented in below), then change this to 0.0.0.0 to match MistServer's original reach
+Approximated (imported, read the note before going live):
+  config.protocols[connector=RTMP]: -> `[rtmp] bind = "0.0.0.0:1935"`; publish URLs are `rtmp://host/live/<stream>` (`[rtmp] app = "live"`); MistServer accepts any application name
+  config.protocols[connector=HTTP]: -> `[server] http_bind = "127.0.0.1:8080"`; bound to 127.0.0.1, not MistServer's address: without `[admin]` Caudal refuses to start on a non-loopback address — set up `[admin]` (commented in below), then change this to 0.0.0.0 to match MistServer's original reach
+  config.protocols[connector=HLS]: TS-HLS is served on `[server] http_bind` (`[hls] ts = true`, Caudal's default): MistServer's `/hls/{name}/index.m3u8` is `/hls/{name}/ts.m3u8` in Caudal, where `index.m3u8` is the LL-HLS playlist (docs/HLS.md); SAMPLE-AES is not carried over
   streams.live-main.DVR: -> `[buffer] window_secs` (30000 ms asked here); Caudal's buffer window is one global setting, not per stream, so the largest DVR across all streams wins
 
-No Caudal equivalent:
+Not imported (no Caudal equivalent, or a different meaning):
   (none — always noted): a commented-out `[admin]` block is included below: without `[admin]`, Caudal refuses to listen on anything but loopback (see caudal.example.toml)
 

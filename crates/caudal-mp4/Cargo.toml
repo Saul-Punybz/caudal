@@ -1,0 +1,22 @@
+[package]
+name = "caudal-mp4"
+description = "Progressive (endless) fragmented MP4 over HTTP for Caudal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+caudal-core.workspace = true
+caudal-cmaf.workspace = true
+axum.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+futures-util = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+caudal-ts.workspace = true
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }

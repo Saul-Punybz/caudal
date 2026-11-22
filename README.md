@@ -9,7 +9,8 @@ drops its crash classes.
 tested: RTMP/E-RTMP, SRT, WHIP, RTSP and MoQ ingest; LL-HLS, classic TS-segment
 HLS ([docs/HLS.md](docs/HLS.md)), live MPEG-DASH ([docs/DASH.md](docs/DASH.md)), WHEP, MoQ, SRT,
 RTSP and RTMP ([docs/RTMP.md](docs/RTMP.md)) output, audio-only internet radio URLs
-([docs/AUDIO.md](docs/AUDIO.md)), plus IP multicast; recording/VOD/clips, transcoding ladders, 24/7
+([docs/AUDIO.md](docs/AUDIO.md)), progressive fMP4 over HTTP
+([docs/MP4.md](docs/MP4.md)), plus IP multicast; recording/VOD/clips, transcoding ladders, 24/7
 channels from files, origin-edge clustering, admin login, and live captions.
 See [PLAN.md](PLAN.md) for the full milestone list and [STATUS.md](STATUS.md)
 for exactly where things stand. A side-by-side benchmark against MediaMTX
@@ -51,7 +52,11 @@ Migrating from MistServer: `caudal import-mist <mistserver.conf|config.json>`
 reads its config and writes a `caudal.toml` plus a report of every setting
 translated, approximated, or with no Caudal equivalent (user accounts, for
 one — hash new passwords with `caudal hash-password`). It fails without
-writing anything if the generated file doesn't pass `caudal check`.
+writing anything if the generated file doesn't pass `caudal check`. Pulls
+(SRT, TS over UDP/HTTP, HLS, RTMP, RTSP), auto-pushes and the blocking
+triggers (`USER_NEW`, `STREAM_PUSH`, `PUSH_REWRITE`, ...) carry over; see
+[docs/IMPORT-MIST.md](docs/IMPORT-MIST.md) for the full mapping and what a
+trigger handler has to change.
 
 ## Deploy
 

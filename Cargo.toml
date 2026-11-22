@@ -52,6 +52,7 @@ caudal-http-pull = { path = "crates/caudal-http-pull", version = "0.1.0" }
 caudal-hls-pull = { path = "crates/caudal-hls-pull", version = "0.1.0" }
 caudal-omt = { path = "crates/caudal-omt", version = "0.1.0" }
 caudal-audio = { path = "crates/caudal-audio", version = "0.1.0" }
+caudal-mp4 = { path = "crates/caudal-mp4", version = "0.1.0" }
 # Our own OMT crates (MIT OR Apache-2.0), pinned to a pushed commit while M12
 # is developed; switch to crates.io 0.2.x before tagging (git dependencies
 # block publishing). caudal-omt and caudal both take them from here.

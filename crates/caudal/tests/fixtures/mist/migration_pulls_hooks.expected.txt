@@ -1,0 +1,27 @@
+6 translated, 11 approximated, 2 not imported
+
+Translated:
+  config.protocols[connector=TSSRT]: -> `[srt] bind = "0.0.0.0:8889"`
+  streams.catv.source: -> `[[udp.pull]]` stream = "catv", url = "udp://239.1.1.1:5000" (MistServer's `tsudp://239.1.1.1:5000` spelling, same transport)
+  streams.studio.source: `push://` with no host: publish is open to anyone, same as Caudal's default
+  streams.venue.source: -> `[[srt.pull]]` stream = "venue", url = "srt://203.0.113.7:9000?streamid=play/main&latency=200"
+  streams.venue.always_on: Caudal's pulls are always on (they start with the server, not with the first viewer)
+  auto_push[stream=studio]: -> `[[push.auto]]` streams = ["studio"], url = "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx"
+
+Approximated (imported, read the note before going live):
+  config.protocols[connector=HTTP]: -> `[server] http_bind = "127.0.0.1:8080"`; bound to 127.0.0.1, not MistServer's address: without `[admin]` Caudal refuses to start on a non-loopback address — set up `[admin]` (commented in below), then change this to 0.0.0.0 to match MistServer's original reach
+  config.protocols[connector=HLS]: TS-HLS is served on `[server] http_bind` (`[hls] ts = true`, Caudal's default): MistServer's `/hls/{name}/index.m3u8` is `/hls/{name}/ts.m3u8` in Caudal, where `index.m3u8` is the LL-HLS playlist (docs/HLS.md); SAMPLE-AES is not carried over
+  config.protocols[connector=CMAF]: LL-HLS (CMAF) is always on in Caudal at `/hls/{name}/master.m3u8` (MistServer: `/cmaf/{name}/index.m3u8`); MistServer's DASH (`/cmaf/{name}/index.mpd`) and Smooth manifests from this connector have no Caudal output yet
+  config.protocols[connector=HTTPTS]: HTTP-TS is always on in Caudal at `/ts/{name}.ts` on `[server] http_bind` (MistServer: `/{name}.ts`); any `port` here is not used
+  config.protocols[connector=RTMP]: -> `[rtmp] bind = "0.0.0.0:1935"`; publish URLs are `rtmp://host/live/<stream>` (`[rtmp] app = "live"`); MistServer accepts any application name
+  streams.news.source: -> `[[hls.pull]]` stream = "news", url = "https://cdn.example.com/live/news/index.m3u8"; MPEG-TS segments only for now (fMP4/CMAF segments are refused at run time), no AES-128 / SAMPLE-AES
+  streams.studio.DVR: -> `[buffer] window_secs` (60000 ms asked here); Caudal's buffer window is one global setting, not per stream, so the largest DVR across all streams wins
+  auto_push[stream=studio]: file target `/var/lib/mist/rec/studio_$datetime.mkv`, scheduletime/completetime -> `[[record.schedule]]` streams = ["studio"], start = "2026-12-24T22:00:00Z", duration_secs = 10800; MistServer's per-push path pattern (e.g. `$datetime`) is not reproduced — Caudal always writes to `<dir>/<stream>/<timestamp>/`
+  auto_push[stream=venue]: scheduletime 1798149600 (2026-12-24T22:00:00Z), completetime 1798160400 (2026-12-25T01:00:00Z) -> `[[push.auto]]` streams = ["venue"], url = "srt://198.51.100.20:9000?streamid=publish/venue", with `start`/`stop` (UTC). MistServer's `doAutoPush` compares `scheduletime` the wrong way round (a future time starts at once; docs/research/MISTSERVER-REVERSE.md §8): the rule uses the documented meaning, so it pushes only inside the window
+  config.triggers.USER_NEW: -> `[auth.hook]` url = "https://auth.example.com/mist/user_new", play = true: asked before every play, cached `allow_cache_secs` (MistServer: once per new session, and only when no valid JWT was presented; Caudal asks after the token check, with or without a token); `on_error = "deny"` (its `default` was false). `reply = "mistserver"`: a 2xx allows only when the body reads as true (MistServer's rule), so a handler answering 200 `false` still denies; the request is a signed JSON POST, not MistServer's newline-separated text/plain lines: port the handler (docs/IMPORT-MIST.md); a new `whsec_` secret was generated, verify signatures with it
+  config.triggers.PUSH_REWRITE: -> `[auth.rewrite]` url = "https://auth.example.com/mist/push_rewrite", publish = true: the answer is read as MistServer's is (plain text stream name, empty denies) or as JSON `{"stream": ...}`; the request is a signed JSON POST, not MistServer's newline-separated text/plain lines: port the handler (docs/IMPORT-MIST.md) (`data.stream`, `data.protocol`, `data.ip`, `data.token`; no full URL or host); a new `whsec_` secret was generated
+
+Not imported (no Caudal equivalent, or a different meaning):
+  config.triggers.STREAM_END: 1 handler(s): a notification; Caudal's `[hooks]` notifies only on stream.started / stream.ended (signed webhooks), so configure `[hooks]` by hand if those cover it
+  (none — always noted): a commented-out `[admin]` block is included below: without `[admin]`, Caudal refuses to listen on anything but loopback (see caudal.example.toml)
+

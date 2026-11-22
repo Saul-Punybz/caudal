@@ -14,6 +14,7 @@ mod import_mist;
 mod metrics;
 mod omt;
 mod on_demand;
+mod process_metrics;
 mod reload;
 mod shutdown;
 mod subsystems;

@@ -818,6 +818,7 @@ dependencies = [
  "hex",
  "jiff",
  "jsonwebtoken",
+ "libc",
  "maxminddb-writer",
  "moq-mux",
  "moq-native",
@@ -843,6 +844,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
  "x509-parser",
 ]
 
@@ -1047,7 +1049,9 @@ dependencies = [
  "caudal-scte35",
  "caudal-ts",
  "mp4-atom",
+ "roxmltree",
  "rustix",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tower",

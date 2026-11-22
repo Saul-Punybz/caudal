@@ -45,6 +45,8 @@ pub fn render(
         let _ = writeln!(out, "caudal_frames_in_total{{stream=\"{}\"}} {}", escape(s.name()), stats.frames_in);
     }
 
+    render_sessions(&mut out, &registry.sessions().protocol_totals());
+
     if let Some(health) = health {
         let _ = writeln!(out, "# HELP caudal_alerts_active Stream health alerts currently active.");
         let _ = writeln!(out, "# TYPE caudal_alerts_active gauge");
@@ -73,6 +75,21 @@ pub fn render(
     }
 
     out
+}
+
+/// `caudal_sessions` (open viewer sessions) and `caudal_bytes_out_total`
+/// (media bytes sent to viewers, closed sessions included), per protocol.
+fn render_sessions(out: &mut String, totals: &[caudal_core::ProtocolTotals]) {
+    let _ = writeln!(out, "# HELP caudal_sessions Open viewer sessions, by protocol.");
+    let _ = writeln!(out, "# TYPE caudal_sessions gauge");
+    for t in totals {
+        let _ = writeln!(out, "caudal_sessions{{protocol=\"{}\"}} {}", escape(t.protocol), t.sessions);
+    }
+    let _ = writeln!(out, "# HELP caudal_bytes_out_total Media bytes sent to viewers, by protocol.");
+    let _ = writeln!(out, "# TYPE caudal_bytes_out_total counter");
+    for t in totals {
+        let _ = writeln!(out, "caudal_bytes_out_total{{protocol=\"{}\"}} {}", escape(t.protocol), t.bytes_out);
+    }
 }
 
 /// `caudal_auth_hook_*`: calls to `[auth.hook]` by outcome, requests
@@ -330,6 +347,34 @@ mod tests {
         // One HELP/TYPE per metric family.
         assert_eq!(out.matches("# TYPE caudal_omt_frames_dropped_total").count(), 1);
         assert_eq!(out.matches("# TYPE caudal_omt_tally").count(), 1);
+    }
+
+    #[test]
+    fn sessions_and_bytes_out_by_protocol_keep_closed_sessions() {
+        let registry = Registry::new();
+        let a = registry.open_session("cam", "srt", None);
+        let b = registry.open_session("cam", "hls", None);
+        a.add_bytes(1316);
+        b.add_bytes(100);
+        let body = render(&registry, None, None);
+        assert!(body.contains("# TYPE caudal_sessions gauge\n"), "{body}");
+        assert!(body.contains("# TYPE caudal_bytes_out_total counter\n"), "{body}");
+        assert!(body.contains("caudal_sessions{protocol=\"srt\"} 1\n"), "{body}");
+        assert!(body.contains("caudal_bytes_out_total{protocol=\"srt\"} 1316\n"), "{body}");
+        assert_eq!(body.matches("# TYPE caudal_sessions").count(), 1);
+
+        drop(a);
+        let body = render(&registry, None, None);
+        assert!(body.contains("caudal_sessions{protocol=\"srt\"} 0\n"), "{body}");
+        assert!(
+            body.contains("caudal_bytes_out_total{protocol=\"srt\"} 1316\n"),
+            "closed session keeps its bytes: {body}"
+        );
+        assert!(body.contains("caudal_sessions{protocol=\"hls\"} 1\n"), "{body}");
+        assert!(body.contains("caudal_bytes_out_total{protocol=\"hls\"} 100\n"), "{body}");
+        drop(b);
+        let body = render(&registry, None, None);
+        assert!(body.contains("caudal_bytes_out_total{protocol=\"hls\"} 100\n"), "{body}");
     }
 
     #[test]

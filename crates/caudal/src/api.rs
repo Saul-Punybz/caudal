@@ -577,6 +577,7 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     if let Some(od) = state.on_demand.get() {
         od.render_metrics(&mut body);
     }
+    crate::process_metrics::render(&mut body, &crate::process_metrics::collect());
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 

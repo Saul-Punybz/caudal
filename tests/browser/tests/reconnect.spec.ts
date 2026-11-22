@@ -52,7 +52,7 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
       (window as any).__fatal = [];
       (window as any).__events = [];
       const v = document.getElementById("v") as HTMLVideoElement;
-      for (const ev of ["ended", "waiting", "emptied", "durationchange"]) {
+      for (const ev of ["ended", "waiting", "emptied", "durationchange", "pause", "play", "playing"]) {
         v.addEventListener(ev, () =>
           (window as any).__events.push(`${ev}@${v.currentTime.toFixed(2)}/${v.duration}`),
         );
@@ -73,7 +73,52 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
     console.log(`[${browserName}] events during the gap: ${JSON.stringify(gapEvents)}`);
     expect(await ended(), `the player ended during the gap; events: ${JSON.stringify(gapEvents)}`).toBe(false);
 
-    // ...and comes back under the same name.
+    // ...and comes back under the same name. From here on, record the seam
+    // window so a stall says why: currentTime/readyState/buffered every
+    // 250 ms, the element's waiting/playing/pause/play/seeking events, and
+    // hls.js appends, fragment changes and non-fatal errors.
+    await page.evaluate(() => {
+      const w = window as any;
+      const v = document.getElementById("v") as HTMLVideoElement;
+      const t0 = performance.now();
+      const stamp = () => `${((performance.now() - t0) / 1000).toFixed(2)}s`;
+      const ranges = () => {
+        const out: string[] = [];
+        for (let i = 0; i < v.buffered.length; i++) out.push(`${v.buffered.start(i).toFixed(2)}-${v.buffered.end(i).toFixed(2)}`);
+        return out.join(",");
+      };
+      w.__seam = [] as string[];
+      const log = (s: string) => {
+        if (w.__seam.length < 400) w.__seam.push(`${stamp()} ${s}`);
+      };
+      for (const ev of ["waiting", "playing", "pause", "play", "seeking", "seeked", "stalled"]) {
+        v.addEventListener(ev, () => log(`${ev}@${v.currentTime.toFixed(2)} [${ranges()}]`));
+      }
+      w.__seamTimer = setInterval(() => {
+        const hls = w.__hlsInstance;
+        const lat = hls && Number.isFinite(hls.latency) ? hls.latency.toFixed(2) : "-";
+        const tgt = hls && hls.targetLatency != null ? hls.targetLatency.toFixed(2) : "-";
+        log(
+          `t=${v.currentTime.toFixed(2)} rs=${v.readyState} ${v.paused ? "paused" : "playing"} rate=${v.playbackRate} ` +
+            `lat=${lat}/${tgt} [${ranges()}]`,
+        );
+      }, 250);
+      const hls = w.__hlsInstance;
+      const E = w.Hls?.Events;
+      if (hls && E) {
+        hls.on(E.FRAG_CHANGED, (_e: unknown, d: any) =>
+          log(`hls:FRAG_CHANGED sn=${d.frag?.sn} cc=${d.frag?.cc} start=${d.frag?.start?.toFixed(2)}`),
+        );
+        hls.on(E.BUFFER_APPENDED, (_e: unknown, d: any) => {
+          const f = d.frag ?? {};
+          const p = d.part ? `.p${d.part.index}` : "";
+          log(`hls:APPENDED ${d.type} sn=${f.sn}${p} cc=${f.cc} [${ranges()}]`);
+        });
+        hls.on(E.ERROR, (_e: unknown, d: any) => {
+          if (!d?.fatal) log(`hls:ERROR ${d?.details}${d?.buffer != null ? ` buffer=${Number(d.buffer).toFixed(2)}` : ""}`);
+        });
+      }
+    });
     const back = Date.now();
     publisher = startFfmpegPublisher(server.rtmpUrl(STREAM_NAME));
     // At the drop the player sits a few seconds (its latency) behind the
@@ -87,10 +132,18 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
     // (native HLS may catch up in small steps right after the seam).
     await page.waitForTimeout(2_000);
     const t0 = await time();
+    const latencyAtT0 = await page.evaluate(() => {
+      const hls = (window as any).__hlsInstance;
+      return hls && Number.isFinite(hls.latency) ? `${hls.latency.toFixed(2)}/${hls.targetLatency?.toFixed(2)}` : "-";
+    });
     await page.waitForTimeout(3_000);
     const delta = (await time()) - t0;
 
     const info = await page.evaluate(() => ({
+      seam: (() => {
+        clearInterval((window as any).__seamTimer);
+        return ((window as any).__seam ?? []) as string[];
+      })(),
       fatal: (window as any).__fatal as string[] | undefined,
       rebuilds: (window as any).__hlsCount ?? 0,
       native: !(window as any).__hlsInstance,
@@ -100,6 +153,11 @@ test.describe("LL-HLS survives a publisher reconnect", () => {
         `passed atDrop+8 s ${resumedAfterMs} ms after the republish; ` +
         `then ${delta.toFixed(2)} s in 3 s; hls.js instances=${info.rebuilds}; fatal errors=${JSON.stringify(info.fatal ?? [])}`,
     );
+    const holds = info.seam.filter((l) => / pause@/.test(l)).length;
+    const waits = info.seam.filter((l) => / waiting@/.test(l)).length;
+    const errors = [...new Set(info.seam.filter((l) => l.includes("hls:ERROR")).map((l) => l.split("hls:ERROR ")[1]))];
+    console.log(`[${browserName}] seam window: latency/target ${latencyAtT0} before the 3 s sample, ${waits} waiting, ${holds} pause(s), non-fatal hls.js errors ${JSON.stringify(errors)}`);
+    if (delta < 2.4) console.log(`[${browserName}] seam log (since the republish):\n  ${info.seam.join("\n  ")}`);
     expect(await ended()).toBe(false);
     expect(delta, "playback stalled after the reconnect").toBeGreaterThanOrEqual(2.4);
     // The playlist continued, so hls.js never had to be torn down and rebuilt.

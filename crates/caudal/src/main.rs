@@ -328,14 +328,52 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
 
     // Origin-edge clustering: an origin answers edges' locate requests; an
     // edge pulls a stream from its origins when its first viewer asks.
+    // With `[cluster.balance]` every node reports its load to the origins,
+    // and an origin scores nodes for viewers (`caudal_cluster::balance`).
     let cluster_router = match &cfg.cluster {
         Some(c) => match c.edge_config(cfg.buffer.to_buffer_config()).expect("validated") {
             None => {
                 tracing::info!(node_id = %c.node_id(), "cluster origin");
-                caudal_cluster::origin_router(registry.clone(), c.secret().expect("validated"), c.node_id())
+                let secret = c.secret().expect("validated");
+                let balancer = c.balance.as_ref().map(|b| {
+                    let balancer = caudal_cluster::Balancer::new(b.balance_config());
+                    caudal_cluster::spawn_reporter(
+                        b.reporter_config(c.node_id(), secret.clone(), Vec::new()),
+                        Some(balancer.clone()),
+                        caudal_cluster::SystemSampler::new(&registry),
+                    );
+                    state.set_balancer(balancer.clone());
+                    balancer
+                });
+                let mut router =
+                    caudal_cluster::origin_router(registry.clone(), secret.clone(), c.node_id(), balancer.clone());
+                if let Some(balancer) = balancer {
+                    // The viewer's location: the `[access] geoip_db` file, opened
+                    // again here (City databases give coordinates, Country ones
+                    // only the country).
+                    let geo = cfg.access.geoip_db.as_ref().and_then(|p| match caudal_access::GeoIp::open(p) {
+                        Ok(g) => Some(std::sync::Arc::new(g)),
+                        Err(e) => {
+                            tracing::error!(error = %e, "cluster balance: no geoip, viewers' location unknown");
+                            None
+                        }
+                    });
+                    tracing::info!(geoip = geo.is_some(), "cluster balance enabled");
+                    router =
+                        router.merge(caudal_cluster::balance::router(balancer, secret, geo, trusted_proxies.clone()));
+                }
+                router
             }
             Some(edge) => {
                 let origins = edge.origins.len();
+                if let Some(b) = &c.balance {
+                    caudal_cluster::spawn_reporter(
+                        b.reporter_config(c.node_id(), edge.secret.clone(), edge.origins.clone()),
+                        None,
+                        caudal_cluster::SystemSampler::new(&registry),
+                    );
+                    tracing::info!("cluster balance: reporting load to the origins");
+                }
                 match caudal_cluster::Edge::start(&registry, edge) {
                     Ok(e) => {
                         tracing::info!(node_id = %c.node_id(), origins, "cluster edge");

@@ -539,7 +539,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | JWT per-key permissions, `ipa` claim | missing (not found) | — |
 | Auto-push rules with schedules and conditions | partial: `[[push.auto]]` (stream patterns + `$stream` URL template, RTMP(S)/SRT/UDP/RTP; `start`/`stop` or `cron` windows, `enabled` with an API toggle, `inhibit` by stream pattern; no `start_rule`/`end_rule`), `[[record.schedule]]` cron | `C:crates/caudal/src/config.rs:294, 895-905` |
 | Recording via push + target variables | partial: `[record]` dir/segments/retention/upload; no `$datetime`-style templates | `C:crates/caudal/src/config.rs:911-923` |
-| Load balancer (MistUtilLoad) | partial: origin-edge cluster with `/api/v1/cluster/locate/{name}`; no weighted CPU/RAM/BW/geo scoring | `C:crates/caudal-cluster` |
+| Load balancer (MistUtilLoad) | has: `[cluster.balance]`, MistServer's CPU/RAM/BW/geo/bonus score and default weights, `/cluster/balance/{name}` and `/cluster/redirect/{name}?proto=` (307); no `?source=`/`?ingest=`, tags or runtime `?weights=` | `C:crates/caudal-cluster/src/balance.rs`; `docs/research/CLUSTER.md` |
 | Sessions (`clients`, per-viewer bytes, kick by session/tag) | has: list/kick/block, bytes, RTT/loss, tags (#30, #31) | `C:crates/caudal-core/src/session.rs` |
 | Prometheus | partial: streams, viewers, bytes/frames in, plus subsystem metrics; no bytes-out, sessions, RTT, packet loss, CPU/mem | metrics name list from grep |
 | Stream tags | partial: session tags (#31); no stream-level tags | `C:crates/caudal-core/src/session.rs` |

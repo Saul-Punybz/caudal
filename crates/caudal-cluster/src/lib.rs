@@ -11,12 +11,18 @@
 //!   ([`Secret::verify`]).
 //! - [`Edge::start`]: installs the pull-on-demand source on an edge's
 //!   registry.
+//! - [`balance`]: weighted load balancing after MistServer's
+//!   `MistUtilLoad`. Nodes send [`LoadReport`]s to the origins
+//!   ([`spawn_reporter`]); an origin's [`Balancer`] scores them and
+//!   [`balance::router`] sends viewers to the best one.
 //!
 //! The moq-dev crates are pinned to the same exact versions as
 //! `caudal-moq`, and none of their types appear in this crate's API.
 
+pub mod balance;
 mod convert;
 mod pull;
+mod report;
 mod timing;
 mod token;
 
@@ -30,7 +36,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use caudal_core::{BufferConfig, Demand, DemandFuture, Registry};
 
+pub use balance::{BalanceConfig, Balancer, GeoPoint, LoadReport, Pick, Viewer, Weights};
 pub use pull::PullMetric;
+pub use report::{ReporterConfig, Sample, Sampler, SystemSampler, spawn_reporter};
 pub use token::{AUDIENCE, MIN_SECRET_LEN, Secret, SecretError};
 
 /// What an edge needs to pull from its origins.
@@ -134,18 +142,28 @@ struct OriginState {
     registry: Arc<Registry>,
     secret: Secret,
     node_id: String,
+    balancer: Option<Arc<Balancer>>,
 }
 
 /// `GET /api/v1/cluster/locate/{name}` with `Authorization: Bearer <cluster
 /// token>`: `200 {"stream", "node_id", "tracks"}` when `name` is live here,
-/// `404` when not, `401`/`403` without a valid token. Merge into an
-/// origin's HTTP app. The route stays outside the admin login (the cluster
-/// token is its credential).
-pub fn origin_router(registry: Arc<Registry>, secret: Secret, node_id: String) -> axum::Router {
+/// `404` when not, `401`/`403` without a valid token. With a `balancer`,
+/// the answer also carries `"best": {"node_id", "url", "score"}`, the node
+/// a viewer of `name` should go to right now (`null` when none can take
+/// one); asking does not count a viewer against it. Merge into an origin's
+/// HTTP app. The route stays outside the admin login (the cluster token is
+/// its credential).
+pub fn origin_router(
+    registry: Arc<Registry>,
+    secret: Secret,
+    node_id: String,
+    balancer: Option<Arc<Balancer>>,
+) -> axum::Router {
     axum::Router::new().route("/api/v1/cluster/locate/{name}", get(locate)).with_state(OriginState {
         registry,
         secret,
         node_id,
+        balancer,
     })
 }
 
@@ -166,7 +184,10 @@ async fn locate(State(st): State<OriginState>, Path(name): Path<String>, headers
     match st.registry.get(&name) {
         Some(s) if !s.is_ended() => {
             tracing::debug!(stream = %name, %edge, "cluster: located");
-            let body = serde_json::json!({ "stream": name, "node_id": st.node_id, "tracks": s.tracks().len() });
+            let mut body = serde_json::json!({ "stream": name, "node_id": st.node_id, "tracks": s.tracks().len() });
+            if let Some(b) = &st.balancer {
+                body["best"] = serde_json::to_value(b.best(&name, &Viewer::default())).unwrap_or_default();
+            }
             ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
         }
         _ => (StatusCode::NOT_FOUND, "not live here").into_response(),

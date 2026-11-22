@@ -59,7 +59,7 @@ impl Origin {
             },
         )
         .expect("moq");
-        let app = caudal_cluster::origin_router(registry.clone(), Secret::new(SECRET).unwrap(), node.into())
+        let app = caudal_cluster::origin_router(registry.clone(), Secret::new(SECRET).unwrap(), node.into(), None)
             .merge(moq.router());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http = listener.local_addr().unwrap();

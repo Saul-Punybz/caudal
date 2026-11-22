@@ -386,6 +386,30 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # origins = ["http://origin-a:8080", "http://origin-b:8080"]  # HTTP base URLs, tried in order
 # idle_timeout_secs = 30                   # stop pulling this long after the last viewer
 # source_timeout_secs = 10                 # end the stream when no origin has it this long
+#
+# Load balancing (MistServer's MistUtilLoad; docs/research/CLUSTER.md). Every
+# node with this section reports CPU, RAM, bandwidth, viewers and its streams
+# to the origins; an origin scores the nodes and sends viewers to the best:
+# GET /cluster/redirect/{name}?proto=hls (307), GET /cluster/balance/{name}
+# (JSON). Viewer location: lat/lon or X-Latitude/X-Longitude, else
+# [access] geoip_db.
+# [cluster.balance]
+# public_url = "https://edge-1.example.com" # where viewers sent here go; unset = never chosen
+# capacity_mbps = 1000                     # outbound link; at or over it = not chosen
+# latitude = 18.4655                       # this node's position (both or neither) ...
+# longitude = -66.1057
+# country = "PR"                           # ... and/or its country
+# accept_viewers = true                    # false: report, take no viewers
+# report_interval_secs = 2
+# stale_after_secs = 6                     # origin: older report = not chosen
+# max_cpu_percent = 95                     # origin: hard limits
+# max_ram_percent = 95
+# [cluster.balance.weights]                # origin; MistServer's defaults
+# cpu = 500
+# ram = 500
+# bw = 1000
+# geo = 1000
+# bonus = 50
 
 # Open Media Transport (docs/OMT.md). [[omt.pull]] receives an OMT source
 # (vMix, OBS with the OMT plugin, libomtnet apps) into a stream: VMX is

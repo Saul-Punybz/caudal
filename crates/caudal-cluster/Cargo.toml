@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 caudal-core.workspace = true
+caudal-access.workspace = true
 axum.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
@@ -20,6 +21,8 @@ tracing.workspace = true
 jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 url = "2"
+# Whole-machine CPU and memory for load reports (Linux, macOS, Windows).
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 # Same exact pins as caudal-moq (the moq-dev crates move fast); their types
 # stay inside this crate.
 moq-net = "=0.2.22"

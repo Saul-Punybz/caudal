@@ -324,6 +324,8 @@ pub(crate) fn parse_metadata_fps(data: Bytes) -> Option<f64> {
                 let key = key.as_str();
                 if (key.eq_ignore_ascii_case("framerate") || key.eq_ignore_ascii_case("fps"))
                     && let Amf0Value::Number(n) = val
+                    && n.is_finite()
+                    && *n > 0.0
                 {
                     return Some(*n);
                 }
@@ -352,6 +354,48 @@ mod tests {
 
     fn obj<'a>(fields: Vec<(&'a str, Amf0Value<'a>)>) -> Amf0Object<'a> {
         fields.into_iter().map(|(k, v)| (k.into(), v)).collect()
+    }
+
+    /// An `onMetaData` the way OBS and FFmpeg send it: `@setDataFrame` (OBS
+    /// only), `onMetaData`, then an ECMA array (marker 8) ending `00 00 09`.
+    fn ecma_on_metadata(set_data_frame: bool, fields: &[(&str, f64)]) -> Bytes {
+        let mut b = Vec::new();
+        let string = |b: &mut Vec<u8>, s: &str| {
+            b.push(0x02);
+            b.extend_from_slice(&(s.len() as u16).to_be_bytes());
+            b.extend_from_slice(s.as_bytes());
+        };
+        if set_data_frame {
+            string(&mut b, "@setDataFrame");
+        }
+        string(&mut b, "onMetaData");
+        b.push(0x08);
+        b.extend_from_slice(&(fields.len() as u32 + 1).to_be_bytes());
+        for (k, v) in fields {
+            b.extend_from_slice(&(k.len() as u16).to_be_bytes());
+            b.extend_from_slice(k.as_bytes());
+            b.push(0x00);
+            b.extend_from_slice(&v.to_be_bytes());
+        }
+        // A boolean last, as FFmpeg writes `stereo`.
+        b.extend_from_slice(&[0, 6]);
+        b.extend_from_slice(b"stereo");
+        b.extend_from_slice(&[0x01, 0x01]);
+        b.extend_from_slice(&[0x00, 0x00, 0x09]);
+        Bytes::from(b)
+    }
+
+    #[test]
+    fn an_ecma_array_on_metadata_gives_its_framerate() {
+        let fields = [("duration", 0.0), ("width", 1280.0), ("height", 720.0), ("framerate", 29.97)];
+        assert_eq!(parse_metadata_fps(ecma_on_metadata(false, &fields)), Some(29.97));
+        assert_eq!(parse_metadata_fps(ecma_on_metadata(true, &fields)), Some(29.97), "OBS sends @setDataFrame first");
+    }
+
+    #[test]
+    fn metadata_without_a_usable_framerate_gives_none() {
+        assert_eq!(parse_metadata_fps(ecma_on_metadata(false, &[("width", 1280.0)])), None);
+        assert_eq!(parse_metadata_fps(ecma_on_metadata(false, &[("framerate", 0.0)])), None);
     }
 
     #[test]

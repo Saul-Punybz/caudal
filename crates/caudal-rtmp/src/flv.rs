@@ -147,11 +147,9 @@ fn put_amf0_key(b: &mut BytesMut, key: &str) {
 /// then an object describing `video` and `audio` (either may be absent).
 /// Live, so `duration` is 0.
 ///
-/// An AMF0 object (marker 3), not the ECMA array (marker 8) FFmpeg's muxer
-/// writes: FFmpeg's FLV demuxer reads both, and `scuffle-amf0` (which a
-/// Caudal pulling this stream parses it with) reads an ECMA array's
-/// entries but not the `00 00 09` end marker after them, so it drops the
-/// whole message.
+/// An AMF0 object (marker 3) rather than the ECMA array (marker 8) FFmpeg's
+/// muxer writes; FFmpeg's FLV demuxer reads both, and so does the patched
+/// `scuffle-amf0` (see `vendor/README.md`).
 pub fn metadata(video: Option<&TrackInfo>, audio: Option<&TrackInfo>) -> Bytes {
     let mut numbers: Vec<(&str, f64)> = vec![("duration", 0.0)];
     let mut stereo = None;

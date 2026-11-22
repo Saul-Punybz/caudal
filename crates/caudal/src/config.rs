@@ -195,7 +195,7 @@ pub struct HlsSection {
     #[serde(default = "default_true")]
     pub ts: bool,
     /// HLS or LL-HLS pulled in (`[[hls.pull]]`): a remote playlist with
-    /// MPEG-TS segments published as a stream. Reloadable, unlike the
+    /// MPEG-TS or fMP4/CMAF segments published as a stream. Reloadable, unlike the
     /// output settings above.
     #[serde(default)]
     pub pull: Vec<HlsPullEntry>,
@@ -2286,6 +2286,95 @@ pub fn load(path: &Path) -> Result<Config, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `caudal.example.toml` as shipped, then with each commented example
+    /// block uncommented in turn: every one must parse and validate, so the
+    /// example never shows a key that was renamed or removed. A block is a
+    /// run of commented TOML lines (`# [table]`, `# key = ...`, `# # alt`,
+    /// or a `#   # note` continuation); a prose comment, a bare `#` or a blank
+    /// line ends it. A block that needs another one (RTMPS needs `[tls]`'s
+    /// certificate) is uncommented together with it. Placeholders such as
+    /// `$argon2id$...` are filled in first, as a reader would.
+    #[test]
+    fn example_config_blocks_each_validate() {
+        const EXAMPLE: &str = include_str!("../../../caudal.example.toml");
+        fn is_toml_line(rest: &str) -> bool {
+            let t = rest.trim_start();
+            if t.starts_with('#') {
+                return true; // `# # alt = ...`, or an aligned continuation of the comment above
+            }
+            if rest.starts_with(' ') {
+                return false;
+            }
+            let header = t.starts_with('[')
+                && t.rsplit_once(']').is_some_and(|(_, after)| {
+                    let after = after.trim();
+                    after.is_empty() || after.starts_with('#')
+                });
+            header
+                || t.split_once(" = ").is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                })
+        }
+        let lines: Vec<&str> = EXAMPLE.lines().collect();
+        let toml_line = |l: &str| l.strip_prefix("# ").is_some_and(is_toml_line);
+        let mut blocks: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if toml_line(lines[i]) {
+                let start = i;
+                while i < lines.len() && toml_line(lines[i]) {
+                    i += 1;
+                }
+                blocks.push((start, i));
+            } else {
+                i += 1;
+            }
+        }
+        let uncomment = |ranges: &[(usize, usize)]| -> String {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(n, l)| if ranges.iter().any(|&(a, b)| (a..b).contains(&n)) { &l[2..] } else { l })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let block_with =
+            |needle: &str| *blocks.iter().find(|&&(a, b)| lines[a..b].iter().any(|l| l.contains(needle))).unwrap();
+        // Blocks that only make sense together with another one.
+        let needs = [("# tls_bind = \"0.0.0.0:1936\"", "# [tls]"), ("# [[access.rules]]", "# [access]")];
+        // Placeholders the reader replaces, with values of the right shape.
+        let phc = caudal_admin::hash_password("example passphrase").unwrap();
+        let placeholders =
+            [("$argon2id$v=19$m=19456,t=2,p=1$...", phc.as_str()), ("<64 hex characters>", &"ab".repeat(32))];
+        let check = |what: &str, text: &str| {
+            let mut text = text.to_owned();
+            for (placeholder, value) in &placeholders {
+                text = text.replace(placeholder, value);
+            }
+            let cfg: Config = toml::from_str(&text).unwrap_or_else(|e| panic!("{what}: does not parse: {e}"));
+            if let Err(e) = cfg.validate() {
+                // Features compiled out reject their section with a clear
+                // message; a file the example names (the GeoIP database) is
+                // not on this machine.
+                assert!(
+                    e.contains(crate::captions::NOT_BUILT) || e.contains("(os error 2)"),
+                    "{what}: does not validate: {e}"
+                );
+            }
+        };
+        check("the file as shipped", EXAMPLE);
+        assert!(blocks.len() > 30, "found only {} example blocks: the splitter broke", blocks.len());
+        for &(a, b) in &blocks {
+            let mut ranges = vec![(a, b)];
+            for (dependent, dependency) in needs {
+                if lines[a..b].iter().any(|l| l.contains(dependent)) {
+                    ranges.push(block_with(dependency));
+                }
+            }
+            check(&format!("lines {}-{} uncommented ({})", a + 1, b, lines[a].trim()), &uncomment(&ranges));
+        }
+    }
 
     #[test]
     fn multicast_entries() {

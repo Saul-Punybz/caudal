@@ -88,6 +88,11 @@ tokens, if the key must be the only way to publish.
 - Keys are never logged. A refused request that came with a key logs
   `stream=****`. Config errors name the stream, never the key. `Debug`
   output masks them.
+  The RTMP library Caudal uses logs the publish name at `debug`, so
+  Caudal keeps `scuffle_rtmp` at `info` unless `RUST_LOG` names it; if you
+  turn it up yourself, the key (and any `?token=`) shows up there. The
+  end-to-end test runs the server at `RUST_LOG=debug` and checks that no
+  key appears in the log.
 - `GET /api/v1/stream-keys` lists which streams have keys, what each key
   allows and where it comes from (`config` or `file`). The key is always
   `"****"`. Keys are added and removed in the config or the keys file.

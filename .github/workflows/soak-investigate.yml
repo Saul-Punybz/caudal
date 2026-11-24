@@ -16,13 +16,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Round 5: does RSS plateau? Round 4 (run 44964968157, 70 min):
-        # without trim the live heap and RSS were flat from ~20 min (live
-        # heap -0.33 MB/h from 35 min) and the +8.7 MB/h slope came from
-        # warm-up and churn noise; with trim every 10 s RSS was +42.6 MB/h
-        # (re-faulted pages), so the periodic trim does not help. Here the
-        # runs are long enough to tell a plateau from slow growth, and the
-        # musl entry is the release binary (mimalloc).
+        # Round 6: can mimalloc (v3.3.2, the release binary's allocator)
+        # be made to give memory back? Its purge_delay default is 1000 ms.
+        # And is glibc + two arenas' pass repeatable?
+        # Round 5 (run 45307896398, 160 min, RSS slope from 30 / 60 / 90
+        # min): glibc + MALLOC_ARENA_MAX=2 no trim +0.60 / -0.72 / -0.18
+        # (flat, passes); glibc no trim +1.13 / +2.27 / +5.56; musl +
+        # mimalloc +5.80 / +3.35 / +4.59 (390 -> 400 MB, slowing). The live
+        # heap was flat in every run (~233 MB, +0.3 to +1 MB/h): allocator
+        # retention, not a leak.
+        # Round 4 (run 44964968157, 70 min): without trim the live heap and
+        # RSS were flat from ~20 min; with trim every 10 s RSS +42.6 MB/h.
         # Round 3 (run 44957285864, 70 min): glibc + trim +42.6 MB/h (one
         # +35 MB step at ~37 min), musl + mimalloc +16.3.
         # Round 2 (run 44952665812, 30 min): glibc control +31.1, fixed
@@ -31,17 +35,18 @@ jobs:
         # restarts alone +28.9, viewer batches alone +14.5, mimalloc on
         # glibc +9.6 over 60 min.
         include:
-          - name: glibc-notrim-160m
+          - name: musl-mimalloc-purge0-160m
             minutes: 160
-            features: heap-metrics
-            env: CAUDAL_MALLOC_TRIM_SECS=0
-          - name: glibc-notrim-arena2-160m
+            musl: true
+            env: MIMALLOC_PURGE_DELAY=0
+          - name: musl-mimalloc-purge100-160m
+            minutes: 160
+            musl: true
+            env: MIMALLOC_PURGE_DELAY=100
+          - name: glibc-notrim-arena2-160m-repeat
             minutes: 160
             features: heap-metrics
             env: CAUDAL_MALLOC_TRIM_SECS=0 MALLOC_ARENA_MAX=2
-          - name: musl-mimalloc-160m
-            minutes: 160
-            musl: true
     name: soak ${{ matrix.name }}
     env:
       MINUTES: ${{ matrix.minutes || 30 }}

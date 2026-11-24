@@ -2679,6 +2679,7 @@ mod tests {
             ("# tls_bind = \"0.0.0.0:1936\"", "# [tls]"),
             ("# [[access.rules]]", "# [access]"),
             ("# [auth.secret_permissions]", "# [auth]"),
+            ("# [cluster.balance]", "# role = \"origin\""),
         ];
         // Placeholders the reader replaces, with values of the right shape.
         let phc = caudal_admin::hash_password("example passphrase").unwrap();

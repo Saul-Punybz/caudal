@@ -31,6 +31,15 @@ use tracing_subscriber::EnvFilter;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+// musl builds (the static release binaries) use mimalloc: musl's own
+// malloc kept freed memory and grew RSS +724 MB/h in a soak with publisher
+// and viewer churn every 2 minutes (run 44952665812); with mimalloc the
+// same 70-min soak grew +16.3 MB/h (run 44957285864). Still above the
+// v0.1.0 bar of 1 MB/h: the remaining growth is under investigation (#65).
+#[cfg(all(target_env = "musl", not(feature = "dhat-heap")))]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(name = "caudal", about = "Caudal media server", version)]
 struct Cli {

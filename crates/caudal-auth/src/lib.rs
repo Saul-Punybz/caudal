@@ -227,11 +227,21 @@ pub enum HookEvent {
     StreamEnded { stream: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HooksConfig {
     pub urls: Vec<String>,
     /// Standard Webhooks secret (`whsec_...`).
     pub secret: String,
+}
+
+/// Hand-written so `{:?}` never prints `secret` or `urls` in full.
+impl std::fmt::Debug for HooksConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HooksConfig")
+            .field("urls", &self.urls.iter().map(|u| caudal_core::net::redact_url_host(u)).collect::<Vec<_>>())
+            .field("secret", &"****")
+            .finish()
+    }
 }
 
 /// Fire-and-forget delivery with retries; never blocks ingest.

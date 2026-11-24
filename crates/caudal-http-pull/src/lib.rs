@@ -37,16 +37,17 @@ pub struct HttpPull {
 /// Checks a pull URL: `http://` or `https://` with a host, and not an HLS
 /// playlist.
 pub fn parse_url(url: &str) -> Result<reqwest::Url, String> {
-    let u = reqwest::Url::parse(url).map_err(|e| format!("{url:?}: {e}"))?;
+    let shown = caudal_core::net::redact_url(url);
+    let u = reqwest::Url::parse(url).map_err(|e| format!("{shown:?}: {e}"))?;
     if !matches!(u.scheme(), "http" | "https") {
-        return Err(format!("{url:?}: expected http:// or https://"));
+        return Err(format!("{shown:?}: expected http:// or https://"));
     }
     if u.host_str().is_none_or(str::is_empty) {
-        return Err(format!("{url:?}: needs a host"));
+        return Err(format!("{shown:?}: needs a host"));
     }
     if u.path().to_ascii_lowercase().ends_with(".m3u8") {
         return Err(format!(
-            "{url:?}: an HLS playlist, not an MPEG-TS stream; [[http.pull]] takes a TS served over HTTP \
+            "{shown:?}: an HLS playlist, not an MPEG-TS stream; [[http.pull]] takes a TS served over HTTP \
              (VLC access=http,mux=ts): pull a playlist with [[hls.pull]]"
         ));
     }
@@ -201,5 +202,7 @@ mod tests {
         assert!(parse_url("http://h/live/index.m3u8").unwrap_err().contains("HLS"));
         assert!(parse_url("http://h/LIVE.M3U8?token=x").unwrap_err().contains("HLS"));
         assert!(parse_url("not a url").is_err());
+        let e = parse_url("https://u:pw@cdn.example/live/x.m3u8?token=s3cret").unwrap_err();
+        assert!(!e.contains("s3cret") && !e.contains(":pw@"), "{e}");
     }
 }

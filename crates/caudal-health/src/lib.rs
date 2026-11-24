@@ -61,7 +61,7 @@ const TICK: Duration = Duration::from_secs(1);
 
 /// Global defaults plus optional per-stream overrides. Built by
 /// `crates/caudal/src/config.rs` from `[health]` / `[[health.stream]]`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HealthConfig {
     /// `None` disables the rule.
     pub no_keyframe_secs: Option<u64>,
@@ -80,6 +80,24 @@ pub struct HealthConfig {
     /// Standard Webhooks secret (`whsec_...`).
     pub secret: String,
     pub overrides: Vec<StreamOverride>,
+}
+
+/// Hand-written so `{:?}` never prints `secret` or `webhooks` in full.
+impl std::fmt::Debug for HealthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthConfig")
+            .field("no_keyframe_secs", &self.no_keyframe_secs)
+            .field("min_bitrate_kbps", &self.min_bitrate_kbps)
+            .field("min_bitrate_for_secs", &self.min_bitrate_for_secs)
+            .field("no_audio_secs", &self.no_audio_secs)
+            .field("publisher_lost", &self.publisher_lost)
+            .field("publisher_lost_grace_secs", &self.publisher_lost_grace_secs)
+            .field("min_hold_secs", &self.min_hold_secs)
+            .field("webhooks", &self.webhooks.iter().map(|u| caudal_core::net::redact_url_host(u)).collect::<Vec<_>>())
+            .field("secret", &"****")
+            .field("overrides", &self.overrides)
+            .finish()
+    }
 }
 
 /// `[[health.stream]]`: replaces the matching default for one stream name.

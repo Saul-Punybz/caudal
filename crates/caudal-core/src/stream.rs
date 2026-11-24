@@ -21,6 +21,27 @@ use tokio::sync::watch;
 
 use crate::media::{Cue, Frame, TrackId, TrackInfo, TrackKind};
 
+/// Every [`Stream`] object in the process (live or ended but still held by
+/// a reader) and the payload bytes their rings hold, for `/metrics`. A
+/// count above the number of live streams that does not come back down
+/// means something keeps ended streams, and their windows, alive.
+static STREAM_OBJECTS: AtomicUsize = AtomicUsize::new(0);
+static BUFFERED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Process-wide buffer totals: see [`buffer_totals`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BufferTotals {
+    /// [`Stream`] objects alive, ended ones included.
+    pub streams: usize,
+    /// Payload bytes in all their rings.
+    pub bytes: usize,
+}
+
+/// What every [`Stream`] in the process holds right now.
+pub fn buffer_totals() -> BufferTotals {
+    BufferTotals { streams: STREAM_OBJECTS.load(Ordering::Relaxed), bytes: BUFFERED_BYTES.load(Ordering::Relaxed) }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct BufferConfig {
     /// How much history to keep. MistServer's default is 50 s.
@@ -141,6 +162,7 @@ impl Ring {
         while self.base < seq {
             let e = self.frames.pop_front().expect("evicting past the end");
             self.bytes -= e.item.len();
+            BUFFERED_BYTES.fetch_sub(e.item.len(), Ordering::Relaxed);
             self.base += 1;
         }
         while self.keys.front().is_some_and(|&k| k < self.base) {
@@ -193,6 +215,7 @@ pub struct Stream {
 
 impl Stream {
     pub(crate) fn new(name: Arc<str>, cfg: BufferConfig) -> Arc<Self> {
+        STREAM_OBJECTS.fetch_add(1, Ordering::Relaxed);
         Arc::new(Self {
             name,
             cfg,
@@ -293,6 +316,7 @@ impl Stream {
             }
             r.newest_micros = r.newest_micros.max(micros);
             r.bytes += len;
+            BUFFERED_BYTES.fetch_add(len, Ordering::Relaxed);
             r.frames.push_back(Entry { item: Item::Frame(Arc::new(frame)), micros });
             r.evict(&self.cfg);
         }
@@ -315,6 +339,7 @@ impl Stream {
             }
             let micros = if r.newest_micros == i64::MIN { cue.at_us } else { r.newest_micros };
             r.bytes += cue.section.len();
+            BUFFERED_BYTES.fetch_add(cue.section.len(), Ordering::Relaxed);
             r.frames.push_back(Entry { item: Item::Cue(cue), micros });
             r.evict(&self.cfg);
         }
@@ -357,6 +382,13 @@ impl Stream {
             .unwrap_or(u64::MAX)
         };
         Subscriber { stream: self.clone(), next, tracks_version: 0, notify: self.notify.subscribe(), counted }
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        BUFFERED_BYTES.fetch_sub(self.ring.get_mut().bytes, Ordering::Relaxed);
+        STREAM_OBJECTS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

@@ -995,6 +995,37 @@ async fn republish_within_the_grace_continues_the_same_playlist() {
     drop(p);
 }
 
+/// Many republishes within the grace, each with a player fetching: the
+/// packager keeps one playlist going, but every ended publish (its
+/// `Stream` and the frames in its window) is freed once the packager has
+/// moved to the next one. Holding the old one would grow memory per
+/// publisher reconnect, which is what bench/soak.py's churn measures.
+#[tokio::test]
+async fn republishing_within_the_grace_frees_each_old_stream() {
+    let fx = fixture();
+    let reg = Registry::new();
+    let app = router(reg.clone(), GRACE, Vec::new());
+    let mut old: Vec<std::sync::Weak<Stream>> = Vec::new();
+    let mut last_msn = 0;
+    for cycle in 0..8 {
+        let p = publish(&reg, "churn", &fx, BufferConfig::default()).await;
+        old.push(Arc::downgrade(p.stream()));
+        push_loops(&p, &fx, 0..2);
+        let pl = wait_playlist(&app, "churn", |pl| listed_msns(pl).last().is_some_and(|&m| m > last_msn + 1)).await;
+        last_msn = *listed_msns(&pl).last().unwrap();
+        assert_eq!(get(&app, "/hls/churn/init.mp4").await.status, StatusCode::OK);
+        // Once the packager reads this publish, the previous one is gone.
+        let t0 = Instant::now();
+        while old[..cycle].iter().any(|w| w.strong_count() > 0) {
+            assert!(t0.elapsed() < Duration::from_secs(5), "cycle {cycle}: an ended publish is still held");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(p);
+        // The packager flushed the tail and is waiting for a republish.
+        wait_playlist(&app, "churn", |pl| pl.contains("PRELOAD-HINT") && !pl.contains("#EXT-X-ENDLIST")).await;
+    }
+}
+
 #[tokio::test]
 async fn blocking_reload_during_the_gap_is_answered_after_republish() {
     let fx = fixture();

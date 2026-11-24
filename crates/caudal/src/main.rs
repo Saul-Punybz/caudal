@@ -11,6 +11,7 @@ mod config;
 mod config_edit;
 mod doctor;
 mod import_mist;
+mod malloc_trim;
 mod metrics;
 mod omt;
 mod process_metrics;
@@ -29,6 +30,14 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
+
+// musl builds (the static release binaries) use mimalloc: musl's own
+// malloc kept freed memory and grew RSS +724 MB/h in a soak with publisher
+// and viewer churn every 2 minutes (run 44952665812). glibc builds keep
+// glibc malloc and trim it instead (src/malloc_trim.rs).
+#[cfg(all(target_env = "musl", not(feature = "dhat-heap")))]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Parser)]
 #[command(name = "caudal", about = "Caudal media server", version)]
@@ -185,6 +194,7 @@ fn main() -> ExitCode {
     };
 
     init_logging();
+    malloc_trim::spawn();
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime");
     let code = rt.block_on(run(cfg, config_path));

@@ -1,0 +1,107 @@
+name: Soak investigation (Linux)
+
+# Short, targeted soaks for the RSS-growth investigation, run on push to a
+# `fix/soak-*` branch so they need neither the weekly soak.yml (which stays
+# disabled) nor a manual dispatch. Same steps as soak.yml; each matrix
+# entry below is one run, and the entries run in parallel on separate
+# runners. Edit the matrix to change what runs; keep it to a handful.
+on:
+  push:
+    branches: ["fix/soak-*"]
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        # Round 5: does RSS plateau? Round 4 (run 44964968157, 70 min):
+        # without trim the live heap and RSS were flat from ~20 min (live
+        # heap -0.33 MB/h from 35 min) and the +8.7 MB/h slope came from
+        # warm-up and churn noise; with trim every 10 s RSS was +42.6 MB/h
+        # (re-faulted pages), so the periodic trim does not help. Here the
+        # runs are long enough to tell a plateau from slow growth, and the
+        # musl entry is the release binary (mimalloc).
+        # Round 3 (run 44957285864, 70 min): glibc + trim +42.6 MB/h (one
+        # +35 MB step at ~37 min), musl + mimalloc +16.3.
+        # Round 2 (run 44952665812, 30 min): glibc control +31.1, fixed
+        # mmap_threshold +21.1, two arenas +9.0, trim every 10 s -63.8,
+        # musl's malloc +723.5. Round 1 (run 44944552859): publisher
+        # restarts alone +28.9, viewer batches alone +14.5, mimalloc on
+        # glibc +9.6 over 60 min.
+        include:
+          - name: glibc-notrim-160m
+            minutes: 160
+            features: heap-metrics
+            env: CAUDAL_MALLOC_TRIM_SECS=0
+          - name: glibc-notrim-arena2-160m
+            minutes: 160
+            features: heap-metrics
+            env: CAUDAL_MALLOC_TRIM_SECS=0 MALLOC_ARENA_MAX=2
+          - name: musl-mimalloc-160m
+            minutes: 160
+            musl: true
+    name: soak ${{ matrix.name }}
+    env:
+      MINUTES: ${{ matrix.minutes || 30 }}
+      CHURN_MINUTES: ${{ matrix.churn_minutes || 2 }}
+      CHURN_KIND: ${{ matrix.churn_kind || 'both' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mlugg/setup-zig@v2
+        if: matrix.musl
+      - uses: taiki-e/install-action@v2
+        if: matrix.musl
+        with:
+          tool: cargo-zigbuild
+      - run: rustup target add x86_64-unknown-linux-musl
+        if: matrix.musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.musl && 'musl' || 'gnu' }}
+          workspaces: |
+            .
+            bench/client
+      - name: Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg python3-matplotlib
+          nproc; free -g; uname -a
+      - name: Build
+        run: |
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            # The release binary (release.yml), where bench/ expects it.
+            cargo zigbuild --release -p caudal --target x86_64-unknown-linux-musl
+            mkdir -p target/release
+            cp target/x86_64-unknown-linux-musl/release/caudal target/release/caudal
+          elif [ -n "${{ matrix.features }}" ]; then
+            cargo build --release -p caudal --features "${{ matrix.features }}"
+          else
+            cargo build --release -p caudal
+          fi
+          (cd bench/client && cargo build --release)
+      - name: Soak
+        run: |
+          set -o pipefail
+          ulimit -n 65536 || true
+          if [ -n "${{ matrix.env }}" ]; then export ${{ matrix.env }}; fi
+          echo "${{ matrix.name }}: env '${{ matrix.env }}'; $MINUTES min, churn ($CHURN_KIND) every $CHURN_MINUTES min"
+          csv="$(python3 bench/soak.py run --minutes "$MINUTES" \
+            --churn-minutes "$CHURN_MINUTES" --churn-kind "$CHURN_KIND")"
+          echo "SOAK_CSV=$csv" >> "$GITHUB_ENV"
+      - name: Verdict
+        if: always() && env.SOAK_CSV != ''
+        run: |
+          set -o pipefail
+          python3 bench/soak.py verdict "$SOAK_CSV" | tee soak-summary.md
+          status=${PIPESTATUS[0]}
+          { echo "## ${{ matrix.name }}"; cat soak-summary.md; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-results-${{ matrix.name }}
+          path: |
+            bench/results/soak-*
+            soak-summary.md

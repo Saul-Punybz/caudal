@@ -17,6 +17,10 @@ captions = ["dep:caudal-captions"]
 # allocation is recorded with its backtrace, and `dhat-heap.json` is written
 # when the server exits. Slow; never for production builds.
 dhat-heap = ["dep:dhat"]
+# `caudal_heap_in_use_bytes` / `caudal_heap_free_bytes` in /metrics, from
+# glibc's mallinfo2 (glibc 2.33+). For soaks (bench/soak.py); no effect
+# on other platforms.
+heap-metrics = []
 
 [dependencies]
 caudal-core.workspace = true
@@ -114,3 +118,7 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 # `process_*` metrics (GetProcessTimes, GetProcessMemoryInfo); already in the tree.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[target.'cfg(target_env = "musl")'.dependencies]
+# The global allocator on musl (see main.rs).
+mimalloc = { version = "0.1", default-features = false }

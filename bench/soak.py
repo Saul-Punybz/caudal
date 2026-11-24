@@ -3,6 +3,7 @@
 
     python3 bench/soak.py run [--minutes 120] [--churn-minutes 15]
                                [--sample-s 30] [--streams 3] [--viewers 10]
+                               [--churn-kind both|publisher|viewers]
     python3 bench/soak.py verdict RESULTS.csv [RESULTS.meta.json]
 
 `run` starts Caudal (bench/caudal-soak.toml: recording on, everything else
@@ -10,7 +11,7 @@ loopback), 2-3 RTMP publishers, and long-lived viewers on LL-HLS, RTSP and
 WHEP (bench/client, one process per stream x protocol, held open for
 ~the whole run). Every `--churn-minutes` it restarts one publisher
 (disconnect + republish) and starts a short-lived extra batch of viewers
-(join, watch, leave); once each, early in the run, it does one
+(join, watch, leave); `--churn-kind` keeps only one of the two halves. Once each, early in the run, it does one
 `POST /api/v1/config/reload` and one clip. Every `--sample-s` it samples the
 server's RSS/fd/thread/CPU (from /proc) and /metrics (streams, viewers,
 bytes) plus the viewers' own error/timeout counts (bench/client
@@ -99,7 +100,18 @@ def fetch_metrics():
     m = re.search(r"^caudal_streams (\d+)", body, re.M)
     viewers = sum(int(v) for v in re.findall(r'^caudal_viewers\{[^}]*\} (\d+)', body, re.M))
     bytes_in = sum(int(v) for v in re.findall(r'^caudal_bytes_in_total\{[^}]*\} (\d+)', body, re.M))
-    return {"streams": int(m.group(1)) if m else None, "viewers": viewers, "bytes_in": bytes_in}
+    out = {"streams": int(m.group(1)) if m else None, "viewers": viewers, "bytes_in": bytes_in}
+    # Memory as the server sees it, next to the RSS the OS reports. The
+    # heap pair is only there in a `--features heap-metrics` glibc build.
+    buffered = re.findall(r'^caudal_buffered_bytes\{[^}]*\} (\d+)', body, re.M)
+    out["buffered_mb"] = round(sum(int(v) for v in buffered) / 1e6, 2) if buffered else None
+    for key, metric, scale in (("stream_objects", "caudal_stream_objects", 1),
+                               ("objects_mb", "caudal_stream_objects_bytes", 1e6),
+                               ("heap_mb", "caudal_heap_in_use_bytes", 1e6),
+                               ("heap_free_mb", "caudal_heap_free_bytes", 1e6)):
+        g = re.search(rf"^{metric} (\d+)", body, re.M)
+        out[key] = round(int(g.group(1)) / scale, 2) if g else None
+    return out
 
 
 def hls_url(stream):
@@ -239,6 +251,10 @@ def try_clip(stream):
 
 def run(argv):
     minutes, churn_minutes, sample_s, streams_n, viewers_n = 120, 15, 30, 3, 10
+    # What one churn event does: restart a publisher, start a batch of
+    # short-lived viewers, or both (the default). Splitting them tells
+    # which half of an event moves memory.
+    churn_kind = "both"
     it = iter(argv)
     for a in it:
         if a == "--minutes":
@@ -251,6 +267,10 @@ def run(argv):
             streams_n = int(next(it))
         elif a == "--viewers":
             viewers_n = int(next(it))
+        elif a == "--churn-kind":
+            churn_kind = next(it)
+            if churn_kind not in ("publisher", "viewers", "both"):
+                sys.exit(f"--churn-kind must be publisher, viewers or both, got {churn_kind}")
         else:
             sys.exit(f"unknown option {a}")
 
@@ -305,7 +325,8 @@ def run(argv):
 
     rows = []
     fieldnames = ["t_s", "ts", "rss_mb", "fd_count", "threads", "cpu_s",
-                  "streams", "viewers", "bytes_in", "client_errors", "client_timeouts", "client_reconnected"]
+                  "streams", "viewers", "bytes_in", "client_errors", "client_timeouts", "client_reconnected",
+                  "buffered_mb", "stream_objects", "objects_mb", "heap_mb", "heap_free_mb"]
     with open(csv_path, "w", newline="") as cf:
         writer = csv.DictWriter(cf, fieldnames=fieldnames)
         writer.writeheader()
@@ -337,6 +358,8 @@ def run(argv):
                     "bytes_in": m.get("bytes_in"), "client_errors": errs, "client_timeouts": tos,
                     "client_reconnected": recs_,
                 }
+                for k in ("buffered_mb", "stream_objects", "objects_mb", "heap_mb", "heap_free_mb"):
+                    row[k] = m.get(k)
                 writer.writerow(row)
                 cf.flush()
                 rows.append(row)
@@ -358,14 +381,16 @@ def run(argv):
 
             if elapsed >= next_churn:
                 cycle += 1
-                target = stream_names[cycle % len(stream_names)]
-                log(f"churn #{cycle}: restarting publisher {target}")
-                bench.stop(publishers[target], grace=2.0)
-                time.sleep(1.0)
-                publishers[target] = spawn_publisher(target, logf)
-                ok = wait_playlist(target, timeout=20)
-                churn_events.append({"t_s": round(elapsed, 1), "action": "publisher_restart",
-                                      "stream": target, "reconnected": ok})
+                if churn_kind in ("publisher", "both"):
+                    target = stream_names[cycle % len(stream_names)]
+                    log(f"churn #{cycle}: restarting publisher {target}")
+                    bench.stop(publishers[target], grace=2.0)
+                    time.sleep(1.0)
+                    publishers[target] = spawn_publisher(target, logf)
+                    ok = wait_playlist(target, timeout=20)
+                    churn_events.append({"t_s": round(elapsed, 1), "action": "publisher_restart",
+                                          "stream": target, "reconnected": ok})
+            if elapsed >= next_churn and churn_kind in ("viewers", "both"):
                 proto = PROTOCOLS[cycle % len(PROTOCOLS)]
                 extra = stream_names[(cycle + 1) % len(stream_names)]
                 out_path = os.path.join(RESULTS, f"soak-{stamp}.churn-{cycle}.out")
@@ -377,6 +402,7 @@ def run(argv):
                 extra_f.close()
                 churn_events.append({"t_s": round(elapsed, 1), "action": "extra_viewers",
                                       "stream": extra, "proto": proto, "duration_s": dur})
+            if elapsed >= next_churn:
                 next_churn += churn_minutes * 60
 
             time.sleep(min(1.0, max(0.0, next_sample - time.monotonic())))
@@ -404,7 +430,7 @@ def run(argv):
     bench.stop(srv)
 
     meta = {
-        "stamp": stamp, "minutes": minutes, "churn_minutes": churn_minutes, "sample_s": sample_s,
+        "stamp": stamp, "minutes": minutes, "churn_minutes": churn_minutes, "churn_kind": churn_kind, "sample_s": sample_s,
         "stream_count": streams_n, "viewers_per_stream": viewers_n, "protocols": list(PROTOCOLS),
         "streams": stream_names, "server_log": server_log, "csv": csv_path,
         "machine": bench.machine(), "src_mbps": rates, "record_enabled": True,
@@ -454,7 +480,9 @@ def read_csv(path):
         out.append({"t_s": num("t_s"), "ts": r.get("ts"), "rss_mb": num("rss_mb"), "fd_count": num("fd_count"),
                      "threads": num("threads"), "cpu_s": num("cpu_s"), "streams": num("streams"),
                      "viewers": num("viewers"), "bytes_in": num("bytes_in"), "client_errors": num("client_errors"),
-                     "client_timeouts": num("client_timeouts"), "client_reconnected": num("client_reconnected")})
+                     "client_timeouts": num("client_timeouts"), "client_reconnected": num("client_reconnected"),
+                     "buffered_mb": num("buffered_mb"), "stream_objects": num("stream_objects"),
+                     "objects_mb": num("objects_mb"), "heap_mb": num("heap_mb"), "heap_free_mb": num("heap_free_mb")})
     return out
 
 
@@ -527,6 +555,17 @@ def verdict(csv_path, meta_path=None):
             fails.append(f"thread count slope {th_slope:.1f}/h, not flat")
         if slope is not None and growth_pct is not None:
             notes.append(f"RSS slope {slope:.3f} MB/h, growth {growth_pct:.1f}%")
+        # Informational, never a failure: the server's own view of its
+        # memory, to tell a leak (these grow too) from allocator retention
+        # (only RSS grows).
+        for key, label in (("objects_mb", "stream buffers (all Stream objects)"), ("buffered_mb", "live buffers"),
+                           ("heap_mb", "heap in use (glibc)"), ("heap_free_mb", "heap free but kept (glibc)"),
+                           ("stream_objects", "Stream objects")):
+            vals = [(r["t_s"] / 3600.0, r[key]) for r in post if r.get(key) is not None]
+            if len(vals) >= 3:
+                ks = lstsq_slope([a for a, _ in vals], [b for _, b in vals])
+                mean = sum(b for _, b in vals) / len(vals)
+                notes.append(f"{label}: slope {ks:+.3f}/h, mean {mean:.1f}, max {max(b for _, b in vals):.1f}")
 
     log_path = meta.get("server_log")
     if log_path and os.path.exists(log_path):

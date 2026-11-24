@@ -29,7 +29,7 @@ mod push;
 
 pub use push::check_caller_url;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SrtConfig {
     pub bind: SocketAddr,
     /// Receiver latency (TSBPD), milliseconds.
@@ -37,6 +37,18 @@ pub struct SrtConfig {
     /// When set, callers must use this passphrase (AES).
     pub passphrase: Option<String>,
     pub buffer: BufferConfig,
+}
+
+/// Hand-written so `{:?}` never prints `passphrase` in full.
+impl std::fmt::Debug for SrtConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SrtConfig")
+            .field("bind", &self.bind)
+            .field("latency_ms", &self.latency_ms)
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "****"))
+            .field("buffer", &self.buffer)
+            .finish()
+    }
 }
 
 /// Push `stream` to `url` (`srt://host:port?streamid=...&passphrase=...`),

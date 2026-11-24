@@ -45,10 +45,15 @@ impl Uploader {
         // reqwest is built without a bundled TLS provider (aws-lc is C);
         // ring is the one Caudal uses everywhere. Already installed is fine.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let parsed = url::Url::parse(url).map_err(|e| format!("invalid upload_url {url:?}: {e}"))?;
+        // An Azure SAS token or a `user:pass@` would otherwise end up in
+        // the error, and from there in the log.
+        let shown = caudal_core::net::redact_url(url);
+        let parsed = url::Url::parse(url).map_err(|e| format!("invalid upload_url {shown:?}: {e}"))?;
         let env = std::env::vars().map(|(k, v)| (k.to_ascii_lowercase(), v));
-        let (store, prefix) =
-            object_store::parse_url_opts(&parsed, env).map_err(|e| format!("upload_url {url:?}: {e}"))?;
+        let (store, prefix) = object_store::parse_url_opts(&parsed, env).map_err(|e| {
+            // object_store quotes the URL it could not use: mask it there too.
+            format!("upload_url {shown:?}: {}", e.to_string().replace(url, &shown))
+        })?;
         let up = Arc::new(Self { queue: Mutex::default(), notify: Notify::new(), busy: Mutex::new(0) });
         tokio::spawn(worker(up.clone(), Arc::from(store), prefix));
         Ok(up)
@@ -151,4 +156,18 @@ async fn upload(store: &dyn ObjectStore, local: &std::path::Path, dest: &ObjPath
         return Err(Failure::Other(e));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_errors_mask_the_url_secrets() {
+        let Err(e) = Uploader::start("nosuchstore://u:pw@bucket/prefix?sig=s3cret") else {
+            panic!("an unknown scheme is refused")
+        };
+        assert!(e.contains("sig=****"), "{e}");
+        assert!(!e.contains("s3cret") && !e.contains(":pw@"), "{e}");
+    }
 }

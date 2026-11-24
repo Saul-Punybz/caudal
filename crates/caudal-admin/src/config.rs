@@ -51,11 +51,18 @@ impl Default for AdminSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct UserEntry {
     pub name: String,
     pub password_hash: String,
+}
+
+/// Hand-written so `{:?}` never prints `password_hash` in full.
+impl std::fmt::Debug for UserEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserEntry").field("name", &self.name).field("password_hash", &"****").finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -67,7 +74,7 @@ pub struct ApiTokenEntry {
 }
 
 /// `[admin.oidc]`: authorization code flow with PKCE.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OidcSection {
     /// e.g. `https://accounts.google.com`; discovery reads
@@ -88,6 +95,21 @@ pub struct OidcSection {
     /// Scopes asked for besides `openid email profile` (e.g. `groups`).
     #[serde(default)]
     pub scopes: Vec<String>,
+}
+
+/// Hand-written so `{:?}` never prints `client_secret` in full.
+impl std::fmt::Debug for OidcSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcSection")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "****"))
+            .field("redirect_url", &self.redirect_url)
+            .field("allowed_emails", &self.allowed_emails)
+            .field("allowed_groups", &self.allowed_groups)
+            .field("scopes", &self.scopes)
+            .finish()
+    }
 }
 
 /// Path the OIDC provider redirects back to.

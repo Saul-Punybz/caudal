@@ -124,10 +124,13 @@ async fn worker(
 async fn deliver_one(http: &reqwest::Client, webhook: &standardwebhooks::Webhook, url: &str, payload: &[u8]) {
     let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let timestamp = OffsetDateTime::now_utc().unix_timestamp();
+    // The URL itself can be the secret (a Slack incoming webhook carries
+    // it in the path): logs show only its scheme and host.
+    let shown = caudal_core::net::redact_url_host(url);
     let signature = match webhook.sign(&msg_id, timestamp, payload) {
         Ok(sig) => sig,
         Err(err) => {
-            tracing::warn!(url, error = %err, "failed to sign alert payload");
+            tracing::warn!(url = %shown, error = %err, "failed to sign alert payload");
             return;
         }
     };
@@ -152,20 +155,20 @@ async fn deliver_one(http: &reqwest::Client, webhook: &standardwebhooks::Webhook
                     return;
                 }
                 if !status.is_server_error() {
-                    tracing::warn!(url, %status, "alert webhook rejected; not retrying");
+                    tracing::warn!(url = %shown, %status, "alert webhook rejected; not retrying");
                     return;
                 }
-                tracing::warn!(url, %status, attempt, "alert webhook delivery failed");
+                tracing::warn!(url = %shown, %status, attempt, "alert webhook delivery failed");
             }
             Err(err) => {
-                tracing::warn!(url, error = %err, attempt, "alert webhook delivery error");
+                tracing::warn!(url = %shown, error = %err.without_url(), attempt, "alert webhook delivery error");
             }
         }
 
         match BACKOFFS.get(attempt - 1) {
             Some(delay) => tokio::time::sleep(*delay).await,
             None => {
-                tracing::warn!(url, "alert webhook delivery exhausted retries");
+                tracing::warn!(url = %shown, "alert webhook delivery exhausted retries");
                 return;
             }
         }
@@ -186,5 +189,51 @@ mod tests {
         // Alert payloads keep their shape.
         let a = serde_json::to_value(AlertPayload::new("alert", "no_keyframe", "main", 12.0, 10.0)).unwrap();
         assert!(a.get("from").is_none() && a.get("to").is_none() && a.get("reason").is_none());
+    }
+
+    /// Every log line written while the subscriber is the default.
+    #[derive(Clone, Default)]
+    struct Logs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delivery_logs_never_show_the_url_path() {
+        let logs = Logs::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let app = axum::Router::new().fallback(|| async { axum::http::StatusCode::BAD_REQUEST });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+
+        let webhook = standardwebhooks::Webhook::new("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").unwrap();
+        let http = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        deliver_one(&http, &webhook, &format!("http://{addr}/services/T000/B000/SLACKSECRET"), b"{}").await;
+        deliver_one(&http, &webhook, &format!("http://{closed}/hook/TOKENSECRET?sig=QUERYSECRET"), b"{}").await;
+
+        let out = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(out.contains("alert webhook rejected") && out.contains("exhausted retries"), "{out}");
+        assert!(out.contains(&format!("http://{addr}/…#")), "{out}");
+        for secret in ["SLACKSECRET", "T000", "TOKENSECRET", "QUERYSECRET"] {
+            assert!(!out.contains(secret), "{secret} logged:\n{out}");
+        }
     }
 }

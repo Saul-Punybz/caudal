@@ -73,12 +73,13 @@ pub struct HlsPull {
 /// Checks a pull URL: `http://` or `https://` with a host. The path need
 /// not end in `.m3u8`; what the server sends is checked when fetched.
 pub fn parse_url(url: &str) -> Result<Url, String> {
-    let u = Url::parse(url).map_err(|e| format!("{url:?}: {e}"))?;
+    let shown = caudal_core::net::redact_url(url);
+    let u = Url::parse(url).map_err(|e| format!("{shown:?}: {e}"))?;
     if !matches!(u.scheme(), "http" | "https") {
-        return Err(format!("{url:?}: expected http:// or https://"));
+        return Err(format!("{shown:?}: expected http:// or https://"));
     }
     if u.host_str().is_none_or(str::is_empty) {
-        return Err(format!("{url:?}: needs a host"));
+        return Err(format!("{shown:?}: needs a host"));
     }
     Ok(u)
 }
@@ -104,11 +105,17 @@ enum Outcome {
     Fatal,
 }
 
+/// `url` safe for a log line or an error string: its password and query
+/// values (a CDN's signed token) masked.
+fn shown(url: &Url) -> String {
+    caudal_core::net::redact_url(url.as_str())
+}
+
 async fn get(client: &reqwest::Client, url: &Url) -> Result<reqwest::Response, String> {
     match client.get(url.clone()).send().await {
         Ok(r) if r.status().is_success() => Ok(r),
-        Ok(r) => Err(format!("{url}: HTTP {}", r.status())),
-        Err(e) => Err(format!("{url}: {e}")),
+        Ok(r) => Err(format!("{}: HTTP {}", shown(url), r.status())),
+        Err(e) => Err(format!("{}: {}", shown(url), e.without_url())),
     }
 }
 
@@ -117,8 +124,8 @@ async fn get(client: &reqwest::Client, url: &Url) -> Result<reqwest::Response, S
 async fn fetch_playlist(client: &reqwest::Client, url: &Url) -> Result<(Url, Playlist), String> {
     let resp = get(client, url).await?;
     let base = resp.url().clone();
-    let text = resp.text().await.map_err(|e| format!("{url}: {e}"))?;
-    let p = playlist::parse(&text, &base).map_err(|e| format!("{base}: {e}"))?;
+    let text = resp.text().await.map_err(|e| format!("{}: {}", shown(url), e.without_url()))?;
+    let p = playlist::parse(&text, &base).map_err(|e| format!("{}: {e}", shown(&base)))?;
     Ok((base, p))
 }
 
@@ -129,10 +136,12 @@ async fn resolve(client: &reqwest::Client, url: &Url) -> Result<(Url, Media), St
         (base, Playlist::Media(m)) => Ok((base, m)),
         (_, Playlist::Master(variants)) => {
             let best = playlist::best_variant(&variants).expect("a master playlist has variants");
-            tracing::debug!(variant = %best.uri, bandwidth = best.bandwidth, "hls pull: picked the highest bandwidth");
+            tracing::debug!(variant = %shown(&best.uri), bandwidth = best.bandwidth, "hls pull: picked the highest bandwidth");
             match fetch_playlist(client, &best.uri).await? {
                 (base, Playlist::Media(m)) => Ok((base, m)),
-                (base, Playlist::Master(_)) => Err(format!("{base}: a master playlist inside a master playlist")),
+                (base, Playlist::Master(_)) => {
+                    Err(format!("{}: a master playlist inside a master playlist", shown(&base)))
+                }
             }
         }
     }
@@ -158,7 +167,7 @@ fn publish(
 ) -> Result<Publisher, Outcome> {
     match registry.publish(&pull.stream, buffer) {
         Ok(p) => {
-            tracing::info!(stream = %pull.stream, url = %caudal_core::net::redact_url(media_url.as_str()), "hls pull: segments arriving; published");
+            tracing::info!(stream = %pull.stream, url = %shown(media_url), "hls pull: segments arriving; published");
             Ok(p)
         }
         Err(PublishError::Busy(_)) => {
@@ -175,10 +184,10 @@ fn publish(
 /// Fetches and parses an fMP4 init segment.
 async fn fetch_init(client: &reqwest::Client, map: &Url) -> Result<Fmp4Demux, (bool, String)> {
     let body = match get(client, map).await {
-        Ok(r) => r.bytes().await.map_err(|e| (false, format!("{map}: {e}")))?,
+        Ok(r) => r.bytes().await.map_err(|e| (false, format!("{}: {}", shown(map), e.without_url())))?,
         Err(e) => return Err((false, e)),
     };
-    Fmp4Demux::new(&body).map_err(|e| (true, format!("{map}: {e}")))
+    Fmp4Demux::new(&body).map_err(|e| (true, format!("{}: {e}", shown(map))))
 }
 
 fn stall_after(target_duration: f64) -> Duration {
@@ -224,7 +233,7 @@ async fn session(
     let mut started: Option<Instant> = None;
     loop {
         if let Some(why) = unsupported(&media) {
-            tracing::error!(stream = %pull.stream, url = %caudal_core::net::redact_url(media_url.as_str()), "hls pull: {why}");
+            tracing::error!(stream = %pull.stream, url = %shown(&media_url), "hls pull: {why}");
             return if sink.is_some() { Outcome::Flowed } else { Outcome::Unsupported };
         }
         let td = media.target_duration;
@@ -259,7 +268,7 @@ async fn session(
             fresh = true;
             last_new = Instant::now();
             let body = match get(client, &seg.uri).await {
-                Ok(r) => r.bytes().await.map_err(|e| format!("{}: {e}", seg.uri)),
+                Ok(r) => r.bytes().await.map_err(|e| format!("{}: {}", shown(&seg.uri), e.without_url())),
                 Err(e) => Err(e),
             };
             let body = match body {
@@ -294,7 +303,7 @@ async fn session(
         match fetch_playlist(client, &media_url).await {
             Ok((_, Playlist::Media(m))) => media = m,
             Ok((_, Playlist::Master(_))) => {
-                tracing::warn!(stream = %pull.stream, url = %caudal_core::net::redact_url(media_url.as_str()), "hls pull: the media playlist became a master");
+                tracing::warn!(stream = %pull.stream, url = %shown(&media_url), "hls pull: the media playlist became a master");
             }
             Err(e) => tracing::warn!(stream = %pull.stream, error = %e, "hls pull: playlist reload failed"),
         }
@@ -324,7 +333,7 @@ async fn load_init(
 
 fn push_fmp4(pull: &HlsPull, seg: &Segment, i: &mut Fmp4Ingest, body: &bytes::Bytes) {
     if let Err(e) = i.feed(body) {
-        tracing::warn!(stream = %pull.stream, segment = %seg.uri, error = %e, "hls pull: bad fMP4 segment skipped");
+        tracing::warn!(stream = %pull.stream, segment = %shown(&seg.uri), error = %e, "hls pull: bad fMP4 segment skipped");
     }
 }
 
@@ -356,7 +365,7 @@ async fn feed(
                 }
                 if i.map() != map {
                     let d = load_init(client, pull, seg, map).await?;
-                    tracing::info!(stream = %pull.stream, init = %map, "hls pull: new init segment");
+                    tracing::info!(stream = %pull.stream, init = %shown(map), "hls pull: new init segment");
                     i.new_init(map.clone(), d);
                 }
                 push_fmp4(pull, seg, i, body);
@@ -373,7 +382,7 @@ async fn feed(
             if body.first() != Some(&TS_SYNC) {
                 tracing::error!(
                     stream = %pull.stream,
-                    segment = %seg.uri,
+                    segment = %shown(&seg.uri),
                     "hls pull: the segment is not MPEG-TS (fMP4 without EXT-X-MAP, or packed audio); not supported"
                 );
                 return Err(Some(Outcome::Unsupported));
@@ -488,6 +497,16 @@ impl HlsPullHandle {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn fetch_errors_mask_the_token() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let url = Url::parse(&format!("http://u:pw@{closed}/live/index.m3u8?token=s3cret")).unwrap();
+        let client = reqwest::Client::new();
+        let e = fetch_playlist(&client, &url).await.unwrap_err();
+        assert!(e.contains("token=****"), "{e}");
+        assert!(!e.contains("s3cret") && !e.contains(":pw@"), "{e}");
+    }
+
     #[test]
     fn urls() {
         assert!(parse_url("http://10.0.0.5:8080/live/index.m3u8").is_ok());
@@ -495,6 +514,8 @@ mod tests {
         assert!(parse_url("https://cdn.example/playlist").is_ok(), "any path");
         assert!(parse_url("rtmp://h/app").unwrap_err().contains("http://"));
         assert!(parse_url("not a url").is_err());
+        let e = parse_url("ftp://u:pw@cdn.example/live.m3u8?token=s3cret").unwrap_err();
+        assert!(!e.contains("s3cret") && !e.contains("pw"), "{e}");
         assert!(is_playlist_url("http://h/live/INDEX.M3U8?token=x"));
         assert!(!is_playlist_url("http://h/stream.ts"));
         assert!(!is_playlist_url("http://h/?u=a.m3u8"), "the path, not the query");

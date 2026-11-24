@@ -18,10 +18,12 @@ mod gate_hook;
 mod hooks_delivery;
 mod jwks;
 mod rewrite_hook;
+mod source_hook;
 mod stream_keys;
 
 pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError, ReplyMode, mist_bool};
 pub use rewrite_hook::{RewriteHook, RewriteHookConfig, RewriteHookMetric, RewriteHookStats};
+pub use source_hook::{SourceHook, SourceHookConfig, SourceHookStats};
 pub use stream_keys::{
     MAX_KEY_LEN, MIN_KEY_LEN, StreamKey, StreamKeyMetric, StreamKeyStats, StreamKeyTable, validate_key,
 };

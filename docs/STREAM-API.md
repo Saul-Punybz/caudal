@@ -26,11 +26,17 @@ One edit runs at a time.
 
 | | |
 |---|---|
-| `GET /api/v1/pulls` | `[{"stream", "url", "section"}]` |
+| `GET /api/v1/pulls` | `[{"stream", "url", "section", "on_demand", "state", "idle_secs", "viewers"}]` |
 | `POST /api/v1/pulls` `{"stream": "cam1", "url": "rtsp://10.0.0.5/live"}` | adds a `[[rtsp.pull]]` |
 | `DELETE /api/v1/pulls/{stream}[?url=...]` | removes the stream's pulls (only that url when given) |
 
 A pull can be `rtsp://`/`rtsps://` (`[[rtsp.pull]]`), `srt://` (`[[srt.pull]]`, Caudal calls the listener), `udp://`/`rtp://` (`[[udp.pull]]`, MPEG-TS over UDP), `http://`/`https://` with a path ending in `.m3u8` (`[[hls.pull]]`, an HLS or LL-HLS playlist), any other `http://`/`https://` (`[[http.pull]]`, MPEG-TS served over HTTP) or `rtmp://`/`rtmps://` (`[[rtmp.pull]]`, Caudal plays from a remote RTMP server). A stream can have one pull, across all of them. See `docs/PULL-INPUTS.md`.
+
+`state` is `live` or `connecting` for an always-on pull, and `idle`,
+`starting`, `live`, `stopping` or `failed` for an `on_demand = true` one
+(`idle_secs` only on those). Pulls `[auth.source]` started are listed while
+they run, with `"section": "[auth.source]"`. See `docs/ON-DEMAND.md`. An
+`on_demand` entry is added by editing the file; `POST` adds always-on pulls.
 
 ## Pushes
 

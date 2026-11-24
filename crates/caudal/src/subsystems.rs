@@ -1019,7 +1019,8 @@ mod tests {
         cfg.validate().unwrap();
         let registry = caudal_core::Registry::new();
         let access = cfg.access.to_access_config().unwrap().checker().unwrap();
-        apply_auth(&registry, &access, &None, &HookStats::default(), &cfg.auth);
+        let on_demand = crate::on_demand::OnDemand::install(&registry, cfg.buffer.to_buffer_config());
+        apply_auth(&registry, &access, &None, &HookStats::default(), &on_demand, &cfg.auth);
 
         let ok_ip = "198.51.100.4".parse().ok();
         let blocked_ip = "192.0.2.9".parse().ok();

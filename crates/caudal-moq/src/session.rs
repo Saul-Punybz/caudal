@@ -85,7 +85,8 @@ async fn serve(
     let consumer = match allowed(&registry, &origin, &path, token.as_deref()).await {
         Ok(c) => c,
         Err(code) => {
-            tracing::debug!(path = %path, code, %transport, "moq: session refused");
+            let path = registry.loggable(&path);
+            tracing::debug!(%path, code, %transport, "moq: session refused");
             let _ = request.close(code).await;
             return;
         }
@@ -134,7 +135,8 @@ async fn serve_ingest(
         Ok(n) => n,
         Err(d) => {
             let code = status(d);
-            tracing::debug!(stream = %name, code, %transport, "moq: publish refused");
+            let stream = registry.loggable(&name);
+            tracing::debug!(%stream, code, %transport, "moq: publish refused");
             let _ = request.close(code).await;
             return;
         }

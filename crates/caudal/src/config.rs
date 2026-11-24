@@ -211,7 +211,7 @@ pub struct HlsSection {
     #[serde(default = "default_dash_max_playback_rate")]
     pub dash_max_playback_rate: f64,
     /// HLS or LL-HLS pulled in (`[[hls.pull]]`): a remote playlist with
-    /// MPEG-TS segments published as a stream. Reloadable, unlike the
+    /// MPEG-TS or fMP4/CMAF segments published as a stream. Reloadable, unlike the
     /// output settings above.
     #[serde(default)]
     pub pull: Vec<HlsPullEntry>,
@@ -1652,8 +1652,102 @@ pub struct AuthSection {
     pub play: bool,
     /// Blocking authorization webhook, asked after the token check.
     pub hook: Option<AuthHookSection>,
-    /// Blocking routing webhook, asked before everything else.
+    /// Blocking routing webhook, asked before everything else but stream
+    /// keys.
     pub rewrite: Option<AuthRewriteSection>,
+    /// `[[auth.stream_keys]]`: secrets an encoder publishes with in place
+    /// of the stream name. See `docs/STREAM-KEYS.md`.
+    pub stream_keys: Vec<StreamKeySection>,
+    /// A TOML file of more `[[stream_keys]]`, read at start and on every
+    /// reload (SIGHUP, `POST /api/v1/config/reload`). A relative path is
+    /// relative to the working directory.
+    pub stream_keys_file: Option<std::path::PathBuf>,
+    /// A stream with a publish key refuses a publish that came without
+    /// it (a token or the bare name). Default false.
+    pub stream_keys_only: bool,
+    /// The most tokens signed with `secret` may grant.
+    pub secret_permissions: Option<KeyPermissionsSection>,
+    /// The most tokens signed with a JWKS key may grant, by `kid`.
+    pub key_permissions: Vec<KidPermissionsSection>,
+    /// The keys read from `stream_keys_file` (see `Config::read_external`);
+    /// part of `PartialEq`, so a reload sees a changed file.
+    #[serde(skip)]
+    pub file_stream_keys: Vec<StreamKeySection>,
+}
+
+/// One stream key. `Debug` never prints the key.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StreamKeySection {
+    pub key: String,
+    pub stream: String,
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default)]
+    pub play: bool,
+}
+
+impl std::fmt::Debug for StreamKeySection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamKeySection")
+            .field("key", &"****")
+            .field("stream", &self.stream)
+            .field("publish", &self.publish)
+            .field("play", &self.play)
+            .finish()
+    }
+}
+
+/// The shape of `[auth] stream_keys_file`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct StreamKeysFile {
+    stream_keys: Vec<StreamKeySection>,
+}
+
+/// `[auth.secret_permissions]`: MistServer's per-key `input`/`output`/
+/// `stream`. Defaults allow everything, so only what is set narrows.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyPermissionsSection {
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// Exact names or `prefix*`; empty: any stream.
+    #[serde(default)]
+    pub streams: Vec<String>,
+}
+
+/// `[[auth.key_permissions]]`: [`KeyPermissionsSection`] for one JWKS `kid`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KidPermissionsSection {
+    pub kid: String,
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default = "default_true")]
+    pub play: bool,
+    #[serde(default)]
+    pub streams: Vec<String>,
+}
+
+fn key_permissions(
+    what: &str,
+    publish: bool,
+    play: bool,
+    streams: &[String],
+) -> Result<caudal_auth::KeyPermissions, String> {
+    if !publish && !play {
+        return Err(format!("{what}: `publish` and `play` are both false; remove the key instead"));
+    }
+    for p in streams {
+        let concrete = p.strip_suffix('*').unwrap_or(p);
+        if concrete.contains('*') || (!concrete.is_empty() && !caudal_core::media::valid_stream_name(concrete)) {
+            return Err(format!("{what}: `{p}` is not a stream name or a `prefix*` pattern"));
+        }
+    }
+    Ok(caudal_auth::KeyPermissions { publish, play, streams: streams.to_vec() })
 }
 
 impl Default for AuthSection {
@@ -1666,6 +1760,12 @@ impl Default for AuthSection {
             play: false,
             hook: None,
             rewrite: None,
+            stream_keys: Vec::new(),
+            stream_keys_file: None,
+            stream_keys_only: false,
+            secret_permissions: None,
+            key_permissions: Vec::new(),
+            file_stream_keys: Vec::new(),
         }
     }
 }
@@ -1850,7 +1950,84 @@ impl AuthSection {
             }),
             (None, None) => None,
         };
-        Ok(caudal_auth::AuthConfig { keys, publish: self.publish, play: self.play })
+        let secret_permissions = match &self.secret_permissions {
+            Some(_) if self.secret.is_none() => {
+                return Err("[auth.secret_permissions] needs `secret`".into());
+            }
+            Some(p) => Some(key_permissions("[auth.secret_permissions]", p.publish, p.play, &p.streams)?),
+            None => None,
+        };
+        if !self.key_permissions.is_empty() && self.jwks_url.is_none() {
+            return Err("[[auth.key_permissions]] needs `jwks_url`".into());
+        }
+        let mut kid_permissions = std::collections::HashMap::new();
+        for k in &self.key_permissions {
+            if k.kid.is_empty() {
+                return Err("[[auth.key_permissions]] needs a `kid`".into());
+            }
+            let what = format!("[[auth.key_permissions]] kid `{}`", k.kid);
+            let perms = key_permissions(&what, k.publish, k.play, &k.streams)?;
+            if kid_permissions.insert(k.kid.clone(), perms).is_some() {
+                return Err(format!("{what} is listed twice"));
+            }
+        }
+        Ok(caudal_auth::AuthConfig {
+            keys,
+            publish: self.publish,
+            play: self.play,
+            secret_permissions,
+            kid_permissions,
+        })
+    }
+
+    /// Every stream key, from `[[auth.stream_keys]]` then the file,
+    /// validated. Errors name the stream, never the key.
+    pub fn stream_keys(&self) -> Result<Vec<caudal_auth::StreamKey>, String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(self.stream_keys.len() + self.file_stream_keys.len());
+        for (from, k) in self
+            .stream_keys
+            .iter()
+            .map(|k| ("[[auth.stream_keys]]", k))
+            .chain(self.file_stream_keys.iter().map(|k| ("stream_keys_file", k)))
+        {
+            let what = format!("{from} for `{}`", k.stream);
+            caudal_auth::validate_key(&k.key).map_err(|e| format!("{what}: {e}"))?;
+            if !caudal_core::media::valid_stream_name(&k.stream) {
+                return Err(format!("{what}: not a valid stream name"));
+            }
+            if !k.publish && !k.play {
+                return Err(format!("{what}: `publish` and `play` are both false"));
+            }
+            if !seen.insert(k.key.as_str()) {
+                return Err(format!("{what}: the same key is listed twice"));
+            }
+            out.push(caudal_auth::StreamKey {
+                key: k.key.clone(),
+                stream: k.stream.clone(),
+                publish: k.publish,
+                play: k.play,
+            });
+        }
+        if self.stream_keys_only && out.is_empty() {
+            return Err("[auth] stream_keys_only needs at least one stream key".into());
+        }
+        Ok(out)
+    }
+
+    /// Reads `stream_keys_file` into `file_stream_keys`.
+    fn read_stream_keys_file(&mut self) -> Result<(), String> {
+        let Some(path) = &self.stream_keys_file else {
+            self.file_stream_keys.clear();
+            return Ok(());
+        };
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("[auth] stream_keys_file {}: {e}", path.display()))?;
+        // `toml`'s error quotes the offending line, which may hold a key.
+        let file: StreamKeysFile = toml::from_str(&text)
+            .map_err(|_| format!("[auth] stream_keys_file {}: not a valid `[[stream_keys]]` file", path.display()))?;
+        self.file_stream_keys = file.stream_keys;
+        Ok(())
     }
 
     /// `[auth.hook]` as the runtime config, `None` when absent.
@@ -2086,6 +2263,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         self.tls.to_tls_config()?;
         self.auth.to_auth_config()?;
+        self.auth.stream_keys()?;
         self.auth.hook_config()?;
         self.auth.rewrite_config()?;
         self.access.to_access_config()?;
@@ -2318,14 +2496,117 @@ impl Config {
 /// span-aware `Display` impl).
 pub fn load(path: &Path) -> Result<Config, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let cfg: Config = toml::from_str(&text).map_err(|e| e.to_string())?;
+    let mut cfg: Config = toml::from_str(&text).map_err(|e| e.to_string())?;
+    cfg.read_external()?;
     cfg.validate()?;
     Ok(cfg)
+}
+
+impl Config {
+    /// Reads the files the config points at whose contents are part of the
+    /// config itself (`[auth] stream_keys_file`). Called by every path that
+    /// turns TOML text into a running config, before `validate`.
+    pub fn read_external(&mut self) -> Result<(), String> {
+        self.auth.read_stream_keys_file()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `caudal.example.toml` as shipped, then with each commented example
+    /// block uncommented in turn: every one must parse and validate, so the
+    /// example never shows a key that was renamed or removed. A block is a
+    /// run of commented TOML lines (`# [table]`, `# key = ...`, `# # alt`,
+    /// or a `#   # note` continuation); a prose comment, a bare `#` or a blank
+    /// line ends it. A block that needs another one (RTMPS needs `[tls]`'s
+    /// certificate) is uncommented together with it. Placeholders such as
+    /// `$argon2id$...` are filled in first, as a reader would.
+    #[test]
+    fn example_config_blocks_each_validate() {
+        const EXAMPLE: &str = include_str!("../../../caudal.example.toml");
+        fn is_toml_line(rest: &str) -> bool {
+            let t = rest.trim_start();
+            if t.starts_with('#') {
+                return true; // `# # alt = ...`, or an aligned continuation of the comment above
+            }
+            if rest.starts_with(' ') {
+                return false;
+            }
+            let header = t.starts_with('[')
+                && t.rsplit_once(']').is_some_and(|(_, after)| {
+                    let after = after.trim();
+                    after.is_empty() || after.starts_with('#')
+                });
+            header
+                || t.split_once(" = ").is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                })
+        }
+        let lines: Vec<&str> = EXAMPLE.lines().collect();
+        let toml_line = |l: &str| l.strip_prefix("# ").is_some_and(is_toml_line);
+        let mut blocks: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if toml_line(lines[i]) {
+                let start = i;
+                while i < lines.len() && toml_line(lines[i]) {
+                    i += 1;
+                }
+                blocks.push((start, i));
+            } else {
+                i += 1;
+            }
+        }
+        let uncomment = |ranges: &[(usize, usize)]| -> String {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(n, l)| if ranges.iter().any(|&(a, b)| (a..b).contains(&n)) { &l[2..] } else { l })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let block_with =
+            |needle: &str| *blocks.iter().find(|&&(a, b)| lines[a..b].iter().any(|l| l.contains(needle))).unwrap();
+        // Blocks that only make sense together with another one.
+        let needs = [
+            ("# tls_bind = \"0.0.0.0:1936\"", "# [tls]"),
+            ("# [[access.rules]]", "# [access]"),
+            ("# [auth.secret_permissions]", "# [auth]"),
+        ];
+        // Placeholders the reader replaces, with values of the right shape.
+        let phc = caudal_admin::hash_password("example passphrase").unwrap();
+        let placeholders =
+            [("$argon2id$v=19$m=19456,t=2,p=1$...", phc.as_str()), ("<64 hex characters>", &"ab".repeat(32))];
+        let check = |what: &str, text: &str| {
+            let mut text = text.to_owned();
+            for (placeholder, value) in &placeholders {
+                text = text.replace(placeholder, value);
+            }
+            let cfg: Config = toml::from_str(&text).unwrap_or_else(|e| panic!("{what}: does not parse: {e}"));
+            if let Err(e) = cfg.validate() {
+                // Features compiled out reject their section with a clear
+                // message; a file the example names (the GeoIP database) is
+                // not on this machine.
+                // Not found: os error 2 on Unix; on Windows 2 (file) or 3
+                // (a directory of the path is missing, as `/etc/caudal/`).
+                let missing_file = e.contains("(os error 2)") || (cfg!(windows) && e.contains("(os error 3)"));
+                assert!(e.contains(crate::captions::NOT_BUILT) || missing_file, "{what}: does not validate: {e}");
+            }
+        };
+        check("the file as shipped", EXAMPLE);
+        assert!(blocks.len() > 30, "found only {} example blocks: the splitter broke", blocks.len());
+        for &(a, b) in &blocks {
+            let mut ranges = vec![(a, b)];
+            for (dependent, dependency) in needs {
+                if lines[a..b].iter().any(|l| l.contains(dependent)) {
+                    ranges.push(block_with(dependency));
+                }
+            }
+            check(&format!("lines {}-{} uncommented ({})", a + 1, b, lines[a].trim()), &uncomment(&ranges));
+        }
+    }
 
     #[test]
     fn multicast_entries() {

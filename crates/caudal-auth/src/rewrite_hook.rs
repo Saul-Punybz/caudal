@@ -31,7 +31,7 @@ use serde_json::json;
 use crate::blocking::{FlightCache, Signer, deny_reason, small_body};
 use crate::{Action, OnError};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RewriteHookConfig {
     pub url: String,
     /// Standard Webhooks secret (`whsec_...`).
@@ -47,6 +47,22 @@ pub struct RewriteHookConfig {
     pub cache: Duration,
     /// How long a denial or a failure is remembered.
     pub deny_cache: Duration,
+}
+
+/// Hand-written so `{:?}` never prints `secret` or `url` in full.
+impl std::fmt::Debug for RewriteHookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RewriteHookConfig")
+            .field("url", &caudal_core::net::redact_url_host(&self.url))
+            .field("secret", &"****")
+            .field("timeout", &self.timeout)
+            .field("on_error", &self.on_error)
+            .field("publish", &self.publish)
+            .field("play", &self.play)
+            .field("cache", &self.cache)
+            .field("deny_cache", &self.deny_cache)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

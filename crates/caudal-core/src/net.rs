@@ -1,7 +1,8 @@
 //! IP address helpers shared by every protocol: CIDR parsing/matching (used
 //! by `[server] trusted_proxies` and by `caudal-access`'s `[[access]]`
 //! rules) and resolving the real client address behind a trusted reverse
-//! proxy. Also [`redact_url`], for showing a configured URL in logs.
+//! proxy. Also [`redact_url`] and [`redact_url_host`], for showing a
+//! configured URL in logs.
 
 use std::net::IpAddr;
 
@@ -130,9 +131,45 @@ pub fn redact_url(url: &str) -> String {
     out
 }
 
+/// `url` reduced to `scheme://host[:port]`, for URLs whose secret is the
+/// path itself (a Slack incoming webhook, `https://hooks.slack.com/services/
+/// T000/B000/XXXX`, or any webhook with a token in the path). When anything
+/// follows the host, it is replaced by `/…#` and a short stable hash of the
+/// whole URL, so two targets on one host can still be told apart in logs;
+/// 32 bits of FNV-1a do not help guess a high-entropy secret. User info is
+/// dropped. Anything without `://` is shown as `****`.
+pub fn redact_url_host(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return "****".to_owned() };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if tail.is_empty() || tail == "/" {
+        return format!("{scheme}://{host}");
+    }
+    format!("{scheme}://{host}/…#{:08x}", fnv1a32(url.as_bytes()))
+}
+
+fn fnv1a32(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5_u32, |h, b| (h ^ u32::from(*b)).wrapping_mul(0x0100_0193))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_url_host_keeps_only_scheme_and_host() {
+        let slack = "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX";
+        let shown = redact_url_host(slack);
+        assert!(shown.starts_with("https://hooks.slack.com/…#"), "{shown}");
+        assert!(!shown.contains("XXXX") && !shown.contains("T000"), "{shown}");
+        assert_eq!(shown, redact_url_host(slack), "stable");
+        assert_ne!(shown, redact_url_host("https://hooks.slack.com/services/T000/B000/YYYY"), "targets differ");
+        assert_eq!(redact_url_host("http://u:pw@10.0.0.5:8080"), "http://10.0.0.5:8080");
+        assert_eq!(redact_url_host("http://10.0.0.5:8080/"), "http://10.0.0.5:8080");
+        assert!(!redact_url_host("https://h?token=abc").contains("abc"));
+        assert_eq!(redact_url_host("garbage"), "****");
+    }
 
     #[test]
     fn redact_url_masks_passwords_and_query_values() {

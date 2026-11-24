@@ -126,7 +126,11 @@ impl RtmpSection {
 
     /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
     pub fn pull_targets(&self) -> Vec<caudal_rtmp::RtmpPull> {
-        self.pull.iter().map(|p| caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 }
 
@@ -137,9 +141,18 @@ impl RtmpSection {
 pub struct RtmpPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct SrtSection {
     #[serde(default = "default_srt_bind")]
@@ -151,7 +164,20 @@ pub struct SrtSection {
     /// Push streams out to remote SRT listeners.
     pub push: Vec<SrtPushEntry>,
     /// Pull streams in from remote SRT listeners (Caudal calls them).
-    pub pull: Vec<SrtPushEntry>,
+    pub pull: Vec<SrtPullEntry>,
+}
+
+/// Hand-written so `{:?}` never prints `passphrase` in full.
+impl std::fmt::Debug for SrtSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SrtSection")
+            .field("bind", &self.bind)
+            .field("latency_ms", &self.latency_ms)
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "****"))
+            .field("push", &self.push)
+            .field("pull", &self.pull)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -159,6 +185,24 @@ pub struct SrtSection {
 pub struct SrtPushEntry {
     pub stream: String,
     pub url: String,
+}
+
+/// One `[[srt.pull]]`: call the SRT listener at `url` and publish what it
+/// sends as `stream`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SrtPullEntry {
+    pub stream: String,
+    pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl Default for SrtSection {
@@ -209,11 +253,24 @@ pub struct HlsSection {
 pub struct HlsPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl HlsSection {
     pub fn pull_targets(&self) -> Vec<caudal_hls_pull::HlsPull> {
-        self.pull.iter().map(|p| caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 
     /// The output settings alone: what a change of needs a restart.
@@ -314,7 +371,8 @@ pub struct Config {
 /// `docs/research/CLUSTER.md`). Origins take publishers and serve their
 /// streams to edges over MoQ; edges pull a stream from the first origin
 /// that has it when their first viewer asks for it.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+// Not `Eq`: `balance` holds f64s. `Debug` by hand (below): it never prints the secret.
+#[derive(Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     pub role: ClusterRole,
@@ -477,6 +535,21 @@ impl BalanceSection {
     }
 }
 
+/// Hand-written so `{:?}` never prints `secret` in full.
+impl std::fmt::Debug for ClusterSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClusterSection")
+            .field("role", &self.role)
+            .field("node_id", &self.node_id)
+            .field("secret", &"****")
+            .field("origins", &self.origins)
+            .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("source_timeout_secs", &self.source_timeout_secs)
+            .field("balance", &self.balance)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClusterRole {
@@ -620,11 +693,24 @@ pub struct HttpSection {
 pub struct HttpPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl HttpSection {
     pub fn pull_targets(&self) -> Vec<caudal_http_pull::HttpPull> {
-        self.pull.iter().map(|p| caudal_http_pull::HttpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_http_pull::HttpPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 }
 
@@ -639,12 +725,22 @@ pub struct UdpPullEntry {
     pub url: String,
     #[serde(default)]
     pub interface: Option<std::net::Ipv4Addr>,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl UdpSection {
     pub fn pull_targets(&self) -> Vec<caudal_udp::UdpPull> {
         self.pull
             .iter()
+            .filter(|p| !p.on_demand)
             .map(|p| caudal_udp::UdpPull { stream: p.stream.clone(), url: p.url.clone(), interface: p.interface })
             .collect()
     }
@@ -670,7 +766,7 @@ pub struct PushSection {
 /// picks the engine, the same ones the static pushes use: `rtmp://` /
 /// `rtmps://` (`[[restream]]`), `srt://` (`[[srt.push]]`), `udp://` /
 /// `rtp://` (`[[udp.push]]`), `whip://` / `whip+http://` (`[[webrtc.push]]`).
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AutoPushEntry {
     /// Stream names or patterns: exact (`main`), `prefix*` or `*`. Names
@@ -724,6 +820,27 @@ pub struct AutoPushEntry {
     pub inhibit: Vec<String>,
 }
 
+/// Hand-written so `{:?}` never prints `token` in full.
+impl std::fmt::Debug for AutoPushEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoPushEntry")
+            .field("streams", &self.streams)
+            .field("url", &self.url)
+            .field("ttl", &self.ttl)
+            .field("interface", &self.interface)
+            .field("pacing", &self.pacing)
+            .field("token", &self.token.as_ref().map(|_| "****"))
+            .field("start", &self.start)
+            .field("stop", &self.stop)
+            .field("cron", &self.cron)
+            .field("tz", &self.tz)
+            .field("duration_secs", &self.duration_secs)
+            .field("enabled", &self.enabled)
+            .field("inhibit", &self.inhibit)
+            .finish()
+    }
+}
+
 /// Which push engine an auto-push URL goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoPushKind {
@@ -772,7 +889,7 @@ pub fn expand_push_template(template: &str, stream: &str) -> String {
 
 impl AutoPushEntry {
     fn ctx(&self, e: impl std::fmt::Display) -> String {
-        format!("[[push.auto]] {:?}: {e}", self.url)
+        format!("[[push.auto]] {:?}: {e}", crate::config_edit::redact(&self.url))
     }
 
     pub fn kind(&self) -> Result<AutoPushKind, String> {
@@ -872,12 +989,18 @@ impl AutoPushEntry {
                 caudal_webrtc::whip_endpoint(&url).map_err(|e| self.ctx(format!("expands to {e}")))?;
             }
             AutoPushKind::Restream | AutoPushKind::Srt => {
-                let parsed = url::Url::parse(&url).map_err(|e| self.ctx(format!("expands to {url:?}: {e}")))?;
+                let parsed = url::Url::parse(&url)
+                    .map_err(|e| self.ctx(format!("expands to {:?}: {e}", crate::config_edit::redact(&url))))?;
                 if parsed.host_str().is_none_or(str::is_empty) {
-                    return Err(self.ctx(format!("expands to {url:?}, which has no host")));
+                    return Err(
+                        self.ctx(format!("expands to {:?}, which has no host", crate::config_edit::redact(&url)))
+                    );
                 }
                 if kind == AutoPushKind::Srt && parsed.port().is_none() {
-                    return Err(self.ctx(format!("expands to {url:?}: an srt:// target needs a port")));
+                    return Err(self.ctx(format!(
+                        "expands to {:?}: an srt:// target needs a port",
+                        crate::config_edit::redact(&url)
+                    )));
                 }
             }
         }
@@ -1046,6 +1169,15 @@ impl Default for RtspSection {
 pub struct RtspPullEntry {
     pub stream: String,
     pub url: String,
+    /// Start this pull only while someone watches: the first viewer's
+    /// request starts it, and it stops `idle_secs` after the last viewer
+    /// left. See `docs/ON-DEMAND.md`.
+    #[serde(default)]
+    pub on_demand: bool,
+    /// With `on_demand`: seconds without viewers before the pull stops
+    /// (default 30, 1..=3600).
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
 }
 
 impl RtspSection {
@@ -1065,14 +1197,22 @@ impl RtspSection {
 
     /// `[[rtsp.pull]]` as the runtime type `caudal-rtsp` takes.
     pub fn pull_targets(&self) -> Vec<caudal_rtsp::RtspPull> {
-        self.pull.iter().map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 }
 
 impl SrtSection {
     /// `[[srt.pull]]` as the runtime type `caudal-srt` takes.
     pub fn pull_targets(&self) -> Vec<caudal_srt::SrtPull> {
-        self.pull.iter().map(|p| caudal_srt::SrtPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+        self.pull
+            .iter()
+            .filter(|p| !p.on_demand)
+            .map(|p| caudal_srt::SrtPull { stream: p.stream.clone(), url: p.url.clone() })
+            .collect()
     }
 
     /// `[[srt.push]]` as the runtime type `caudal-srt` takes.
@@ -1738,7 +1878,7 @@ fn default_true() -> bool {
 
 /// Tokens (JWT) to publish and play. Without `secret` or `jwks_url`,
 /// everything is open (fine on localhost, not on the internet).
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthSection {
     /// Shared HS256 secret.
@@ -1757,6 +1897,9 @@ pub struct AuthSection {
     /// Blocking routing webhook, asked before everything else but stream
     /// keys.
     pub rewrite: Option<AuthRewriteSection>,
+    /// Where to pull a stream nobody publishes and nothing configures
+    /// (MistServer's `STREAM_SOURCE`), asked when a viewer requests it.
+    pub source: Option<AuthSourceSection>,
     /// `[[auth.stream_keys]]`: secrets an encoder publishes with in place
     /// of the stream name. See `docs/STREAM-KEYS.md`.
     pub stream_keys: Vec<StreamKeySection>,
@@ -1852,6 +1995,21 @@ fn key_permissions(
     Ok(caudal_auth::KeyPermissions { publish, play, streams: streams.to_vec() })
 }
 
+/// Hand-written so `{:?}` never prints `secret` in full.
+impl std::fmt::Debug for AuthSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthSection")
+            .field("secret", &self.secret.as_ref().map(|_| "****"))
+            .field("jwks_url", &self.jwks_url)
+            .field("jwks_refresh_secs", &self.jwks_refresh_secs)
+            .field("publish", &self.publish)
+            .field("play", &self.play)
+            .field("hook", &self.hook)
+            .field("rewrite", &self.rewrite)
+            .finish()
+    }
+}
+
 impl Default for AuthSection {
     fn default() -> Self {
         Self {
@@ -1862,6 +2020,7 @@ impl Default for AuthSection {
             play: false,
             hook: None,
             rewrite: None,
+            source: None,
             stream_keys: Vec::new(),
             stream_keys_file: None,
             stream_keys_only: false,
@@ -1877,7 +2036,7 @@ impl Default for AuthSection {
 /// (with `reply = "mistserver"`, only when the body reads as true), 401/403
 /// deny; a timeout or any other answer is decided by `on_error`.
 /// See `caudal_auth::GateHook` and `docs/AUTH-HOOK.md`.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AuthHookSection {
     pub url: String,
@@ -1906,6 +2065,23 @@ pub struct AuthHookSection {
     pub deny_cache_secs: u64,
 }
 
+/// Hand-written so `{:?}` never prints `secret` or `url` in full.
+impl std::fmt::Debug for AuthHookSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthHookSection")
+            .field("url", &caudal_core::net::redact_url_host(&self.url))
+            .field("secret", &"****")
+            .field("timeout_ms", &self.timeout_ms)
+            .field("on_error", &self.on_error)
+            .field("reply", &self.reply)
+            .field("publish", &self.publish)
+            .field("play", &self.play)
+            .field("allow_cache_secs", &self.allow_cache_secs)
+            .field("deny_cache_secs", &self.deny_cache_secs)
+            .finish()
+    }
+}
+
 fn default_auth_hook_timeout_ms() -> u64 {
     2000
 }
@@ -1924,8 +2100,9 @@ fn default_auth_hook_deny_cache_secs() -> u64 {
 
 impl AuthHookSection {
     pub fn to_config(&self) -> Result<caudal_auth::GateHookConfig, String> {
-        let url =
-            reqwest_url_ok(&self.url).ok_or_else(|| format!("[auth.hook] url {:?}: expected http(s)://", self.url))?;
+        let url = reqwest_url_ok(&self.url).ok_or_else(|| {
+            format!("[auth.hook] url {:?}: expected http(s)://", caudal_core::net::redact_url_host(&self.url))
+        })?;
         if !self.secret.starts_with("whsec_") {
             return Err("[auth.hook] `secret` must be a Standard Webhooks secret (whsec_...)".into());
         }
@@ -1971,7 +2148,7 @@ impl AuthHookSection {
 /// It sits under `[auth]` rather than `[hooks]` because it behaves like
 /// `[auth.hook]` (blocking, fail-closed by default, reloaded with `[auth]`),
 /// while `[hooks]` only notifies, after the fact, and never blocks.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AuthRewriteSection {
     pub url: String,
@@ -1999,10 +2176,27 @@ pub struct AuthRewriteSection {
     pub deny_cache_secs: u64,
 }
 
+/// Hand-written so `{:?}` never prints `secret` or `url` in full.
+impl std::fmt::Debug for AuthRewriteSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthRewriteSection")
+            .field("url", &caudal_core::net::redact_url_host(&self.url))
+            .field("secret", &"****")
+            .field("timeout_ms", &self.timeout_ms)
+            .field("on_error", &self.on_error)
+            .field("publish", &self.publish)
+            .field("play", &self.play)
+            .field("cache_secs", &self.cache_secs)
+            .field("deny_cache_secs", &self.deny_cache_secs)
+            .finish()
+    }
+}
+
 impl AuthRewriteSection {
     pub fn to_config(&self) -> Result<caudal_auth::RewriteHookConfig, String> {
-        let url = reqwest_url_ok(&self.url)
-            .ok_or_else(|| format!("[auth.rewrite] url {:?}: expected http(s)://", self.url))?;
+        let url = reqwest_url_ok(&self.url).ok_or_else(|| {
+            format!("[auth.rewrite] url {:?}: expected http(s)://", caudal_core::net::redact_url_host(&self.url))
+        })?;
         if !self.secret.starts_with("whsec_") {
             return Err("[auth.rewrite] `secret` must be a Standard Webhooks secret (whsec_...)".into());
         }
@@ -2027,6 +2221,71 @@ impl AuthRewriteSection {
             on_error,
             publish: self.publish,
             play: self.play,
+            cache: Duration::from_secs(self.cache_secs),
+            deny_cache: Duration::from_secs(self.deny_cache_secs),
+        })
+    }
+}
+
+/// `[auth.source]`: when a viewer asks for a stream that is neither live
+/// nor configured, POST its name (signed, Standard Webhooks) to `url`; the
+/// answer is a source URL (`srt://`, `udp://`, `rtp://`, `http(s)://` TS or
+/// `.m3u8`, `rtmp(s)://`, `rtsp(s)://`) that Caudal pulls on demand until
+/// `idle_secs` after the last viewer left, or empty for "no such stream".
+/// MistServer's `STREAM_SOURCE`. See `caudal_auth::SourceHook` and
+/// `docs/ON-DEMAND.md`.
+///
+/// Under `[auth]` with `[auth.hook]` and `[auth.rewrite]`: it blocks the
+/// request, reuses their signing, timeout and cache, and reloads with them.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthSourceSection {
+    pub url: String,
+    /// `whsec_...`, as in `[hooks]`.
+    pub secret: String,
+    /// One attempt, no retries. 100..=10000.
+    #[serde(default = "default_auth_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// How long a source is remembered for a stream name; the service's
+    /// `cache_secs` can only lower it.
+    #[serde(default = "default_auth_source_cache_secs")]
+    pub cache_secs: u64,
+    /// How long "no such stream" or a failure is remembered.
+    #[serde(default = "default_auth_hook_deny_cache_secs")]
+    pub deny_cache_secs: u64,
+    /// Seconds without viewers before a pull it started stops.
+    #[serde(default = "default_idle_secs")]
+    pub idle_secs: u64,
+}
+
+fn default_auth_source_cache_secs() -> u64 {
+    10
+}
+
+fn default_idle_secs() -> u64 {
+    crate::on_demand::DEFAULT_IDLE.as_secs()
+}
+
+impl AuthSourceSection {
+    pub fn to_config(&self) -> Result<caudal_auth::SourceHookConfig, String> {
+        let url = reqwest_url_ok(&self.url)
+            .ok_or_else(|| format!("[auth.source] url {:?}: expected http(s)://", self.url))?;
+        if !self.secret.starts_with("whsec_") {
+            return Err("[auth.source] `secret` must be a Standard Webhooks secret (whsec_...)".into());
+        }
+        if !(100..=10_000).contains(&self.timeout_ms) {
+            return Err(format!("[auth.source] timeout_ms {} is outside 100..=10000", self.timeout_ms));
+        }
+        if self.cache_secs > 3600 || self.deny_cache_secs > 3600 {
+            return Err("[auth.source] cache times are at most 3600 s".into());
+        }
+        if !(1..=3600).contains(&self.idle_secs) {
+            return Err(format!("[auth.source] idle_secs {} is outside 1..=3600", self.idle_secs));
+        }
+        Ok(caudal_auth::SourceHookConfig {
+            url,
+            secret: self.secret.clone(),
+            timeout: Duration::from_millis(self.timeout_ms),
             cache: Duration::from_secs(self.cache_secs),
             deny_cache: Duration::from_secs(self.deny_cache_secs),
         })
@@ -2141,6 +2400,11 @@ impl AuthSection {
     pub fn rewrite_config(&self) -> Result<Option<caudal_auth::RewriteHookConfig>, String> {
         self.rewrite.as_ref().map(AuthRewriteSection::to_config).transpose()
     }
+
+    /// `[auth.source]` as the runtime config, `None` when absent.
+    pub fn source_config(&self) -> Result<Option<caudal_auth::SourceHookConfig>, String> {
+        self.source.as_ref().map(AuthSourceSection::to_config).transpose()
+    }
 }
 
 /// Per-stream IP/CIDR and country allow/deny rules (geo-blocking), enforced
@@ -2202,12 +2466,22 @@ impl AccessSection {
 }
 
 /// Signed webhooks (Standard Webhooks) on stream start and end.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct HooksSection {
     pub urls: Vec<String>,
     /// `whsec_...`
     pub secret: Option<String>,
+}
+
+/// Hand-written so `{:?}` never prints `secret` or `urls` in full.
+impl std::fmt::Debug for HooksSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HooksSection")
+            .field("urls", &self.urls.iter().map(|u| caudal_core::net::redact_url_host(u)).collect::<Vec<_>>())
+            .field("secret", &self.secret.as_ref().map(|_| "****"))
+            .finish()
+    }
 }
 
 impl HooksSection {
@@ -2226,7 +2500,7 @@ impl HooksSection {
 /// lost, optionally no audio. Signed webhooks on the same wire format as
 /// `[hooks]` (Standard Webhooks); a Slack incoming-webhook URL also works
 /// (the payload carries a `text` field).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct HealthSection {
     /// No keyframe for this long: alert. `0` disables the rule.
@@ -2259,6 +2533,24 @@ pub struct HealthSection {
     pub secret: Option<String>,
     #[serde(rename = "stream")]
     pub streams: Vec<HealthStreamOverride>,
+}
+
+/// Hand-written so `{:?}` never prints `secret` or `webhooks` in full.
+impl std::fmt::Debug for HealthSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthSection")
+            .field("no_keyframe_secs", &self.no_keyframe_secs)
+            .field("min_bitrate_kbps", &self.min_bitrate_kbps)
+            .field("min_bitrate_for_secs", &self.min_bitrate_for_secs)
+            .field("no_audio_secs", &self.no_audio_secs)
+            .field("publisher_lost", &self.publisher_lost)
+            .field("publisher_lost_grace_secs", &self.publisher_lost_grace_secs)
+            .field("min_hold_secs", &self.min_hold_secs)
+            .field("webhooks", &self.webhooks.iter().map(|u| caudal_core::net::redact_url_host(u)).collect::<Vec<_>>())
+            .field("secret", &self.secret.as_ref().map(|_| "****"))
+            .field("streams", &self.streams)
+            .finish()
+    }
 }
 
 impl Default for HealthSection {
@@ -2368,6 +2660,7 @@ impl Config {
         self.auth.stream_keys()?;
         self.auth.hook_config()?;
         self.auth.rewrite_config()?;
+        self.auth.source_config()?;
         self.access.to_access_config()?;
         self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
@@ -2520,6 +2813,58 @@ impl Config {
 }
 
 impl Config {
+    /// Every `[[*.pull]]` except `[[omt.pull]]`: section, stream, url,
+    /// `on_demand`, `idle_secs`.
+    fn pull_specs(&self) -> Vec<(&'static str, &str, &str, bool, Option<u64>)> {
+        let mut v: Vec<(&'static str, &str, &str, bool, Option<u64>)> = Vec::new();
+        v.extend(self.rtsp.pull.iter().map(|p| ("[[rtsp.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.http.pull.iter().map(|p| ("[[http.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.rtmp.pull.iter().map(|p| ("[[rtmp.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v.extend(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &*p.stream, &*p.url, p.on_demand, p.idle_secs)));
+        v
+    }
+
+    /// The `on_demand = true` pull entries, by stream name.
+    pub fn on_demand_entries(&self) -> std::collections::HashMap<String, crate::on_demand::Entry> {
+        use crate::on_demand::{Entry, Source};
+        let idle = |i: Option<u64>| i.map_or(crate::on_demand::DEFAULT_IDLE, Duration::from_secs);
+        let mut out = std::collections::HashMap::new();
+        let mut put = |stream: &str, source: Source, i: Option<u64>| {
+            out.insert(stream.to_owned(), Entry { source, idle: idle(i) });
+        };
+        for p in self.rtsp.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Rtsp(caudal_rtsp::RtspPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.srt.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Srt(caudal_srt::SrtPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.udp.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Udp(caudal_udp::UdpPull {
+                stream: p.stream.clone(),
+                url: p.url.clone(),
+                interface: p.interface,
+            });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.http.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Http(caudal_http_pull::HttpPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.rtmp.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Rtmp(caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        for p in self.hls.pull.iter().filter(|p| p.on_demand) {
+            let src = Source::Hls(caudal_hls_pull::HlsPull { stream: p.stream.clone(), url: p.url.clone() });
+            put(&p.stream, src, p.idle_secs);
+        }
+        out
+    }
+
     /// Every `[[*.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
     /// name, the right URL scheme, and one pull per stream (two would race
     /// to publish the same name).
@@ -2533,7 +2878,15 @@ impl Config {
         };
         let scheme_ok = |section: &str, url: &str, schemes: &[&str]| {
             let ok = url.split_once("://").is_some_and(|(s, rest)| schemes.contains(&s) && !rest.is_empty());
-            if ok { Ok(()) } else { Err(format!("{section} url {url:?}: expected {}", schemes.join("://, ") + "://")) }
+            if ok {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{section} url {:?}: expected {}",
+                    crate::config_edit::redact(url),
+                    schemes.join("://, ") + "://"
+                ))
+            }
         };
         let mut pulled = std::collections::HashSet::new();
         let pulls = self
@@ -2546,6 +2899,16 @@ impl Config {
             .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])))
             .chain(self.rtmp.pull.iter().map(|p| ("[[rtmp.pull]]", &p.stream, &p.url, &["rtmp", "rtmps"][..])))
             .chain(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &p.stream, &p.url, &["http", "https"][..])));
+        for (section, stream, _, on_demand, idle) in self.pull_specs() {
+            if idle.is_some() && !on_demand {
+                return Err(format!("{section} stream {stream:?}: `idle_secs` needs `on_demand = true`"));
+            }
+            if let Some(i) = idle
+                && !(1..=3600).contains(&i)
+            {
+                return Err(format!("{section} stream {stream:?}: idle_secs {i} is outside 1..=3600"));
+            }
+        }
         for (section, stream, url, schemes) in pulls {
             name_ok(section, stream)?;
             scheme_ok(section, url, schemes)?;
@@ -3045,7 +3408,12 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let b = RtmpSection { tls_bind: Some("0.0.0.0:1936".parse().unwrap()), ..RtmpSection::default() };
         assert!(a.listener_changed(&b), "turning RTMPS on must restart the listener");
         let c = RtmpSection {
-            pull: vec![RtmpPullEntry { stream: "x".into(), url: "rtmp://h/a/k".into() }],
+            pull: vec![RtmpPullEntry {
+                stream: "x".into(),
+                url: "rtmp://h/a/k".into(),
+                on_demand: false,
+                idle_secs: None,
+            }],
             ..RtmpSection::default()
         };
         assert!(!a.listener_changed(&c), "a pull change alone does not");
@@ -3192,6 +3560,53 @@ origins = ["http://origin-a:8080", "https://origin-b"]
     }
 
     #[test]
+    fn auth_source_section() {
+        let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+        let base = format!("[auth.source]\nurl = \"https://src.example/s\"\nsecret = \"{secret}\"\n");
+        let ok: Config = toml::from_str(&base).unwrap();
+        ok.validate().unwrap();
+        let c = ok.auth.source_config().unwrap().unwrap();
+        assert_eq!((c.cache, c.deny_cache), (Duration::from_secs(10), Duration::from_secs(5)));
+        assert_eq!(ok.auth.source.as_ref().unwrap().idle_secs, 30);
+        let bad = |extra: &str| toml::from_str::<Config>(&format!("{base}{extra}")).unwrap().validate().unwrap_err();
+        assert!(bad("idle_secs = 0\n").contains("idle_secs"));
+        assert!(bad("timeout_ms = 50\n").contains("[auth.source] timeout_ms"));
+        assert!(toml::from_str::<Config>(&format!("{base}on_error = \"allow\"\n")).is_err(), "no on_error");
+    }
+
+    #[test]
+    fn on_demand_pulls() {
+        let cfg: Config = toml::from_str(
+            "[[http.pull]]\nstream = \"a\"\nurl = \"http://h/a.ts\"\non_demand = true\nidle_secs = 5\n\
+             [[http.pull]]\nstream = \"b\"\nurl = \"http://h/b.ts\"\n\
+             [[srt.pull]]\nstream = \"c\"\nurl = \"srt://h:9000\"\non_demand = true\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.http.pull_targets().iter().map(|p| p.stream.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert!(cfg.srt.pull_targets().is_empty());
+        let od = cfg.on_demand_entries();
+        assert_eq!(od.len(), 2);
+        assert_eq!(od["a"].idle, Duration::from_secs(5));
+        assert_eq!(od["c"].idle, crate::on_demand::DEFAULT_IDLE);
+        assert_eq!(od["c"].source.kind(), "srt");
+        let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(
+            err("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/a.ts\"\nidle_secs = 5\n").contains("needs `on_demand")
+        );
+        assert!(
+            err("[[rtsp.pull]]\nstream = \"a\"\nurl = \"rtsp://h/a\"\non_demand = true\nidle_secs = 0\n")
+                .contains("1..=3600")
+        );
+        // Still one pull per stream, on demand or not.
+        assert!(
+            err("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/a.ts\"\non_demand = true\n\
+                 [[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/live/k\"\n")
+            .contains("pulled twice")
+        );
+    }
+
+    #[test]
     fn auto_push_rules() {
         let cfg: Config = toml::from_str(
             "[[push.auto]]\nstreams = [\"cam*\", \"main\"]\nurl = \"srt://203.0.113.4:9000?streamid=$stream\"\n\
@@ -3229,6 +3644,40 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         .validate()
         .unwrap_err();
         assert!(err.contains("one stream per destination"), "{err}");
+    }
+
+    #[test]
+    fn debug_output_masks_secrets() {
+        let cfg: Config = toml::from_str(
+            "[srt]\npassphrase = \"SRTPASSPHRASE\"\n\
+             [cluster]\nrole = \"edge\"\nsecret = \"CLUSTERSECRET\"\norigins = [\"http://10.0.0.1:8080\"]\n\
+             [auth]\nsecret = \"AUTHSECRET\"\n\
+             [auth.hook]\nurl = \"https://gate.example/HOOKPATHSECRET\"\nsecret = \"whsec_GATESECRET\"\n\
+             [auth.rewrite]\nurl = \"https://route.example/REWRITEPATHSECRET\"\nsecret = \"whsec_REWRITESECRET\"\n\
+             [hooks]\nurls = [\"https://hooks.slack.com/services/SLACKSECRET\"]\nsecret = \"whsec_HOOKSSECRET\"\n\
+             [health]\nwebhooks = [\"https://hooks.slack.com/services/HEALTHSECRET\"]\nsecret = \"whsec_HEALTHSECRET\"\n\
+             [[push.auto]]\nstreams = [\"cam*\"]\nurl = \"whip://h.example/whip/$stream\"\ntoken = \"AUTOTOKEN\"\n\
+             [[admin.users]]\nname = \"ana\"\npassword_hash = \"PASSWORDHASH\"\n",
+        )
+        .unwrap();
+        let shown = format!("{cfg:?}");
+        for secret in [
+            "SRTPASSPHRASE",
+            "CLUSTERSECRET",
+            "AUTHSECRET",
+            "HOOKPATHSECRET",
+            "GATESECRET",
+            "REWRITEPATHSECRET",
+            "REWRITESECRET",
+            "SLACKSECRET",
+            "HOOKSSECRET",
+            "HEALTHSECRET",
+            "AUTOTOKEN",
+            "PASSWORDHASH",
+        ] {
+            assert!(!shown.contains(secret), "{secret} in {shown}");
+        }
+        assert!(shown.contains("hooks.slack.com") && shown.contains("gate.example"), "hosts stay: {shown}");
     }
 
     #[test]

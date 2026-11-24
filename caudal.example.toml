@@ -124,6 +124,12 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # [[hls.pull]]                   # HLS / LL-HLS, MPEG-TS or fMP4/CMAF segments (another Caudal)
 # stream = "cdn"
 # url = "https://cdn.example/live/master.m3u8"
+# Any of these can run only while someone watches (docs/ON-DEMAND.md):
+# [[rtsp.pull]]
+# stream = "lobby"
+# url = "rtsp://10.0.0.5/stream1"
+# on_demand = true               # first viewer starts it
+# idle_secs = 30                 # stops this long after the last viewer
 
 # Ask your own service before every publish/play (blocking, cached).
 # See docs/AUTH-HOOK.md.
@@ -149,6 +155,15 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # play = true
 # cache_secs = 30
 # deny_cache_secs = 5
+
+# Ask your own service where to pull a stream nobody publishes or configures
+# (MistServer's STREAM_SOURCE); pulled on demand. See docs/ON-DEMAND.md.
+# [auth.source]
+# url = "https://sources.example.com/caudal"
+# secret = "whsec_..."
+# timeout_ms = 2000
+# cache_secs = 10
+# idle_secs = 30
 
 # Signed webhooks (standardwebhooks.com) on stream.started / stream.ended.
 # [hooks]

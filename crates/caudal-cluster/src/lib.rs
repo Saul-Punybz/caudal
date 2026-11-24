@@ -91,7 +91,7 @@ impl Edge {
                 buffer: cfg.buffer,
             },
         );
-        registry.set_demand(Arc::new(EdgeDemand(inner.clone())));
+        registry.set_demand("cluster", Arc::new(EdgeDemand(inner.clone())));
         Ok(Self { inner })
     }
 

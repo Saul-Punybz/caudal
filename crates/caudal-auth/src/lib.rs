@@ -18,10 +18,12 @@ mod gate_hook;
 mod hooks_delivery;
 mod jwks;
 mod rewrite_hook;
+mod source_hook;
 mod stream_keys;
 
 pub use gate_hook::{GateHook, GateHookConfig, GateHookMetric, GateHookStats, OnError, ReplyMode, mist_bool};
 pub use rewrite_hook::{RewriteHook, RewriteHookConfig, RewriteHookMetric, RewriteHookStats};
+pub use source_hook::{SourceHook, SourceHookConfig, SourceHookStats};
 pub use stream_keys::{
     MAX_KEY_LEN, MIN_KEY_LEN, StreamKey, StreamKeyMetric, StreamKeyStats, StreamKeyTable, validate_key,
 };
@@ -227,11 +229,21 @@ pub enum HookEvent {
     StreamEnded { stream: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HooksConfig {
     pub urls: Vec<String>,
     /// Standard Webhooks secret (`whsec_...`).
     pub secret: String,
+}
+
+/// Hand-written so `{:?}` never prints `secret` or `urls` in full.
+impl std::fmt::Debug for HooksConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HooksConfig")
+            .field("urls", &self.urls.iter().map(|u| caudal_core::net::redact_url_host(u)).collect::<Vec<_>>())
+            .field("secret", &"****")
+            .finish()
+    }
 }
 
 /// Fire-and-forget delivery with retries; never blocks ingest.

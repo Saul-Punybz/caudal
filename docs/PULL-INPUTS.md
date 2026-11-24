@@ -218,6 +218,13 @@ another MistServer, or an encoder that serves RTMP.
 - Not carried: AMF0 `onCuePoint` SCTE-35 cues (a publisher connecting in
   keeps them; the client library only surfaces `onMetaData`).
 
+## On demand
+
+Every pull here, and `[[rtsp.pull]]`, takes `on_demand = true` (and
+optionally `idle_secs`): it then runs only while someone watches, started by
+the first viewer's request and stopped `idle_secs` (default 30) after the
+last one left. See [ON-DEMAND.md](ON-DEMAND.md).
+
 ## Tested with
 
 - SRT: `srt-live-transmit` listening (`srt://:PORT`), fed by ffmpeg; the

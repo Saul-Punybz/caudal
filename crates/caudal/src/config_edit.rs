@@ -130,7 +130,8 @@ pub struct EntryJson {
 /// for a WHIP URL its user info, query values and any path segment long
 /// enough to be a key (see `caudal_webrtc::redact_whip_url`), and for an
 /// HTTP(S) pull (`[[http.pull]]`, `[[hls.pull]]`) its password and query
-/// values (a CDN's signed token).
+/// values (a CDN's signed token); any other URL its password and query
+/// values.
 pub fn redact(url: &str) -> String {
     match url.split_once("://") {
         Some(("whip" | "whip+http", _)) => caudal_webrtc::redact_whip_url(url),
@@ -165,7 +166,9 @@ pub fn redact(url: &str) -> String {
                 None => url.to_owned(),
             }
         }
-        _ => url.to_owned(),
+        // Anything else (a mistyped scheme in a config error, `udp://`):
+        // a password and query values are still masked.
+        _ => caudal_core::net::redact_url(url),
     }
 }
 
@@ -380,6 +383,18 @@ mod tests {
             redact("whip://customer-a.cloudflarestream.com/0123456789abcdef0123456789abcdef/webRTC/publish"),
             "whip://customer-a.cloudflarestream.com/****/webRTC/publish"
         );
+        assert_eq!(redact("srtt://h:9000?passphrase=hunter22"), "srtt://h:9000?passphrase=****", "a typo still masks");
+        assert_eq!(redact("udp://239.1.1.1:5000"), "udp://239.1.1.1:5000");
+    }
+
+    #[test]
+    fn config_errors_mask_secrets() {
+        let e = check("[[srt.pull]]\nstream = \"a\"\nurl = \"srtt://h:9000?passphrase=hunter22\"\n").unwrap_err();
+        assert!(e.contains("[[srt.pull]]") && !e.contains("hunter22"), "{e}");
+        let e = check("[[push.auto]]\nstreams = [\"cam*\"]\nurl = \"rtmp://h/live/SECRETKEY\"\nstart = \"never\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("[[push.auto]]") && !e.contains("SECRETKEY"), "{e}");
     }
 
     #[test]

@@ -239,6 +239,21 @@ fn check_binds(cfg: &Config, checks: &mut Vec<Check>) {
     if cfg.moq.enabled {
         udp_bind_check("bind moq (udp)", cfg.moq.bind, http_bind, checks);
     }
+    check_udp_pull_binds(cfg, http_bind, checks);
+}
+
+/// `[[udp.pull]]` listens on its URL's address. A unicast port another
+/// process holds would get no datagrams, so it is checked like the other
+/// binds. Multicast pulls are not: they share the port on purpose
+/// (`SO_REUSEADDR`, so a monitor or a second receiver can join the group).
+fn check_udp_pull_binds(cfg: &Config, http_bind: SocketAddr, checks: &mut Vec<Check>) {
+    for p in &cfg.udp.pull {
+        if let Ok(t) = caudal_udp::parse_url(&p.url)
+            && !t.is_multicast()
+        {
+            udp_bind_check(&format!("bind udp pull `{}`", p.stream), t.addr, http_bind, checks);
+        }
+    }
 }
 
 // -------------------------------------------------------------- webrtc ---
@@ -915,10 +930,9 @@ mod tests {
     #[test]
     fn free_port_is_ok() {
         let mut checks = Vec::new();
-        // Bind once to claim a specific ephemeral port, then release it:
-        // the address is very likely still free for `tcp_bind_check` to
-        // bind a moment later.
-        let addr = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        // Port 0 always binds. Claiming an ephemeral port, releasing it and
+        // binding it again raced with every other process picking ports.
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         tcp_bind_check("bind http", addr, addr, &mut checks);
         assert_eq!(checks[0].status, Status::Ok, "{:?}", checks);
     }
@@ -937,10 +951,29 @@ mod tests {
     #[test]
     fn udp_free_port_is_ok() {
         let mut checks = Vec::new();
-        let addr = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        let http = "127.0.0.1:0".parse().unwrap();
-        udp_bind_check("bind webrtc (udp)", addr, http, &mut checks);
-        assert_eq!(checks[0].status, Status::Ok);
+        // Port 0, not a released ephemeral port: that one could be taken
+        // by another process (or a parallel test) before the check binds it.
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        udp_bind_check("bind webrtc (udp)", addr, addr, &mut checks);
+        assert_eq!(checks[0].status, Status::Ok, "{checks:?}");
+    }
+
+    #[test]
+    fn udp_pull_ports_are_bind_checked_but_multicast_is_not() {
+        let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let cfg: Config = toml::from_str(&format!(
+            "[[udp.pull]]\nstream = \"busy\"\nurl = \"udp://127.0.0.1:{port}\"\n\
+             [[udp.pull]]\nstream = \"group\"\nurl = \"udp://@239.1.1.1:{port}\"\n"
+        ))
+        .unwrap();
+        // Nothing answers /healthz on a port this test just released.
+        let no_caudal: SocketAddr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let mut checks = Vec::new();
+        check_udp_pull_binds(&cfg, no_caudal, &mut checks);
+        assert_eq!(checks.len(), 1, "the multicast pull is skipped: {checks:?}");
+        assert_eq!(find(&checks, "bind udp pull `busy`").status, Status::Fail, "{checks:?}");
+        drop(held);
     }
 
     // ---- webrtc NAT ----

@@ -104,16 +104,14 @@ Not routed: the control endpoints that name a stream without carrying
 media (failover `switch`, channel `skip`, recording list/VOD/clips), and
 pulls, pushes and transcodes configured on the server itself.
 
-## `STREAM_SOURCE`: not done
+## `STREAM_SOURCE`: `[auth.source]`
 
 MistServer's `STREAM_SOURCE` returns the source URL for a stream before its
-input starts. Caudal has no per-request input start to hook: a stream exists
-because a publisher connected or a configured pull is running. An on-demand
-pull (a viewer asks for a name nobody publishes, the hook returns
-`srt://...` or `https://.../index.m3u8`, Caudal starts that pull until the
-last viewer leaves) would fit the core's `Demand` trait, but that slot is
-the cluster edge's, and the pull lifecycle (stopping it, failures,
-concurrent first viewers) is a feature of its own. Not built here.
+input starts. In Caudal that is a separate section, `[auth.source]`, asked
+for a name that is neither live nor configured; the URL it returns is
+pulled on demand until the last viewer leaves. See
+[ON-DEMAND.md](ON-DEMAND.md). The rewrite runs first: `[auth.source]` is
+asked about the final name.
 
 ## Metrics
 

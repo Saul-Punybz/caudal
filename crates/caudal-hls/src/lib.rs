@@ -7,6 +7,7 @@
 //! only read the packager state; blocking playlist reloads and requests for
 //! the preload-hinted part wait on a `watch` channel bumped by the packager.
 
+mod dash;
 pub mod http_ts;
 mod packager;
 mod tsseg;
@@ -90,7 +91,9 @@ const PLAY_HTML: &str = include_str!("../static/play.html");
 /// Serves `/hls/{name}/master.m3u8` (players enter here), `/hls/{name}/index.m3u8`, `/hls/{name}/init.mp4`,
 /// `/hls/{name}/{segment}.m4s` and `/play/{name}`; with [`HlsConfig::ts`],
 /// also classic HLS at `/hls/{name}/ts.m3u8` + `/hls/{name}/t{seq}.ts`
-/// (see `tsseg`). Mounted at the root by
+/// (see `tsseg`); and live MPEG-DASH over the same segments at
+/// `/hls/{name}/manifest.mpd` (see `dash`), with `/dash/time` for its
+/// `UTCTiming`. Mounted at the root by
 /// the server; paths are absolute.
 ///
 /// Must be called inside a tokio runtime: it spawns the task that starts a
@@ -137,7 +140,12 @@ pub fn router_with_captions(
         }
         Err(_) => tracing::error!("caudal_hls::router called outside a tokio runtime; no packagers will run"),
     }
-    Router::new().route("/hls/{name}/{file}", get(hls_file)).route("/play/{name}", get(play)).with_state(hls)
+    Router::new()
+        .route("/hls/{name}/{file}", get(hls_file))
+        .route("/play/{name}", get(play))
+        .route("/dash/time", get(dash_time))
+        .route("/dash/{name}/{file}", get(dash_alias))
+        .with_state(hls)
 }
 
 struct Hls {
@@ -605,13 +613,21 @@ async fn hls_file(
         },
     };
     let key = viewer_key(&req, ip);
-    let refused =
-        if file.ends_with(".m3u8") { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
+    let manifest = file.ends_with(".m3u8") || file == "manifest.mpd";
+    let refused = if manifest { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
     if refused {
         return error(StatusCode::FORBIDDEN);
     }
-    let apple = loads_subtitle_parts(&req);
-    let resp = serve_file(&hls, &name, &requested, &entry, &file, query, token, apple).await;
+    let resp = if file == "manifest.mpd" {
+        let time_url = {
+            let header = |h: &str| req.headers().get(h).and_then(|v| v.to_str().ok());
+            dash::time_url(header("host"), header("x-forwarded-proto"))
+        };
+        dash_manifest(&hls, &name, &entry, token, time_url).await
+    } else {
+        let apple = loads_subtitle_parts(&req);
+        serve_file(&hls, &name, &requested, &entry, &file, query, token, apple).await
+    };
     if let Some(n) = axum::body::HttpBody::size_hint(resp.body()).exact() {
         entry.add_bytes(key, n);
     }
@@ -666,11 +682,111 @@ async fn serve_file(
                 None => error(StatusCode::NOT_FOUND),
             }
         }
+        other if dash::parse_name(other).is_some() => match dash::parse_name(other) {
+            Some(f) => dash_file(entry, f).await,
+            None => error(StatusCode::NOT_FOUND),
+        },
         other => match parse_media_name(other) {
             Some((msn, part)) => media(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
     }
+}
+
+/// `GET /hls/{name}/manifest.mpd`. Like [`master`], a family root (no `+`)
+/// brings in every live `{name}+*` rendition, and a root nobody can play
+/// (no fMP4 segments of its own) gives way to its renditions.
+async fn dash_manifest(
+    hls: &Arc<Hls>,
+    name: &str,
+    entry: &Entry,
+    token: Option<&str>,
+    time_url: Option<String>,
+) -> Response {
+    let siblings = || -> Vec<(String, dash::Snap)> {
+        if name.contains('+') {
+            return Vec::new();
+        }
+        let prefix = format!("{name}+");
+        let mut entries: Vec<(String, Arc<Entry>)> =
+            hls.streams().iter().filter(|(n, _)| n.starts_with(&prefix)).map(|(n, e)| (n.clone(), e.clone())).collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.into_iter().filter_map(|(n, e)| dash::Snap::of(&e.pkg()).map(|s| (n, s))).collect()
+    };
+    let (root_now, root_ready) = {
+        let p = entry.pkg();
+        (dash::Snap::of(&p), p.ready())
+    };
+    let mut family = siblings();
+    let root = match root_now {
+        Some(s) => Some(s),
+        None if !root_ready && !family.is_empty() => None,
+        None => entry.wait(entry.block_timeout(), dash::Snap::of).await,
+    };
+    let (lead_name, lead) = match root {
+        Some(s) => (name.to_owned(), s),
+        None => {
+            if family.is_empty() {
+                family = siblings();
+            }
+            if family.is_empty() {
+                return error(if entry.pkg().ended { StatusCode::NOT_FOUND } else { StatusCode::SERVICE_UNAVAILABLE });
+            }
+            family.remove(0)
+        }
+    };
+    let ctx = dash::Ctx { token, time_url, now: SystemTime::now() };
+    let body = dash::render((&lead_name, &lead), &family, &ctx);
+    respond(StatusCode::OK, dash::CONTENT_TYPE, "no-cache", body)
+}
+
+/// A one-track init segment or media segment named by a DASH manifest.
+async fn dash_file(entry: &Entry, file: dash::File) -> Response {
+    let (video, found) = match file {
+        dash::File::Init { video, generation } => (video, dash::init(&entry.pkg(), video, generation)),
+        dash::File::Media { video, msn } => {
+            let wait = entry.block_timeout();
+            let seg = entry
+                .wait(wait, |p| match p.lookup(msn, None) {
+                    Lookup::Found(b) => Some(dash::track_id(p, msn, video).map(|id| (b, id))),
+                    Lookup::Gone => Some(None),
+                    Lookup::Pending => None,
+                })
+                .await
+                .flatten();
+            let cut = seg.and_then(|(b, id)| caudal_cmaf::fmp4::extract_track(&b, id)).filter(|b| !b.is_empty());
+            (video, cut)
+        }
+    };
+    let ct = if video { "video/mp4" } else { "audio/mp4" };
+    match (file, found) {
+        (dash::File::Init { .. }, Some(b)) => respond(StatusCode::OK, ct, "no-cache", b),
+        (dash::File::Media { .. }, Some(b)) => respond(StatusCode::OK, ct, "max-age=60", b),
+        (_, None) => error(StatusCode::NOT_FOUND),
+    }
+}
+
+/// `GET /dash/{name}/index.mpd` (MistServer's DASH URL) and the files its
+/// manifest names: the same as under `/hls/{name}/`, DASH files only.
+async fn dash_alias(
+    State(hls): State<Arc<Hls>>,
+    Path((name, file)): Path<(String, String)>,
+    query: RawQuery,
+    req: Request,
+) -> Response {
+    let file = match file.as_str() {
+        "index.mpd" | "manifest.mpd" => "manifest.mpd".to_owned(),
+        f if dash::parse_name(f).is_some() => file,
+        _ => return error(StatusCode::NOT_FOUND),
+    };
+    hls_file(State(hls), Path((name, file)), query, req).await
+}
+
+/// `GET /dash/time`: the server's clock for MPD `UTCTiming`
+/// (`urn:mpeg:dash:utc:http-iso:2014`), so players compute the live edge on
+/// the same clock that dated the segments.
+async fn dash_time() -> Response {
+    respond(StatusCode::OK, "text/plain; charset=utf-8", "no-store", packager::rfc3339(SystemTime::now()))
 }
 
 /// `t{seq}.ts` → `seq`: a segment of the TS rendition.
@@ -1166,6 +1282,9 @@ mod tests;
 
 #[cfg(test)]
 mod ts_tests;
+
+#[cfg(test)]
+mod dash_tests;
 
 #[cfg(test)]
 mod token_tests {

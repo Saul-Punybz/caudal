@@ -842,6 +842,57 @@ fn resume_keeps_counting_and_marks_the_discontinuity() {
     assert!(msns.windows(2).all(|w| w[1] == w[0] + 1), "{pl}");
 }
 
+/// What hls.js relies on at the seam of a republish (see
+/// `tests/browser/tests/reconnect.spec.ts`): it gives the new
+/// discontinuity its own timestamp offset, taken from the earliest
+/// `tfdt` of the first fragment after `EXT-X-DISCONTINUITY` and placed at
+/// that fragment's playlist position (the sum of the durations before it).
+/// So the new publish must restart its clock at a sync sample with audio
+/// starting within one frame of the video (no hole at the seam), the last
+/// segment of the old publish must list the same duration its parts sum
+/// to, and the first new part must be a full-length INDEPENDENT one.
+#[test]
+fn the_first_part_after_a_republish_restarts_the_clock_on_a_sync_sample() {
+    let fx = fixture();
+    let mut pkg = Packager::new(GRACE);
+    pkg.set_tracks(&fx.tracks);
+    feed(&mut pkg, &fx, 0..2);
+    pkg.suspend();
+    pkg.resume();
+    pkg.set_tracks(&fx.tracks);
+    feed(&mut pkg, &fx, 0..1);
+    let pl = pkg.playlist();
+
+    // The old publish's last segment: EXTINF matches its parts.
+    let all = parts(&pl);
+    let s3: f64 = all.iter().filter(|p| p.0 == 3).map(|p| p.2).sum();
+    let extinf: f64 = pl
+        .split("#EXTINF:")
+        .find(|chunk| chunk.contains("\ns3.m4s"))
+        .and_then(|chunk| chunk.split(',').next())
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((extinf - s3).abs() < 1e-4, "s3 EXTINF {extinf} vs parts {s3}:\n{pl}");
+
+    // The first new part: INDEPENDENT and full length.
+    let &(msn, part, dur, independent) = all.iter().find(|p| p.0 == 4).unwrap();
+    assert_eq!((msn, part, independent), (4, 0, true), "{pl}");
+    assert!((dur - 0.2).abs() < 1e-6, "first part after the seam is {dur} s:\n{pl}");
+
+    let Lookup::Found(bytes) = pkg.lookup(4, Some(0)) else { panic!("s4.p0 missing") };
+    let mut buf = &bytes[..];
+    let moof = Moof::decode(&mut buf).unwrap();
+    assert_eq!(moof.traf.len(), 2, "video and audio in the first fragment after the seam");
+    let v = &moof.traf[0];
+    assert_eq!(v.trun[0].entries[0].flags, Some(0x0200_0000), "starts on a sync sample");
+    let v_tfdt = v.tfdt.as_ref().unwrap().base_media_decode_time;
+    assert_eq!(v_tfdt, 10 * 90_000, "the new clock starts over at 0 (+10 s shift)");
+    let a_tfdt = moof.traf[1].tfdt.as_ref().unwrap().base_media_decode_time;
+    let (v_s, a_s) = (v_tfdt as f64 / 90_000.0, a_tfdt as f64 / 48_000.0);
+    assert!((a_s - v_s).abs() <= 1024.0 / 48_000.0, "audio starts at {a_s} s, video at {v_s} s");
+}
+
 /// A keyframe off the segment cadence (a backup-source switch, a scene
 /// cut) starts an INDEPENDENT part, and no part before it is left under
 /// 85% of PART-TARGET unless it ends its segment (Apple -12642).

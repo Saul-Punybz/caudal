@@ -30,6 +30,7 @@ Both endpoints are under `/api/`, so they need the admin login when
 | SRT | one connection | yes | MPEG-TS sent | from SRT's own measurements; `loss` = share of packets retransmitted or dropped late |
 | HTTP-TS | one `/ts/{name}.ts` request | yes | MPEG-TS handed to the connection | `null` |
 | Progressive MP4 | one `/mp4/{name}.mp4` request | yes | fMP4 handed to the connection | `null` |
+| Audio | one `/audio/{name}.aac` or `.mp3` request | yes | audio handed to the connection | `null` |
 | RTSP | one PLAY | yes | RTP sent | `null` (not measured yet) |
 | RTMP | one `play` | yes | FLV tag bodies sent (before RTMP chunk headers) | `null` |
 | WHEP | one peer | yes | media payload, before RTP/SRTP | from the peer stats: RTT, and the loss the viewer reports over RTCP |
@@ -47,8 +48,9 @@ Both endpoints are under `/api/`, so they need the admin login when
 ## Kick
 
 `DELETE /api/v1/sessions/{id}[?block_secs=N]` ends one viewer:
-SRT closes the socket, RTSP closes the control connection, WHEP disconnects
-the peer, MoQ closes the QUIC session, and an LL-HLS player gets `403` on
+SRT closes the socket, RTSP closes the control connection, RTMP closes the
+connection, WHEP disconnects the peer, MoQ closes the QUIC session, the
+HTTP-TS, MP4 and audio responses end, and an LL-HLS player gets `403` on
 every request until it has been quiet for 10 s.
 
 `DELETE /api/v1/sessions?stream=NAME&tag=T[&block_secs=N]` ends every
@@ -67,3 +69,19 @@ cannot be blocked.
 Answers: `200 {"kicked": 17, "blocked": true}`, `404` for an unknown id,
 `400` for a block over a day. Blocks and tags live in memory and end on
 restart.
+
+## Metrics
+
+`GET /metrics` reports the same session table, per protocol:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `caudal_sessions{protocol}` | gauge | Viewer sessions open now. A protocol that has had a session stays listed at 0. |
+| `caudal_bytes_out_total{protocol}` | counter | Media bytes sent to viewers since start. A session's bytes stay in the total after it closes; each byte is counted once. |
+
+`/metrics` also carries the standard process metrics: `process_cpu_seconds_total`,
+`process_resident_memory_bytes`, `process_virtual_memory_bytes`,
+`process_open_fds`, `process_start_time_seconds` and `process_threads`. A
+platform that cannot report one leaves it out instead of printing a made-up
+value: Windows has no `process_virtual_memory_bytes` or `process_threads`, and
+there `process_open_fds` is the handle count.

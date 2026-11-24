@@ -24,7 +24,7 @@ needed; the route is on the main HTTP (and HTTPS) port for every stream.
   audio codec gets `415` with the URL that does work (an AAC stream asked
   for as `.mp3` answers "use /audio/{name}.aac"). Opus (WHIP, some SRT
   encoders), AC-3 and other codecs get `415`. To serve those, set the
-  encoder to AAC or MP3, or serve a `[[transcode]]` rendition instead
+  encoder to AAC or MP3, or serve a `[[transcode.ladder]]` rendition instead
   (renditions are encoded to AAC, so `/audio/{rendition}.aac` works).
   Transcoding here was left out on purpose: it would cost an ffmpeg per
   listened stream for what is a one-time encoder setting.

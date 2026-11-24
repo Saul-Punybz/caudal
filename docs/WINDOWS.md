@@ -12,9 +12,9 @@ yet:** a Windows 10 desktop, running as a service, multicast on Windows.
 
 1. Put `caudal.exe` in a folder of its own, e.g. `C:\Caudal\`, with a
    `caudal.toml` next to it (start from `caudal.example.toml`).
-2. ffmpeg is only needed for `[transcode]` and `[[omt.pull]]` (which take
-   `[transcode] ffmpeg` unless `[omt] ffmpeg` says otherwise), plus some
-   `[[omt.output]]` codecs. Get a Windows build (gyan.dev or BtbN) and either
+2. ffmpeg is only needed for `[transcode]`, the dashboard's stream
+   thumbnails and `[[omt.pull]]` (which take `[transcode] ffmpeg` unless
+   `[omt] ffmpeg` says otherwise), plus some `[[omt.output]]` codecs. Get a Windows build (gyan.dev or BtbN) and either
    put its `bin` folder on `PATH` or point the config at it. In TOML a
    Windows path goes in single quotes, so the backslashes stay as they are:
 

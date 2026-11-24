@@ -9,7 +9,7 @@ use std::time::Duration;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::broadcast;
 
-use crate::gate::{Access, Denied, Gate, Rewrite, RewriteRequest};
+use crate::gate::{Access, Denied, Gate, Rewrite, RewriteRequest, StreamKeys};
 use crate::media::{Cue, Frame, TrackInfo, valid_stream_name};
 use crate::session::{Session, Sessions};
 use crate::stream::{BufferConfig, PushError, StartAt, Stream, Subscriber};
@@ -34,6 +34,9 @@ pub struct Registry {
     /// Name routing asked before the gate (see [`Registry::resolve`]).
     /// Same locking rationale as `gate`.
     rewrite: RwLock<Option<Arc<dyn Rewrite>>>,
+    /// Stream keys asked before the rewrite (see [`Registry::resolve`]).
+    /// Same locking rationale as `gate`.
+    keys: RwLock<Option<Arc<dyn StreamKeys>>>,
     /// Where a viewer's request for an unknown name goes (a cluster edge
     /// pulling from its origin). Same locking rationale as `gate`.
     demand: RwLock<Option<Arc<dyn Demand>>>,
@@ -66,6 +69,7 @@ impl Default for Registry {
             ended: broadcast::channel(64).0,
             gate: RwLock::new(None),
             rewrite: RwLock::new(None),
+            keys: RwLock::new(None),
             demand: RwLock::new(None),
             sessions: Arc::default(),
         }
@@ -113,15 +117,39 @@ impl Registry {
         *self.rewrite.write() = None;
     }
 
+    /// Installs (or replaces, on a reload) the stream key table every
+    /// [`Registry::resolve`] asks first.
+    pub fn set_stream_keys(&self, keys: Arc<dyn StreamKeys>) {
+        *self.keys.write() = Some(keys);
+    }
+
+    /// Removes the stream key table.
+    pub fn clear_stream_keys(&self) {
+        *self.keys.write() = None;
+    }
+
+    /// `requested` as it may be logged: `"****"` when it is a stream key,
+    /// unchanged otherwise. Protocols log the name a client sent through
+    /// this when they refuse a request.
+    pub fn loggable<'a>(&self, requested: &'a str) -> std::borrow::Cow<'a, str> {
+        match self.keys.read().as_ref() {
+            Some(k) if k.is_key(requested) => std::borrow::Cow::Borrowed("****"),
+            _ => std::borrow::Cow::Borrowed(requested),
+        }
+    }
+
     /// The name a publish or play request really goes to, after the
-    /// installed [`Rewrite`] (if any) and the gate. Protocols call this
-    /// with the name the client sent and use the answer for `publish`,
-    /// `get_or_demand` and `open_session`.
+    /// stream keys and the installed [`Rewrite`] (if any) and the gate.
+    /// Protocols call this with the name the client sent and use the
+    /// answer for `publish`, `get_or_demand` and `open_session`.
     ///
-    /// The gate judges the *final* name: a rewrite can never route a
-    /// client around `[[access.rules]]`, tokens or `[auth.hook]`. A
-    /// rewritten name must be a valid stream name or the request is
-    /// refused.
+    /// Order: a stream key (sent as the name, or as the token for its own
+    /// stream) resolves straight to its stream, skips the rewrite and
+    /// stands in for the token; otherwise the rewrite routes the name.
+    /// The gate judges the *final* name either way: neither a key nor a
+    /// rewrite can route a client around `[[access.rules]]` or
+    /// `[auth.hook]`, and a rewrite cannot get around tokens. A rewritten
+    /// name must be a valid stream name or the request is refused.
     pub async fn resolve(
         &self,
         access: Access,
@@ -130,6 +158,22 @@ impl Registry {
         token: Option<&str>,
         ip: Option<std::net::IpAddr>,
     ) -> Result<String, Denied> {
+        let keys = self.keys.read().clone();
+        if let Some(keys) = &keys {
+            // Never log `stream` here: it may be the key.
+            if let Some(name) = keys.by_name(access, stream) {
+                self.authorize_inner(access, &name, None, ip, true).await?;
+                tracing::debug!(stream = %name, protocol, action = ?access, "stream key accepted");
+                return Ok(name);
+            }
+            if let Some(t) = token
+                && keys.by_token(access, t, stream)
+            {
+                self.authorize_inner(access, stream, None, ip, true).await?;
+                tracing::debug!(stream, protocol, action = ?access, "stream key accepted");
+                return Ok(stream.to_owned());
+            }
+        }
         let rewrite = self.rewrite.read().clone();
         let name = match rewrite {
             Some(r) => {
@@ -145,6 +189,11 @@ impl Registry {
             }
             None => stream.to_owned(),
         };
+        if let Some(keys) = &keys
+            && keys.requires_key(access, &name)
+        {
+            return Err(Denied::Refused("this stream only takes its stream key".into()));
+        }
         self.authorize(access, &name, token, ip).await?;
         Ok(name)
     }
@@ -161,6 +210,19 @@ impl Registry {
         token: Option<&str>,
         ip: Option<std::net::IpAddr>,
     ) -> Result<(), Denied> {
+        self.authorize_inner(access, stream, token, ip, false).await
+    }
+
+    /// [`Registry::authorize`]; `keyed` when a stream key stood in for
+    /// the token (see [`Gate::check_keyed`]).
+    async fn authorize_inner(
+        &self,
+        access: Access,
+        stream: &str,
+        token: Option<&str>,
+        ip: Option<std::net::IpAddr>,
+        keyed: bool,
+    ) -> Result<(), Denied> {
         if access == Access::Play
             && let Some(ip) = ip
             && self.sessions.is_blocked(stream, ip)
@@ -169,9 +231,36 @@ impl Registry {
         }
         let gate = self.gate.read().clone();
         match gate {
+            Some(g) if keyed => g.check_keyed(access, stream, ip).await,
             Some(g) => g.check(access, stream, token, ip).await,
             None => Ok(()),
         }
+    }
+
+    /// Re-checks a request [`Registry::resolve`] already turned from
+    /// `requested` into `resolved` (RTSP `PLAY` after `DESCRIBE`): the gate
+    /// again, the rewrite not, and a stream key still standing in for the
+    /// token when `requested` was one.
+    pub async fn recheck(
+        &self,
+        access: Access,
+        requested: &str,
+        resolved: &str,
+        token: Option<&str>,
+        ip: Option<std::net::IpAddr>,
+    ) -> Result<(), Denied> {
+        let keys = self.keys.read().clone();
+        if let Some(keys) = &keys {
+            let by_name = keys.by_name(access, requested).is_some_and(|s| s == resolved);
+            let by_token = requested == resolved && token.is_some_and(|t| keys.by_token(access, t, resolved));
+            if by_name || by_token {
+                return self.authorize_inner(access, resolved, None, ip, true).await;
+            }
+            if keys.requires_key(access, resolved) {
+                return Err(Denied::Refused("this stream only takes its stream key".into()));
+            }
+        }
+        self.authorize(access, resolved, token, ip).await
     }
 
     /// Opens a viewer session for `stream` over `protocol`; it lasts until
@@ -377,5 +466,75 @@ mod tests {
         assert_eq!(reg.resolve(Access::Publish, "rtmp", "alias", None, None).await, Ok("real".into()));
         reg.clear_rewrite();
         assert_eq!(reg.resolve(Access::Play, "hls", "alias", None, None).await, Ok("alias".into()));
+    }
+
+    /// `k3y` publishes to `real`; `real` takes its key only.
+    struct Keys;
+
+    impl StreamKeys for Keys {
+        fn by_name(&self, access: Access, presented: &str) -> Option<String> {
+            (access == Access::Publish && presented == "k3y").then(|| "real".to_owned())
+        }
+        fn by_token(&self, access: Access, token: &str, stream: &str) -> bool {
+            access == Access::Publish && token == "k3y" && stream == "real"
+        }
+        fn requires_key(&self, access: Access, stream: &str) -> bool {
+            access == Access::Publish && stream == "real"
+        }
+        fn is_key(&self, s: &str) -> bool {
+            s == "k3y"
+        }
+    }
+
+    /// Refuses anything without a token; a keyed request passes.
+    struct NeedsToken;
+
+    impl Gate for NeedsToken {
+        fn check<'a>(
+            &'a self,
+            _access: Access,
+            _stream: &'a str,
+            token: Option<&'a str>,
+            _ip: Option<std::net::IpAddr>,
+        ) -> crate::gate::GateFuture<'a> {
+            Box::pin(async move { if token == Some("jwt") { Ok(()) } else { Err(Denied::Missing) } })
+        }
+        fn check_keyed<'a>(
+            &'a self,
+            _access: Access,
+            _stream: &'a str,
+            _ip: Option<std::net::IpAddr>,
+        ) -> crate::gate::GateFuture<'a> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_keys_resolve_before_the_rewrite_and_stand_in_for_the_token() {
+        let reg = Registry::new();
+        reg.set_gate(Arc::new(NeedsToken));
+        reg.set_rewrite(Arc::new(Router));
+        reg.set_stream_keys(Arc::new(Keys));
+        assert_eq!(reg.resolve(Access::Publish, "rtmp", "k3y", None, None).await, Ok("real".into()));
+        assert_eq!(reg.resolve(Access::Publish, "whip", "real", Some("k3y"), None).await, Ok("real".into()));
+        // A key is only good for its own stream in the token slot.
+        assert_eq!(reg.resolve(Access::Publish, "whip", "cam", Some("k3y"), None).await, Err(Denied::Missing));
+        // Publish-only key: a play of the key is just an unknown name.
+        assert_eq!(reg.resolve(Access::Play, "hls", "k3y", Some("jwt"), None).await, Ok("k3y".into()));
+        // `real` takes its key only, even with a good token or through a rewrite.
+        assert!(matches!(
+            reg.resolve(Access::Publish, "rtmp", "real", Some("jwt"), None).await,
+            Err(Denied::Refused(_))
+        ));
+        assert!(matches!(
+            reg.resolve(Access::Publish, "rtmp", "alias", Some("jwt"), None).await,
+            Err(Denied::Refused(_))
+        ));
+        assert_eq!(reg.resolve(Access::Publish, "rtmp", "cam", Some("jwt"), None).await, Ok("cam".into()));
+        assert_eq!(reg.loggable("k3y"), "****");
+        assert_eq!(reg.loggable("cam"), "cam");
+        reg.clear_stream_keys();
+        assert_eq!(reg.loggable("k3y"), "k3y");
+        assert_eq!(reg.resolve(Access::Publish, "rtmp", "k3y", None, None).await, Err(Denied::Missing));
     }
 }

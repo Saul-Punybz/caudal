@@ -179,6 +179,10 @@ claiming in public.
 
 ## Road to "finished" (Saul, 18 Sep 2026: finish Caudal with everything, all in Rust)
 
+The State column is as of mid-September and not kept up: most of these
+batches have merged since. STATUS.md and the parity table in
+docs/research/MISTSERVER-REVERSE.md §6 say where things stand.
+
 | Batch | Work | Agent / model | State |
 |---|---|---|---|
 | 7 | RTSP pull + server (U), OMT vmx-codec (X, separate repo) | Sonnet / Opus | running |

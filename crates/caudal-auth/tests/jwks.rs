@@ -90,6 +90,7 @@ async fn rs256_via_jwks_happy_path() {
         keys: Some(KeySource::Jwks { url, refresh: Duration::from_secs(3600) }),
         publish: true,
         play: true,
+        ..Default::default()
     });
     // Give the background fetch a moment to populate the cache.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -108,6 +109,7 @@ async fn eddsa_via_jwks_happy_path() {
         keys: Some(KeySource::Jwks { url, refresh: Duration::from_secs(3600) }),
         publish: true,
         play: true,
+        ..Default::default()
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -128,6 +130,7 @@ async fn unknown_kid_triggers_one_rate_limited_refetch() {
         keys: Some(KeySource::Jwks { url, refresh: Duration::from_secs(3600) }),
         publish: true,
         play: true,
+        ..Default::default()
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     let after_initial = state.requests.load(Ordering::SeqCst);
@@ -169,6 +172,7 @@ async fn wrong_algorithm_for_jwks_is_invalid() {
         keys: Some(KeySource::Jwks { url, refresh: Duration::from_secs(3600) }),
         publish: true,
         play: true,
+        ..Default::default()
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -179,4 +183,36 @@ async fn wrong_algorithm_for_jwks_is_invalid() {
     let token = encode(&header, &claims, &EncodingKey::from_secret(b"whatever").unwrap()).unwrap();
 
     assert_eq!(auth.check(Action::Publish, "live-main", Some(&token)).await, Err(AuthError::Invalid));
+}
+
+#[tokio::test]
+async fn kid_permissions_bound_what_a_jwks_key_grants() {
+    let (enc_enc, jwk_enc) = rsa_key_and_jwk("encoders");
+    let (enc_free, jwk_free) = ed_key_and_jwk("unlisted");
+    let state =
+        JwksState { keys: Arc::new(Mutex::new(vec![jwk_enc, jwk_free])), requests: Arc::new(AtomicUsize::new(0)) };
+    let url = spawn_jwks_server(state).await;
+
+    let mut kid_permissions = std::collections::HashMap::new();
+    kid_permissions.insert(
+        "encoders".to_string(),
+        caudal_auth::KeyPermissions { publish: true, play: false, streams: vec!["live-*".into()] },
+    );
+    let auth = Authorizer::new(AuthConfig {
+        keys: Some(KeySource::Jwks { url, refresh: Duration::from_secs(3600) }),
+        publish: true,
+        play: true,
+        kid_permissions,
+        ..Default::default()
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let both = serde_json::json!(["publish", "play"]);
+    let scoped = sign(&enc_enc, Algorithm::RS256, "encoders", "*", both.clone());
+    assert_eq!(auth.check(Action::Publish, "live-main", Some(&scoped)).await, Ok(()));
+    assert_eq!(auth.check(Action::Play, "live-main", Some(&scoped)).await, Err(AuthError::Forbidden));
+    assert_eq!(auth.check(Action::Publish, "studio", Some(&scoped)).await, Err(AuthError::Forbidden));
+    // A kid with no entry is limited only by its token's claims.
+    let free = sign(&enc_free, Algorithm::EdDSA, "unlisted", "*", both);
+    assert_eq!(auth.check(Action::Play, "studio", Some(&free)).await, Ok(()));
 }

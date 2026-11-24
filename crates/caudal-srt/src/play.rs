@@ -26,7 +26,8 @@ pub(crate) async fn handle(
     let name = match registry.resolve(Access::Play, "srt", name, token, Some(std::net::IpAddr::V4(*peer.ip()))).await {
         Ok(n) => n,
         Err(denied) => {
-            tracing::info!(%peer, stream = %name, reason = ?denied, "srt play rejected");
+            let stream = registry.loggable(name);
+            tracing::info!(%peer, %stream, reason = ?denied, "srt play rejected");
             return;
         }
     };

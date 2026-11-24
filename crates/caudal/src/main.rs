@@ -13,6 +13,7 @@ mod doctor;
 mod import_mist;
 mod metrics;
 mod omt;
+mod process_metrics;
 mod reload;
 mod shutdown;
 mod subsystems;
@@ -103,7 +104,15 @@ enum CaptionsCommand {
 }
 
 fn make_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // The RTMP library logs every `releaseStream` / `FCPublish` with its
+    // argument at debug: the encoder's stream key (and any `?token=`).
+    // Kept at info unless `RUST_LOG` names it on purpose.
+    if std::env::var("RUST_LOG").is_ok_and(|v| v.contains("scuffle_rtmp")) {
+        filter
+    } else {
+        filter.add_directive("scuffle_rtmp=info".parse().expect("static directive"))
+    }
 }
 
 /// JSON logs when `CAUDAL_LOG_FORMAT=json`, pretty otherwise. Level from

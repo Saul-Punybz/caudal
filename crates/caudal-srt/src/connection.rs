@@ -107,7 +107,8 @@ async fn handle_publish(
     {
         Ok(n) => n,
         Err(denied) => {
-            tracing::info!(%peer, stream = %name, reason = ?denied, "srt publish rejected");
+            let stream = registry.loggable(name);
+            tracing::info!(%peer, %stream, reason = ?denied, "srt publish rejected");
             return;
         }
     };

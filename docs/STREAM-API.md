@@ -43,7 +43,7 @@ they run, with `"section": "[auth.source]"`. See `docs/ON-DEMAND.md`. An
 | | |
 |---|---|
 | `GET /api/v1/pushes` | `[{"stream", "url", "section"}]` |
-| `POST /api/v1/pushes` `{"stream": "show", "url": "rtmps://live.example/app/KEY"}` | `rtmp://`/`rtmps://` → `[[restream]]`, `srt://` → `[[srt.push]]`, `udp://`/`rtp://` → `[[udp.push]]` (an IP address) |
+| `POST /api/v1/pushes` `{"stream": "show", "url": "rtmps://live.example/app/KEY"}` | `rtmp://`/`rtmps://` → `[[restream]]`, `srt://` → `[[srt.push]]`, `udp://`/`rtp://` → `[[udp.push]]` (an IP address), `whip://`/`whip+http://` → `[[webrtc.push]]` (optional `"token"` in the body, sent as `Authorization: Bearer`; `docs/WHIP-PUSH.md`) |
 | `DELETE /api/v1/pushes/{stream}[?url=...]` | removes the stream's pushes (only that url when given) |
 
 A push starts when its stream is live and keeps retrying while it is.
@@ -64,7 +64,9 @@ and the URL template, but are not added or removed here. `GET
   config file.
 
 Listings mask secrets: an RTMP stream key shows as `****`, so do SRT
-`passphrase` / `streamid` values and an RTSP camera's password. The file
+`passphrase` / `streamid` values, an RTSP camera's password, an HTTP(S)
+pull's password and query values (a CDN's signed token), and a WHIP URL's
+key-like path segments and query values (a WHIP `token` is never listed). The file
 itself keeps them; protect it like a password (the server keeps its mode).
 
 ## Thumbnails

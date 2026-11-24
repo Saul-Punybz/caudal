@@ -145,6 +145,35 @@ async fn list_pushes(State(state): State<ReloadState>) -> Json<Vec<config_edit::
     Json(rows)
 }
 
+/// One row of `GET /api/v1/stream-keys`. The key itself is never sent.
+#[derive(Debug, Serialize)]
+struct StreamKeyJson {
+    stream: String,
+    key: &'static str,
+    publish: bool,
+    play: bool,
+    /// `"config"` (`[[auth.stream_keys]]`) or `"file"` (`stream_keys_file`).
+    source: &'static str,
+}
+
+/// `GET /api/v1/stream-keys`: which streams have keys and what each key
+/// allows, keys masked. Keys are managed in the config or the keys file.
+async fn list_stream_keys(State(state): State<ReloadState>) -> Json<Vec<StreamKeyJson>> {
+    let auth = current(&state).auth;
+    let row = |source| {
+        move |k: &crate::config::StreamKeySection| StreamKeyJson {
+            stream: k.stream.clone(),
+            key: "****",
+            publish: k.publish,
+            play: k.play,
+            source,
+        }
+    };
+    let rows =
+        auth.stream_keys.iter().map(row("config")).chain(auth.file_stream_keys.iter().map(row("file"))).collect();
+    Json(rows)
+}
+
 async fn list_auto_pushes(State(state): State<ReloadState>) -> Json<Vec<crate::auto_push::RuleJson>> {
     Json(state.supervisor.auto_pushes())
 }
@@ -229,6 +258,7 @@ pub fn router(state: ReloadState) -> Router {
         .route("/api/v1/pushes", get(list_pushes).post(add_push))
         .route("/api/v1/pushes/{stream}", delete(remove_push))
         .route("/api/v1/auto-pushes", get(list_auto_pushes))
+        .route("/api/v1/stream-keys", get(list_stream_keys))
         .route("/api/v1/auto-pushes/{index}/{action}", post(toggle_auto_push))
         .with_state(state)
 }
@@ -385,6 +415,60 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(crate::config_edit::check(&text).unwrap().srt.push.is_empty());
         assert!(text.starts_with("# production box\n"));
+    }
+
+    /// Stream keys from the config and from `stream_keys_file`: listed
+    /// masked, and a changed keys file applies on reload with no restart.
+    #[tokio::test]
+    async fn stream_keys_list_masked_and_reload_from_their_file() {
+        use caudal_core::Access;
+        let dir = tempfile::tempdir().unwrap();
+        let keys = dir.path().join("keys.toml");
+        std::fs::write(&keys, "[[stream_keys]]\nkey = \"file-key-aaaaaaaaaaaa\"\nstream = \"backup\"\n").unwrap();
+        let path = dir.path().join("caudal.toml");
+        let text = format!(
+            "[rtmp]\nbind = \"127.0.0.1:0\"\n[srt]\nbind = \"127.0.0.1:0\"\n\
+             [auth]\nstream_keys_file = {:?}\n[[auth.stream_keys]]\nkey = \"config-key-bbbbbbbbbb\"\nstream = \"main\"\nplay = true\n",
+            keys.display().to_string()
+        );
+        std::fs::write(&path, text).unwrap();
+        let registry = caudal_core::Registry::new();
+        let started = Supervisor::start(&crate::config::load(&path).unwrap(), registry.clone());
+        let state = ReloadState { supervisor: started.supervisor, config_path: Some(path), edits: Default::default() };
+        let app = router(state.clone());
+
+        let (st, list) = call(&app, "GET", "/api/v1/stream-keys", None).await;
+        assert_eq!(st, StatusCode::OK);
+        let raw = list.to_string();
+        assert!(!raw.contains("config-key") && !raw.contains("file-key"), "keys never listed: {raw}");
+        assert_eq!(list[0]["stream"], "main");
+        assert_eq!((list[0]["publish"].as_bool(), list[0]["play"].as_bool()), (Some(true), Some(true)));
+        assert_eq!((list[1]["stream"].as_str(), list[1]["source"].as_str()), (Some("backup"), Some("file")));
+        assert_eq!(list[1]["key"], "****");
+
+        let resolve = |k: &'static str| {
+            let registry = registry.clone();
+            async move { registry.resolve(Access::Publish, "rtmp", k, None, None).await }
+        };
+        assert_eq!(resolve("file-key-aaaaaaaaaaaa").await, Ok("backup".into()));
+        assert_eq!(resolve("config-key-bbbbbbbbbb").await, Ok("main".into()));
+
+        // Rotate the file's key; only the file changed.
+        std::fs::write(&keys, "[[stream_keys]]\nkey = \"file-key-cccccccccccc\"\nstream = \"backup\"\n").unwrap();
+        let report = reload_from_disk(&state).unwrap();
+        assert!(report.applied.iter().any(|a| a == "auth"), "{:?}", report.applied);
+        assert_eq!(resolve("file-key-cccccccccccc").await, Ok("backup".into()));
+        assert_eq!(
+            resolve("file-key-aaaaaaaaaaaa").await,
+            Ok("file-key-aaaaaaaaaaaa".into()),
+            "old key is a plain name"
+        );
+
+        // A broken keys file is refused and the running keys stay.
+        std::fs::write(&keys, "[[stream_keys]]\nkey = \"short\"\nstream = \"backup\"\n").unwrap();
+        let err = reload_from_disk(&state).unwrap_err();
+        assert!(err.contains("backup") && !err.contains("short\""), "{err}");
+        assert_eq!(resolve("file-key-cccccccccccc").await, Ok("backup".into()));
     }
 
     /// A WHIP push over the API: written to `[[webrtc.push]]` with its

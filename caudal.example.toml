@@ -22,6 +22,13 @@ app = "live"  # RTMP application name
 play = true  # viewers may play streams over RTMP too (rtmp://host/live/NAME); see docs/RTMP.md
 # tls_bind = "0.0.0.0:1936"  # RTMPS publish (rtmps://host:1936/live/<name>) with [tls]'s certificate; see docs/OBS.md
 
+# SRT listener: publish with streamid=publish/<name>, play with
+# streamid=play/<name> (same ?token=... as RTMP when [auth] has keys).
+[srt]
+bind = "0.0.0.0:9000"  # SRT listener bind address (UDP)
+latency_ms = 120  # receiver latency the listener asks for
+# passphrase = "at-least-10-characters"  # AES encryption callers must use; absent = unencrypted
+
 [hls]
 part_ms = 200  # HLS part duration in milliseconds
 segment_ms = 2000  # HLS segment duration in milliseconds
@@ -45,12 +52,16 @@ window_secs = 15  # Buffer window duration in seconds
 max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 
 # HTTPS next to HTTP, speaking HTTP/1.1 and HTTP/2. Needed for low-latency
-# HLS on Safari and for Apple's conformance. Uncomment one certificate source.
+# HLS on Safari and for Apple's conformance. Uncomment one certificate
+# source: PEM files, or automatic Let's Encrypt.
 # [tls]
 # bind = "0.0.0.0:8443"
 # cert = "/etc/caudal/fullchain.pem"   # PEM files, reloaded when they change
 # key = "/etc/caudal/privkey.pem"
-# acme_domains = ["live.example.com"]  # or: automatic Let's Encrypt
+#
+# [tls]
+# bind = "0.0.0.0:8443"
+# acme_domains = ["live.example.com"]
 # acme_email = "ops@example.com"
 # acme_cache_dir = "/var/lib/caudal/acme"
 # acme_staging = false
@@ -59,13 +70,41 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # server can publish and play. Publish: rtmp://host/live/<name>?token=...,
 # srt://host:9000?streamid=publish/<name>?token=...; play: ?token=... or
 # "Authorization: Bearer ...". Claims: sub = stream or "prefix*", act =
-# "publish" / "play" (or both), exp.
+# "publish" / "play" (or both), exp; optional ipa = client IP or CIDR (or
+# an array) the token is bound to. See docs/STREAM-KEYS.md.
 # [auth]
-# secret = "at-least-32-characters-of-random-secret"  # HS256, or:
-# jwks_url = "https://auth.example.com/.well-known/jwks.json"
-# jwks_refresh_secs = 300
+# secret = "at-least-32-characters-of-random-secret"  # HS256, or instead:
+# # jwks_url = "https://auth.example.com/.well-known/jwks.json"
+# # jwks_refresh_secs = 300
 # publish = true
 # play = false
+# stream_keys_file = "/etc/caudal/stream-keys.toml"  # more [[stream_keys]], re-read on reload
+# stream_keys_only = false  # true: a stream with a publish key takes nothing else
+
+# Stream keys (MistServer's streamkeys): publish with the key where the
+# stream name goes (rtmp://host/live/<key>, streamid=publish/<key>,
+# /whip/<key>); Caudal maps it to `stream`. Never logged or listed.
+# [[auth.stream_keys]]
+# key = "sk_live_main_8f3a9c2e71d4"  # 16-128 of A-Z a-z 0-9 - _
+# stream = "live-main"
+# publish = true
+# play = false
+
+# The most tokens signed by a key may grant, whatever they claim
+# (MistServer's per-key input/output/stream).
+# [auth.secret_permissions]       # for `secret`
+# publish = true
+# play = true
+# streams = ["live-*"]
+
+# With JWKS instead of `secret`, the same limits per signing key, by kid:
+# [auth]
+# jwks_url = "https://auth.example.com/.well-known/jwks.json"
+# [[auth.key_permissions]]
+# kid = "encoders-2026"
+# publish = true
+# play = false
+# streams = ["live-*"]
 
 # Pull streams in (docs/PULL-INPUTS.md): call a remote SRT listener, take
 # MPEG-TS over UDP (unicast or multicast, plain or RTP), GET it over HTTP,
@@ -82,7 +121,7 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # [[rtmp.pull]]                  # play from a remote RTMP(S) server
 # stream = "remote"
 # url = "rtmp://203.0.113.7/live/cam1"
-# [[hls.pull]]                   # HLS / LL-HLS with MPEG-TS segments
+# [[hls.pull]]                   # HLS / LL-HLS, MPEG-TS or fMP4/CMAF segments (another Caudal)
 # stream = "cdn"
 # url = "https://cdn.example/live/master.m3u8"
 # Any of these can run only while someone watches (docs/ON-DEMAND.md):
@@ -100,6 +139,10 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # timeout_ms = 2000
 # on_error = "deny"
 # reply = "status"         # "mistserver": a 2xx must say true/1/yes (MistServer trigger handlers)
+# publish = true           # ask before publishes
+# play = true              # ask before plays
+# allow_cache_secs = 30
+# deny_cache_secs = 5
 
 # Ask your own service which stream a publish/play really goes to
 # (MistServer's PUSH_REWRITE / PLAY_REWRITE). See docs/REWRITE-HOOK.md.
@@ -108,7 +151,10 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # secret = "whsec_..."
 # timeout_ms = 2000
 # on_error = "deny"
+# publish = true
+# play = true
 # cache_secs = 30
+# deny_cache_secs = 5
 
 # Ask your own service where to pull a stream nobody publishes or configures
 # (MistServer's STREAM_SOURCE); pulled on demand. See docs/ON-DEMAND.md.
@@ -249,7 +295,7 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # is pushed to `url` while it is live, and stops when it ends. `$stream` (or
 # `${stream}`) is replaced by the stream's name. The scheme picks the engine:
 # rtmp:// / rtmps://, srt://, udp:// / rtp:// (a fixed IP address and port,
-# one stream at a time). A push that a static entry above already makes runs
+# one stream at a time), whip:// / whip+http:// (with `token`). A push that a static entry above already makes runs
 # once. Hot-reloadable; GET /api/v1/auto-pushes lists what each rule runs.
 # docs/AUTO-PUSH.md.
 # [[push.auto]]
@@ -327,6 +373,42 @@ max_mb = 256  # Maximum buffer size in megabytes, whatever the window says
 # cert = "/etc/caudal/fullchain.pem"  # omit both for a rotating self-signed cert
 # key = "/etc/caudal/privkey.pem"
 # hosts = []             # self-signed cert hostnames; default ["localhost", "127.0.0.1"]
+
+# Transcoding ladders (adaptive bitrate): every stream matching `streams`
+# also gets the renditions below as `name+label` streams, all in one LL-HLS
+# multivariant playlist. ffmpeg (default) or the pure-Rust "rusty_h264"
+# encoder. Dashboard thumbnails use `ffmpeg` too, ladders or not.
+# [transcode]
+# engine = "ffmpeg"
+# ffmpeg = "ffmpeg"          # path or a name on PATH
+# [[transcode.ladder]]
+# streams = ["main", "cam*"]
+# [[transcode.ladder.rendition]]
+# label = "720p"
+# height = 720
+# video_kbps = 2500
+# audio_kbps = 128           # default 128
+# [[transcode.ladder.rendition]]
+# label = "360p"
+# height = 360
+# video_kbps = 800
+
+# Stream health alerts as signed webhooks (same format as [hooks]; a Slack
+# incoming-webhook URL also works): no keyframe, bitrate below a floor, no
+# audio, publisher lost. Off until `webhooks` names a URL.
+# [health]
+# webhooks = ["https://example.com/caudal-health"]
+# secret = "whsec_..."
+# no_keyframe_secs = 10          # 0 disables
+# min_bitrate_kbps = 500         # unset disables
+# min_bitrate_for_secs = 10
+# no_audio_secs = 10             # unset disables
+# publisher_lost = true
+# publisher_lost_grace_secs = 5  # a republish within this is no alert
+# min_hold_secs = 5              # good this long before `resolved` fires
+# [[health.stream]]              # per-stream overrides; unset keys inherit
+# name = "main"
+# min_bitrate_kbps = 2000
 
 # Geo-blocking / IP allow-lists per stream, enforced on every protocol
 # (RTMP, SRT, RTSP, WHIP/WHEP, HLS/VOD; MoQ only for country/token rules —

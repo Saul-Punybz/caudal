@@ -76,16 +76,16 @@ impl SessionHandler for Handler {
         app_name: &str,
         stream_name: &str,
     ) -> Result<(), ServerSessionError> {
+        // OBS and ffmpeg carry credentials in the stream key:
+        // rtmp://host/live/<name>?token=<jwt>, or a stream key alone.
+        let (requested, token) = split_token(stream_name);
         if app_name != self.app {
-            tracing::info!(app = %app_name, stream = %stream_name, reason = "wrong_app", "rtmp publish rejected");
+            let stream = self.registry.loggable(requested);
+            tracing::info!(app = %app_name, %stream, reason = "wrong_app", "rtmp publish rejected");
             // No Publisher is ever created for this stream_id; returning Err
             // ends the session and closes the TCP connection (see reject_error).
             return Err(reject_error());
         }
-
-        // OBS and ffmpeg carry credentials in the stream key:
-        // rtmp://host/live/<name>?token=<jwt>
-        let (requested, token) = split_token(stream_name);
         let stream_name = match self
             .registry
             .resolve(caudal_core::Access::Publish, "rtmp", requested, token, Some(self.peer_ip))
@@ -93,7 +93,8 @@ impl SessionHandler for Handler {
         {
             Ok(name) => name,
             Err(denied) => {
-                tracing::info!(app = %app_name, stream = %requested, reason = ?denied, "rtmp publish rejected");
+                let stream = self.registry.loggable(requested);
+                tracing::info!(app = %app_name, %stream, reason = ?denied, "rtmp publish rejected");
                 return Err(reject_error());
             }
         };
@@ -133,18 +134,21 @@ impl SessionHandler for Handler {
     ) -> Result<PlayResponse, ServerSessionError> {
         let (name, token) = split_token(stream_name);
         if !self.play_enabled {
-            tracing::info!(stream = %name, reason = "play_disabled", "rtmp play rejected");
+            let stream = self.registry.loggable(name);
+            tracing::info!(%stream, reason = "play_disabled", "rtmp play rejected");
             return Ok(reject(PLAY_FAILED, "play is disabled on this server"));
         }
         if app_name != self.app {
-            tracing::info!(app = %app_name, stream = %name, reason = "wrong_app", "rtmp play rejected");
+            let stream = self.registry.loggable(name);
+            tracing::info!(app = %app_name, %stream, reason = "wrong_app", "rtmp play rejected");
             return Ok(reject(PLAY_NOT_FOUND, "no such application"));
         }
         // The rewrite hook (if any) picks the real name; the gate judges it.
         let name = match self.registry.resolve(Access::Play, "rtmp", name, token, Some(self.peer_ip)).await {
             Ok(resolved) => resolved,
             Err(denied) => {
-                tracing::info!(stream = %name, reason = ?denied, "rtmp play rejected");
+                let stream = self.registry.loggable(name);
+                tracing::info!(%stream, reason = ?denied, "rtmp play rejected");
                 return Ok(reject(PLAY_FAILED, "access denied"));
             }
         };

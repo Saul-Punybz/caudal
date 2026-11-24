@@ -567,6 +567,7 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     if let Some(stats) = state.hook_stats.get() {
         metrics::render_auth_hook(&mut body, &stats.gate);
         metrics::render_rewrite_hook(&mut body, &stats.rewrite);
+        metrics::render_stream_keys(&mut body, &stats.stream_keys);
     }
     if let Some(multicast) = state.multicast.get() {
         multicast.render_metrics(&mut body);

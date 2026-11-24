@@ -602,7 +602,10 @@ async fn handle_play(
         return simple(StatusCode::MethodNotValidInThisState);
     };
     let token = parse_uri(req).and_then(|(_, _, t)| t);
-    if let Err(d) = registry.authorize(Access::Play, &stream_name, token.as_deref(), Some(state.peer_ip)).await {
+    let requested = state.stream_name.clone().unwrap_or_else(|| stream_name.clone());
+    if let Err(d) =
+        registry.recheck(Access::Play, &requested, &stream_name, token.as_deref(), Some(state.peer_ip)).await
+    {
         return denied(d);
     }
     let Some(stream) = state.stream.clone() else {

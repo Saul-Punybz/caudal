@@ -58,7 +58,7 @@ protocol.
 | `srt://:port`, `srt://0.0.0.0:port`, `mode=listener`, `mode=rendezvous` | not imported: Caudal's SRT listener is the shared `[srt] bind` (publish with streamid `publish/<stream>`), and it has no rendezvous |
 | `tsudp://group:port`, `tsudp://:port`, `udp://...` | `[[udp.pull]]` as `udp://...`; a hostname instead of an IP, or a second unicast pull on one port, is reported |
 | `http-ts://...`, `https-ts://...`, `http(s)://....ts` | `[[http.pull]]` |
-| `http(s)://....m3u8`, `http-hls://...` | `[[hls.pull]]` (MPEG-TS segments) |
+| `http(s)://....m3u8`, `http-hls://...` | `[[hls.pull]]` (MPEG-TS or fMP4/CMAF segments) |
 | `rtmp://`, `rtmps://` | `[[rtmp.pull]]` |
 | `rtsp://`, `rtsps://` | `[[rtsp.pull]]` |
 | a local file or folder | `[[channel]]` (a looping 24/7 stream, not on-demand VoD) |
@@ -138,6 +138,17 @@ and:
 `[auth.rewrite]` always gets `on_error = "deny"`. `USER_NEW` fires once per
 session and only without a valid token in MistServer; `[auth.hook]` asks
 on every play after the token check, cached for `allow_cache_secs`.
+
+## Stream keys and JWT keys (`streamkeys`, `jwks`)
+
+| MistServer | Caudal |
+|---|---|
+| `streamkeys {key: stream}` | `[[auth.stream_keys]]` `key`, `stream`, `publish = true`, `play = false`. A key shorter than 16 characters, or with characters other than letters, digits, `-` and `_`, is skipped with a note (give that encoder a new key). The report names the stream, never the key |
+| `jwks` | not imported: Caudal takes one `[auth] secret` or one `jwks_url`. Per-key `input` / `output` / `stream` become `[auth.secret_permissions]` / `[[auth.key_permissions]]` by hand |
+
+In MistServer a key also skips the stream's `push://` IP list and
+`STREAM_PUSH`; in Caudal `[[access.rules]]` and `[auth.hook]` still apply.
+See [STREAM-KEYS.md](STREAM-KEYS.md).
 
 ## Accounts
 

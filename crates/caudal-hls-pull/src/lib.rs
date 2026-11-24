@@ -158,7 +158,7 @@ fn publish(
 ) -> Result<Publisher, Outcome> {
     match registry.publish(&pull.stream, buffer) {
         Ok(p) => {
-            tracing::info!(stream = %pull.stream, url = %media_url, "hls pull: segments arriving; published");
+            tracing::info!(stream = %pull.stream, url = %caudal_core::net::redact_url(media_url.as_str()), "hls pull: segments arriving; published");
             Ok(p)
         }
         Err(PublishError::Busy(_)) => {
@@ -224,7 +224,7 @@ async fn session(
     let mut started: Option<Instant> = None;
     loop {
         if let Some(why) = unsupported(&media) {
-            tracing::error!(stream = %pull.stream, url = %media_url, "hls pull: {why}");
+            tracing::error!(stream = %pull.stream, url = %caudal_core::net::redact_url(media_url.as_str()), "hls pull: {why}");
             return if sink.is_some() { Outcome::Flowed } else { Outcome::Unsupported };
         }
         let td = media.target_duration;
@@ -294,7 +294,7 @@ async fn session(
         match fetch_playlist(client, &media_url).await {
             Ok((_, Playlist::Media(m))) => media = m,
             Ok((_, Playlist::Master(_))) => {
-                tracing::warn!(stream = %pull.stream, url = %media_url, "hls pull: the media playlist became a master");
+                tracing::warn!(stream = %pull.stream, url = %caudal_core::net::redact_url(media_url.as_str()), "hls pull: the media playlist became a master");
             }
             Err(e) => tracing::warn!(stream = %pull.stream, error = %e, "hls pull: playlist reload failed"),
         }
@@ -415,7 +415,7 @@ async fn run(pull: HlsPull, registry: Arc<Registry>, buffer: BufferConfig) {
             return;
         }
     };
-    tracing::info!(stream = %pull.stream, url = %pull.url, "hls pull started");
+    tracing::info!(stream = %pull.stream, url = %caudal_core::net::redact_url(&pull.url), "hls pull started");
     let mut backoff = BACKOFF_MIN;
     let mut after_end = false;
     loop {

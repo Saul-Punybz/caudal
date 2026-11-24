@@ -392,10 +392,8 @@ where
         K: serde::de::DeserializeSeed<'de>,
     {
         if self.remaining == 0 {
-            // There might be an object end marker after the last key
-            if self.de.has_remaining()? && self.de.peek_marker()? == Amf0Marker::ObjectEnd {
-                self.de.next_marker = None; // clear the marker buffer
-            }
+            // Caudal patch: the spec's `00 00 09` end sequence, not just `09`.
+            self.de.skip_ecma_array_end()?;
 
             return Ok(None);
         }

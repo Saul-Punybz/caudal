@@ -82,6 +82,17 @@ few extra times; nothing about correct input changes. Regression tests
 `a_huge_ecma_array_size_does_not_preallocate_it` and
 `a_huge_strict_array_size_does_not_preallocate_it`. Reported privately upstream on 19 Sep 2026 as GHSA-3gqf-85hw-q8xf (ScuffleCloud/scuffle; one report covers all six crashes here).
 
+A second patch, same crate, a functional bug: the AMF0 spec ends an ECMA
+array with `00 00 09` (empty key, then the end marker), but upstream only
+looked for a bare `09`, leaving `00 00` to be read as the start of a Number.
+The decode of every `onMetaData` sent as an ECMA array (OBS, FFmpeg, most
+encoders) failed, so the publisher's framerate was lost and tracks showed
+`fps: null`. Patch: `Amf0Decoder::skip_ecma_array_end` in `src/decoder.rs`,
+used by `decode_object` and by `src/de/mod.rs`; a bare `09` or no end marker
+still works. Tests `ecma_array_with_the_spec_end_marker` here and
+`an_ecma_array_on_metadata_gives_its_framerate` in `caudal-rtmp`, plus the
+FFmpeg end-to-end test in `crates/caudal-rtmp/tests/rtmp.rs`.
+
 ## scuffle-h264 0.2.2 (MIT OR Apache-2.0), patched
 
 Found the same day, by the same fuzzing pass, one call deeper: once

@@ -134,6 +134,11 @@ struct MistFile {
     auto_push: Json,
     autopushes: Json,
     account: BTreeMap<String, Json>,
+    /// `{key: stream}` (`controller_api.cpp:1597-1640`).
+    streamkeys: BTreeMap<String, Json>,
+    /// `[jwk or [jwk, perms] or "https://.../jwks"]`
+    /// (`controller_storage.cpp:166, 200-240`).
+    jwks: Json,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -747,6 +752,7 @@ pub fn import(mist_json: &str) -> Result<ImportResult, String> {
     import_streams(&file, &mut b, &mut notes);
     import_auto_push(&file, &mut b, &mut notes);
     import_triggers(&file, &mut b, &mut notes);
+    import_stream_keys(&file, &mut b, &mut notes);
 
     // --- account: never migrated, different hash format ---
     if !file.account.is_empty() {
@@ -771,6 +777,63 @@ pub fn import(mist_json: &str) -> Result<ImportResult, String> {
     ));
 
     Ok(ImportResult { toml: build_toml(&b), notes })
+}
+
+/// `streamkeys` -> `[[auth.stream_keys]]` (publish only, as MistServer's
+/// keys are), and a note for `jwks`. Notes name streams, never keys.
+fn import_stream_keys(file: &MistFile, b: &mut BuiltConfig, notes: &mut Vec<Note>) {
+    let mut imported: BTreeMap<&str, usize> = BTreeMap::new();
+    for (key, stream) in &file.streamkeys {
+        let Some(stream) = stream.as_str() else {
+            notes.push(note(NoteKind::NoEquivalent, "streamkeys", "an entry whose stream is not a string was skipped"));
+            continue;
+        };
+        if !caudal_core::media::valid_stream_name(stream) {
+            notes.push(note(
+                NoteKind::NoEquivalent,
+                format!("streamkeys -> {stream}"),
+                "not a valid Caudal stream name; key skipped",
+            ));
+            continue;
+        }
+        if let Err(e) = caudal_auth::validate_key(key) {
+            notes.push(note(
+                NoteKind::NoEquivalent,
+                format!("streamkeys -> {stream}"),
+                format!("key skipped ({e}); give the encoder a new key in `[[auth.stream_keys]]`"),
+            ));
+            continue;
+        }
+        b.stream_keys.push((key.clone(), stream.to_owned()));
+        *imported.entry(stream).or_default() += 1;
+    }
+    for (stream, n) in imported {
+        notes.push(note(
+            NoteKind::Translated,
+            format!("streamkeys -> {stream}"),
+            format!(
+                "{n} key(s) -> `[[auth.stream_keys]]` (publish only, as in MistServer). A publish under the \
+                 bare name still goes through `[auth]` and `[[access.rules]]`; set `[auth] stream_keys_only = \
+                 true` to make the key the only way in"
+            ),
+        ));
+    }
+    let jwks = match &file.jwks {
+        Json::Array(a) => a.len(),
+        Json::Null => 0,
+        _ => 1,
+    };
+    if jwks > 0 {
+        notes.push(note(
+            NoteKind::NoEquivalent,
+            "jwks",
+            format!(
+                "{jwks} key(s) not imported: Caudal takes one HS256 `[auth] secret` or one `jwks_url`. Per-key \
+                 `input`/`output`/`stream` permissions map to `[auth.secret_permissions]` / \
+                 `[[auth.key_permissions]]` (by `kid`); set them by hand. docs/STREAM-KEYS.md"
+            ),
+        ));
+    }
 }
 
 /// A bind address: the connector's `interface` when it gave an IP,
@@ -1497,6 +1560,8 @@ struct BuiltConfig {
     record_dir: Option<String>,
     auth_hook: Option<HookOut>,
     auth_rewrite: Option<HookOut>,
+    /// `(key, stream)` from `streamkeys`.
+    stream_keys: Vec<(String, String)>,
 }
 
 fn build_toml(c: &BuiltConfig) -> String {
@@ -1620,6 +1685,16 @@ fn build_toml(c: &BuiltConfig) -> String {
         );
     }
 
+    if !c.stream_keys.is_empty() {
+        out.push_str(
+            "\n# From MistServer's `streamkeys`: publish with the key in place of the stream\n\
+             # name. Secrets: keep this file private. docs/STREAM-KEYS.md\n",
+        );
+    }
+    for (key, stream) in &c.stream_keys {
+        let _ = write!(out, "\n[[auth.stream_keys]]\nkey = {}\nstream = {}\n", q(key), q(stream));
+    }
+
     out.push_str(
         "\n# Admin login: without it, Caudal refuses to listen on anything but loopback.\n\
          # Hash each MistServer user's new password: printf '%s\\n' 'pass' | caudal hash-password\n\
@@ -1690,6 +1765,24 @@ mod tests {
     #[test]
     fn empty_mist_config_imports_to_a_valid_empty_toml() {
         imported("{}");
+    }
+
+    #[test]
+    fn stream_keys_become_auth_stream_keys() {
+        let (r, cfg) = imported(
+            r#"{"streamkeys": {"enc0der-key-0123456789": "live", "short": "live", "other-key-abcdefghijkl": "bad name"},
+                "jwks": [{"kty": "oct", "k": "c2VjcmV0"}]}"#,
+        );
+        let keys = cfg.auth.stream_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!((keys[0].key.as_str(), keys[0].stream.as_str()), ("enc0der-key-0123456789", "live"));
+        assert!(keys[0].publish && !keys[0].play);
+        assert!(has(&r, NoteKind::Translated, "streamkeys -> live", "1 key(s)"));
+        assert!(has(&r, NoteKind::NoEquivalent, "streamkeys -> live", "16 to 128"));
+        assert!(has(&r, NoteKind::NoEquivalent, "streamkeys -> bad name", "not a valid"));
+        assert!(has(&r, NoteKind::NoEquivalent, "jwks", "key_permissions"));
+        let report = r.report();
+        assert!(!report.contains("enc0der-key") && !report.contains("other-key"), "keys stay out of the report");
     }
 
     #[test]

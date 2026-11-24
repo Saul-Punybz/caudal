@@ -203,6 +203,53 @@ async fn h264_aac_publish_end_to_end() {
     assert!(gone.is_some(), "stream 'test' was not removed within 5s of ffmpeg exiting");
 }
 
+/// FFmpeg sends `onMetaData` as an AMF0 ECMA array. Its framerate must reach
+/// the video track (it feeds HLS FRAME-RATE, DASH frameRate and the API).
+#[tokio::test(flavor = "multi_thread")]
+async fn publisher_framerate_from_ecma_array_metadata_reaches_the_track() {
+    if !have_ffmpeg() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+
+    let server = TestServer::start("live").await;
+    let url = server.rtmp_url("live", "fps");
+
+    let mut ffmpeg = spawn_ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=30",
+        "-c:v",
+        "libx264",
+        "-r",
+        "30",
+        "-g",
+        "60",
+        "-t",
+        "4",
+        "-f",
+        "flv",
+        &url,
+    ]);
+
+    let stream = wait_for(Duration::from_secs(10), || server.registry.get("fps"))
+        .await
+        .expect("stream 'fps' never appeared in the registry");
+
+    // The framerate can land after the tracks were first announced; the
+    // tracks are re-announced when it does.
+    let fps = wait_for(Duration::from_secs(8), || {
+        stream.tracks().iter().find(|t| t.kind() == TrackKind::Video).and_then(|t| t.video).and_then(|v| v.fps)
+    })
+    .await
+    .expect("video track never got an fps from onMetaData");
+    assert!((fps - 30.0).abs() < 0.01, "expected 30 fps, got {fps}");
+
+    let _ = ffmpeg.kill();
+    let _ = ffmpeg.wait();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn wrong_app_is_rejected() {
     if !have_ffmpeg() {

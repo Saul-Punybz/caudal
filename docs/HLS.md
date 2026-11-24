@@ -7,6 +7,9 @@ Every published stream is served as HLS twice, from the same `/hls/` route:
 | LL-HLS (default) | `/hls/{name}/master.m3u8` (media playlist `index.m3u8`) | fMP4/CMAF, 200 ms parts | browsers (hls.js, Safari), iOS/tvOS, Android, current smart TVs |
 | Classic HLS | `/hls/{name}/ts.m3u8` | MPEG-TS (`t{seq}.ts`) | older set-top boxes and smart TVs, IPTV middleware, MPEG-2 / MP2 feeds |
 
+The same CMAF segments are also served as live MPEG-DASH at
+`/hls/{name}/manifest.mpd`; see [DASH.md](DASH.md).
+
 ```toml
 [hls]
 part_ms = 200

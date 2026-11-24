@@ -37,6 +37,9 @@ pub struct Server {
     /// The config file path it was started with; rewrite it and call
     /// [`Server::reload_via_api`] or [`Server::sighup`] to test hot reload.
     pub cfg_path: PathBuf,
+    /// Where stdout (the log, at `debug`) goes, with [`Server::start_logged`].
+    #[allow(dead_code)]
+    pub log_path: Option<PathBuf>,
     _dir: tempfile::TempDir,
 }
 
@@ -48,6 +51,23 @@ impl Server {
     /// Starts with `extra` TOML appended (new sections only). `{dir}` in it
     /// is replaced with the server's temp directory.
     pub fn start_with(extra: &str) -> Self {
+        Self::start_inner(extra, false)
+    }
+
+    /// [`Server::start_with`], with the log at `debug` written to
+    /// [`Server::log_path`] instead of the test's stderr.
+    #[allow(dead_code)]
+    pub fn start_logged(extra: &str) -> Self {
+        Self::start_inner(extra, true)
+    }
+
+    /// The log so far (see [`Server::start_logged`]).
+    #[allow(dead_code)]
+    pub fn log(&self) -> String {
+        self.log_path.as_ref().map(|p| std::fs::read_to_string(p).unwrap_or_default()).unwrap_or_default()
+    }
+
+    fn start_inner(extra: &str, logged: bool) -> Self {
         // Ports are probed and released, so another process (or this
         // server's own next probe) can take one before caudal binds it; the
         // server then exits and /healthz never answers (CI, 19 Sep 2026:
@@ -55,7 +75,7 @@ impl Server {
         // set if the server dies or stays silent.
         let mut last_err = String::new();
         for attempt in 1..=3 {
-            match Self::try_start(extra) {
+            match Self::try_start(extra, logged) {
                 Ok(s) => return s,
                 Err(e) => {
                     eprintln!("caudal start attempt {attempt} failed: {e}; retrying with new ports");
@@ -66,7 +86,7 @@ impl Server {
         panic!("caudal did not start in 3 attempts: {last_err}");
     }
 
-    fn try_start(extra: &str) -> Result<Self, String> {
+    fn try_start(extra: &str, logged: bool) -> Result<Self, String> {
         let dir = tempfile::tempdir().unwrap();
         let mut ports: Vec<u16> = Vec::new();
         while ports.len() < 5 {
@@ -85,14 +105,20 @@ impl Server {
             ),
         )
         .unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_caudal"))
-            .arg("--config")
-            .arg(&cfg)
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn caudal");
-        let mut s = Self { child, http, rtmp, srt, webrtc, cfg_path: cfg, _dir: dir };
+        let log_path = logged.then(|| dir.path().join("caudal.log"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_caudal"));
+        cmd.arg("--config").arg(&cfg).stderr(Stdio::inherit());
+        match &log_path {
+            // The log goes to stdout.
+            Some(p) => {
+                cmd.env("RUST_LOG", "debug").env("NO_COLOR", "1").stdout(std::fs::File::create(p).unwrap());
+            }
+            None => {
+                cmd.stdout(Stdio::null());
+            }
+        }
+        let child = cmd.spawn().expect("spawn caudal");
+        let mut s = Self { child, http, rtmp, srt, webrtc, cfg_path: cfg, log_path, _dir: dir };
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(10) {
             if matches!(s.get("/healthz"), Ok((200, _))) {

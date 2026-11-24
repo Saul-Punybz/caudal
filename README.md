@@ -9,8 +9,8 @@ drops its crash classes.
 tested: RTMP/E-RTMP (and RTMPS), SRT, WHIP, RTSP and MoQ ingest, plus pulls from
 SRT, UDP/RTP, HTTP-TS, HLS, RTMP(S) and RTSP sources
 ([docs/PULL-INPUTS.md](docs/PULL-INPUTS.md)); LL-HLS, classic TS-segment
-HLS ([docs/HLS.md](docs/HLS.md)), WHEP, MoQ, SRT, RTSP and RTMP
-([docs/RTMP.md](docs/RTMP.md)) output, audio-only internet radio URLs
+HLS ([docs/HLS.md](docs/HLS.md)), live MPEG-DASH ([docs/DASH.md](docs/DASH.md)), WHEP, MoQ, SRT,
+RTSP and RTMP ([docs/RTMP.md](docs/RTMP.md)) output, audio-only internet radio URLs
 ([docs/AUDIO.md](docs/AUDIO.md)), progressive fMP4 over HTTP
 ([docs/MP4.md](docs/MP4.md)), plus IP multicast; pushes out over RTMP(S), SRT,
 UDP and WHIP ([docs/WHIP-PUSH.md](docs/WHIP-PUSH.md)), with pattern-matched,

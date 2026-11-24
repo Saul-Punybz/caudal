@@ -140,6 +140,17 @@ and:
 session and only without a valid token in MistServer; `[auth.hook]` asks
 on every play after the token check, cached for `allow_cache_secs`.
 
+## Stream keys and JWT keys (`streamkeys`, `jwks`)
+
+| MistServer | Caudal |
+|---|---|
+| `streamkeys {key: stream}` | `[[auth.stream_keys]]` `key`, `stream`, `publish = true`, `play = false`. A key shorter than 16 characters, or with characters other than letters, digits, `-` and `_`, is skipped with a note (give that encoder a new key). The report names the stream, never the key |
+| `jwks` | not imported: Caudal takes one `[auth] secret` or one `jwks_url`. Per-key `input` / `output` / `stream` become `[auth.secret_permissions]` / `[[auth.key_permissions]]` by hand |
+
+In MistServer a key also skips the stream's `push://` IP list and
+`STREAM_PUSH`; in Caudal `[[access.rules]]` and `[auth.hook]` still apply.
+See [STREAM-KEYS.md](STREAM-KEYS.md).
+
 ## Accounts
 
 `account` users are never migrated: MistServer stores MD5, Caudal uses

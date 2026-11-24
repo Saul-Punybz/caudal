@@ -491,7 +491,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | Folder / `.pls` playlist | partial: `[[channel]]` items list | `C:crates/caudal/src/config.rs:399-404` |
 | `always_on` pull | partial: pulls are configured and always on; on-demand only for cluster edges | `C:crates/caudal-cluster/src/lib.rs` |
 | Stream wildcards `name+suffix` | not verified (no `+` handling found by grep) | — |
-| Stream keys (key → stream) | missing as a table; JWT tokens cover publish | `C:crates/caudal-auth/src/lib.rs` |
+| Stream keys (key → stream) | has: `[[auth.stream_keys]]` and `stream_keys_file`, resolved first in `Registry::resolve` (every protocol), SHA-256 digests compared in constant time, masked in logs and `GET /api/v1/stream-keys`; `import-mist` maps `streamkeys` (`docs/STREAM-KEYS.md`) | `C:crates/caudal-auth/src/stream_keys.rs`; `C:crates/caudal-core/src/registry.rs` |
 | Push IP whitelist + password | has (CIDR + country, per stream glob) | `C:crates/caudal/src/config.rs:1143-1167`; `C:crates/caudal-access/src/lib.rs:137` |
 | V4L2, SDP, H264-exec, MKV-exec | missing | — |
 
@@ -537,7 +537,7 @@ Caudal greps were run over `crates/**/*.rs` on 2026-11-19; rows updated 2026-11-
 | `STREAM_SOURCE` | missing (no on-demand input start; see `docs/REWRITE-HOOK.md`) | — |
 | Health alerts (`STREAM_BUFFER`-like) | has | `C:crates/caudal-health` |
 | JWT with JWKS | has (HS256 secret; RS256/ES256/EdDSA via JWKS; `exp` required) | `C:crates/caudal-auth/src/lib.rs:64, 111-114`; `claims.rs:14` |
-| JWT per-key permissions, `ipa` claim | missing (not found) | — |
+| JWT per-key permissions, `ipa` claim | has: `ipa` (IP/CIDR or array; refused when the protocol has no address), `[auth.secret_permissions]`, `[[auth.key_permissions]]` by `kid` (no `admin` bit) (`docs/STREAM-KEYS.md`) | `C:crates/caudal-auth/src/lib.rs`; `claims.rs` |
 | Auto-push rules with schedules and conditions | partial: `[[push.auto]]` (stream patterns + `$stream` URL template, RTMP(S)/SRT/UDP/RTP/WHIP (#61); `start`/`stop` or `cron` windows, `enabled` with an API toggle, `inhibit` by stream pattern; no `start_rule`/`end_rule`), `[[record.schedule]]` cron | `C:crates/caudal/src/config.rs:294, 895-905` |
 | Recording via push + target variables | partial: `[record]` dir/segments/retention/upload; no `$datetime`-style templates | `C:crates/caudal/src/config.rs:911-923` |
 | Load balancer (MistUtilLoad) | partial: origin-edge cluster with `/api/v1/cluster/locate/{name}`; no weighted CPU/RAM/BW/geo scoring | `C:crates/caudal-cluster` |

@@ -433,6 +433,11 @@ impl Packager {
         self.breaks.retain(|b| b.end_us() >= first);
     }
 
+    /// The settings it was made with.
+    pub fn cfg(&self) -> &HlsConfig {
+        &self.cfg
+    }
+
     pub fn part_target(&self) -> f64 {
         f64::from(self.cfg.part_ms.max(1)) / 1000.0
     }

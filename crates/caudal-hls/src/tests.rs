@@ -24,6 +24,7 @@ const CFG: HlsConfig = HlsConfig {
     cue_out_tags: false,
     reconnect_grace: Duration::ZERO,
     ts: true,
+    ll_dash: super::LlDash::DEFAULT,
 };
 
 fn fixture() -> Demuxed {

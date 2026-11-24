@@ -8,7 +8,8 @@ Every published stream is served as HLS twice, from the same `/hls/` route:
 | Classic HLS | `/hls/{name}/ts.m3u8` | MPEG-TS (`t{seq}.ts`) | older set-top boxes and smart TVs, IPTV middleware, MPEG-2 / MP2 feeds |
 
 The same CMAF segments are also served as live MPEG-DASH at
-`/hls/{name}/manifest.mpd`; see [DASH.md](DASH.md).
+`/hls/{name}/manifest.mpd`, and as low-latency DASH (the parts as CMAF
+chunks) at `/hls/{name}/ll.mpd`; see [DASH.md](DASH.md).
 
 ```toml
 [hls]

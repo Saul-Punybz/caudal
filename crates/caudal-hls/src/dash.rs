@@ -13,14 +13,25 @@
 //!
 //! Every discontinuity (a republish within the reconnect grace, a new init
 //! segment, a timestamp jump) opens a new `Period`; see
-//! [`crate::packager::PeriodMark`]. Plain DASH only: segments are listed
-//! once complete, no `availabilityTimeOffset` / chunked parts.
+//! [`crate::packager::PeriodMark`].
+//!
+//! `GET /hls/{name}/ll.mpd` is the low-latency variant (DASH-IF
+//! "Low-latency Modes for DASH", the IOP v4.3 change request, clause
+//! 4.X.3.2): the same timeline plus the segment being built, announced as
+//! soon as its first part (CMAF chunk) exists, with
+//! `SegmentTemplate@availabilityTimeOffset` = segment duration - part
+//! duration and `@availabilityTimeComplete="false"`, a `ServiceDescription`
+//! (target/min/max latency, playback-rate bounds) and a
+//! `ProducerReferenceTime` per Representation. A request for that open
+//! segment is answered at once and streamed part by part (HTTP chunked
+//! transfer) until the segment closes; see `dash_file` in `lib.rs`.
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
 
 use bytes::Bytes;
 
+use crate::LlDash;
 use crate::packager::{DashTrack, Packager, PeriodMark, TrackRun, rfc3339};
 
 pub(crate) const CONTENT_TYPE: &str = "application/dash+xml";
@@ -37,6 +48,29 @@ pub(crate) struct Seg {
     pub runs: [Option<TrackRun>; 2],
     /// The tracks of its init generation, primary first.
     pub tracks: Vec<DashTrack>,
+    /// Still being built (only in an LL snapshot): `runs` cover the parts
+    /// so far, and the timeline gives it its nominal duration.
+    pub open: bool,
+}
+
+/// What an LL snapshot adds: the packager's part and segment lengths and
+/// the service description.
+#[derive(Clone, Copy)]
+pub(crate) struct Ll {
+    pub segment_ms: u32,
+    pub part_ms: u32,
+    pub service: LlDash,
+}
+
+impl Ll {
+    /// `availabilityTimeOffset`, seconds: a segment may be requested once
+    /// its first chunk is out, i.e. a segment duration minus a part before
+    /// it completes (clause 4.X.3.2, 2.e: at most the segment duration
+    /// minus its first chunk's; our first part is never longer than
+    /// `part_ms`, and segments never shorter than `segment_ms`).
+    pub fn ato(&self) -> f64 {
+        f64::from(self.segment_ms - self.part_ms) / 1000.0
+    }
 }
 
 /// Everything one rendition contributes to an MPD, copied out from under
@@ -46,15 +80,35 @@ pub(crate) struct Snap {
     pub ended: bool,
     pub target: u64,
     pub segs: Vec<Seg>,
+    /// `Some` for the low-latency manifest.
+    pub ll: Option<Ll>,
 }
 
 impl Snap {
-    /// `None` until the rendition has a complete segment.
+    /// The plain manifest's view: complete segments only. `None` until
+    /// the rendition has a complete segment.
     pub fn of(p: &Packager) -> Option<Self> {
+        Self::build(p, false)
+    }
+
+    /// The LL manifest's view: also the open segment, once it has a part.
+    /// Plain when parts are as long as segments (no chunk to send early).
+    pub fn ll(p: &Packager) -> Option<Self> {
+        Self::build(p, true)
+    }
+
+    fn build(p: &Packager, ll: bool) -> Option<Self> {
+        let cfg = p.cfg();
+        let ll = (ll && cfg.segment_ms > cfg.part_ms).then(|| Ll {
+            segment_ms: cfg.segment_ms,
+            part_ms: cfg.part_ms,
+            service: cfg.ll_dash.resolve(cfg.segment_ms),
+        });
+        let open_ok = ll.is_some() && !p.ended;
         let segs: Vec<Seg> = p
             .segments
             .iter()
-            .filter(|s| s.full.is_some())
+            .filter(|s| s.full.is_some() || (open_ok && !s.parts.is_empty()))
             .filter_map(|s| {
                 Some(Seg {
                     msn: s.msn,
@@ -63,13 +117,14 @@ impl Snap {
                     init_gen: s.init_gen,
                     runs: [s.run(0), s.run(1)],
                     tracks: p.dash_tracks(s.init_gen)?.to_vec(),
+                    open: s.full.is_none(),
                 })
             })
             .collect();
-        if segs.is_empty() {
+        if segs.iter().all(|s| s.open) {
             return None;
         }
-        Some(Self { epoch: p.epoch?, ended: p.ended, target: p.target_duration(), segs })
+        Some(Self { epoch: p.epoch?, ended: p.ended, target: p.target_duration(), segs, ll })
     }
 }
 
@@ -168,6 +223,8 @@ struct Rep<'a> {
     segs: Vec<&'a Seg>,
     /// `presentationTimeOffset`, on `track.timescale`.
     pto: i64,
+    /// LL only: the period's `ProducerReferenceTime@wallClockTime`.
+    prt_wall: Option<String>,
 }
 
 impl Rep<'_> {
@@ -175,6 +232,7 @@ impl Rep<'_> {
         let ts = f64::from(self.track.timescale.max(1));
         self.segs
             .iter()
+            .filter(|s| !s.open)
             .filter_map(|s| s.runs[self.lane])
             .filter(|r| r.dur > 0)
             .map(|r| (r.bytes as f64 * 8.0 / (r.dur as f64 / ts)) as u64)
@@ -183,7 +241,8 @@ impl Rep<'_> {
             .max(1000)
     }
 
-    fn write(&self, o: &mut String, token: Option<&str>) {
+    /// `utc`: the `UTCTiming` element a `ProducerReferenceTime` repeats.
+    fn write(&self, o: &mut String, token: Option<&str>, ll: Option<&Ll>, utc: &str) {
         let t = self.track;
         let _ = write!(
             o,
@@ -208,6 +267,16 @@ impl Rep<'_> {
                 "        <AudioChannelConfiguration schemeIdUri=\"urn:mpeg:dash:23003:3:audio_channel_configuration:2011\" value=\"{ch}\"/>"
             );
         }
+        if let (Some(_), Some(wall)) = (ll, &self.prt_wall) {
+            // Clause 4.X.3.2, 1: the wall clock at `presentationTime` =
+            // the `presentationTimeOffset` (the period start), with a
+            // `UTCTiming` identical to one of the MPD's.
+            let _ = writeln!(
+                o,
+                "        <ProducerReferenceTime id=\"0\" type=\"encoder\" wallClockTime=\"{wall}\" presentationTime=\"{}\">\n          {utc}\n        </ProducerReferenceTime>",
+                self.pto
+            );
+        }
         let q = token.map(|t| format!("?token={t}")).unwrap_or_default();
         let name = xml_escape(self.name);
         let l = letter(t.video);
@@ -215,9 +284,16 @@ impl Rep<'_> {
         let generation = self.segs.first().map_or(0, |s| s.init_gen);
         let _ = writeln!(
             o,
-            "        <SegmentTemplate timescale=\"{}\" presentationTimeOffset=\"{}\" startNumber=\"{first}\" initialization=\"../{name}/{l}-init{generation}.mp4{q}\" media=\"../{name}/{l}$Number$.m4s{q}\">",
-            t.timescale, self.pto
+            "        <SegmentTemplate timescale=\"{}\" presentationTimeOffset=\"{}\" startNumber=\"{first}\" initialization=\"../{name}/{l}-init{generation}.mp4{q}\" media=\"../{name}/{l}$Number$.m4s{q}\"{}>",
+            t.timescale,
+            self.pto,
+            ll.map(|ll| format!(" availabilityTimeOffset=\"{:.3}\" availabilityTimeComplete=\"false\"", ll.ato()))
+                .unwrap_or_default()
         );
+        // The open segment's nominal length: it is cut on the first
+        // keyframe after `segment_ms`, so it may end up longer; the next
+        // update lists its real `d`.
+        let nominal = ll.map_or(0, |ll| (u64::from(ll.segment_ms) * u64::from(t.timescale.max(1))).div_ceil(1000));
         o.push_str("          <SegmentTimeline>\n");
         // Every entry carries its `t`: the timeline stays exact across the
         // small gaps a track can have between segments (audio is cut on
@@ -236,6 +312,7 @@ impl Rep<'_> {
                     (start, rescale(p.dur as i64, ts0, t.timescale).max(1) as u64)
                 }
             };
+            let dur = if s.open { dur.max(nominal) } else { dur };
             let _ = writeln!(o, "            <S t=\"{start}\" d=\"{dur}\"/>");
             next = Some(start + dur as i64);
         }
@@ -263,6 +340,7 @@ pub(crate) fn render(lead: (&str, &Snap), siblings: &[(String, Snap)], ctx: &Ctx
     let window_us: i64 = snap
         .segs
         .iter()
+        .filter(|s| !s.open)
         .filter_map(|s| {
             let r = s.runs[0]?;
             let ts = i128::from(s.tracks.first()?.timescale.max(1));
@@ -277,16 +355,42 @@ pub(crate) fn render(lead: (&str, &Snap), siblings: &[(String, Snap)], ctx: &Ctx
         rfc3339(snap.epoch),
         rfc3339(ctx.now)
     );
+    let ll = snap.ll.as_ref();
     if !snap.ended {
-        let _ = write!(o, " minimumUpdatePeriod=\"{}\"", duration(target_us));
+        // LL: the open segment appears once its first part exists, so the
+        // player has to look again well within a segment.
+        let every = ll.map_or(target_us, |ll| i64::from(ll.part_ms.max(500)) * 1000);
+        let _ = write!(o, " minimumUpdatePeriod=\"{}\"", duration(every));
     }
+    // `suggestedPresentationDelay` stays the plain one (3 target
+    // durations, like HLS `HOLD-BACK`) for players that ignore the LL
+    // signalling and wait for complete segments; LL players aim for
+    // `ServiceDescription/Latency@target` instead.
+    let delay = 3 * target_us;
     let _ = writeln!(
         o,
         " timeShiftBufferDepth=\"{}\" suggestedPresentationDelay=\"{}\" minBufferTime=\"{}\">",
         duration(window_us.max(target_us)),
-        duration(3 * target_us),
-        duration(target_us)
+        duration(delay),
+        duration(ll.map_or(target_us, |ll| i64::from(ll.part_ms) * 1000).min(target_us))
     );
+    if let Some(ll) = ll {
+        // Clause 4.X.3.2: a `ServiceDescription` with `Latency` (against
+        // `ProducerReferenceTime` 0) and `PlaybackRate` bounds; element
+        // names as in ISO/IEC 23009-1:2022 Annex K.
+        let sd = ll.service;
+        let _ = writeln!(
+            o,
+            "  <ServiceDescription id=\"0\">\n    <Latency referenceId=\"0\" target=\"{}\" min=\"{}\" max=\"{}\"/>\n    <PlaybackRate min=\"{}\" max=\"{}\"/>\n  </ServiceDescription>",
+            sd.target_latency_ms, sd.min_latency_ms, sd.max_latency_ms, sd.min_playback_rate, sd.max_playback_rate
+        );
+    }
+    let utc_http = ctx.time_url.as_ref().map(|url| {
+        format!("<UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:http-iso:2014\" value=\"{}\"/>", xml_escape(url))
+    });
+    let utc_direct =
+        format!("<UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:direct:2014\" value=\"{}\"/>", rfc3339(ctx.now));
+    let utc_prt = utc_http.as_deref().unwrap_or(&utc_direct);
 
     // Periods in order of their first segment.
     let mut periods: Vec<(PeriodMark, Vec<&Seg>)> = Vec::new();
@@ -300,6 +404,7 @@ pub(crate) fn render(lead: (&str, &Snap), siblings: &[(String, Snap)], ctx: &Ctx
     for (i, (mark, segs)) in periods.iter().enumerate() {
         let _ = writeln!(o, "  <Period id=\"p{}\" start=\"{}\">", mark.msn, duration(mark.start_us));
         let tracks = &segs[0].tracks;
+        let prt_wall = ll.map(|_| rfc3339(snap.epoch + std::time::Duration::from_micros(mark.start_us.max(0) as u64)));
         for (lane, track) in tracks.iter().enumerate().take(2) {
             let mut reps = vec![Rep {
                 name: lead_name,
@@ -308,9 +413,10 @@ pub(crate) fn render(lead: (&str, &Snap), siblings: &[(String, Snap)], ctx: &Ctx
                 lane,
                 segs: segs.clone(),
                 pto: rescale(mark.anchor, mark.timescale, track.timescale),
+                prt_wall: prt_wall.clone(),
             }];
             if track.video && i == last {
-                reps.extend(sibling_reps(siblings, mark, segs[0].start_us));
+                reps.extend(sibling_reps(siblings, mark, segs[0].start_us, &prt_wall));
             }
             let kind = if track.video { "video" } else { "audio" };
             let _ = write!(
@@ -326,17 +432,16 @@ pub(crate) fn render(lead: (&str, &Snap), siblings: &[(String, Snap)], ctx: &Ctx
             o.push_str(">\n");
             reps.sort_by_key(|r| std::cmp::Reverse(r.bandwidth()));
             for r in &reps {
-                r.write(&mut o, ctx.token);
+                r.write(&mut o, ctx.token, ll, utc_prt);
             }
             o.push_str("    </AdaptationSet>\n");
         }
         o.push_str("  </Period>\n");
     }
-    if let Some(url) = &ctx.time_url {
-        let _ =
-            writeln!(o, "  <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:http-iso:2014\" value=\"{}\"/>", xml_escape(url));
+    if let Some(u) = &utc_http {
+        let _ = writeln!(o, "  {u}");
     }
-    let _ = writeln!(o, "  <UTCTiming schemeIdUri=\"urn:mpeg:dash:utc:direct:2014\" value=\"{}\"/>", rfc3339(ctx.now));
+    let _ = writeln!(o, "  {utc_direct}");
     o.push_str("</MPD>\n");
     o
 }
@@ -344,7 +449,12 @@ pub(crate) fn render(lead: (&str, &Snap), siblings: &[(String, Snap)], ctx: &Ctx
 /// The video Representations other family renditions add to the lead's
 /// current period: each sibling's segments from its own current period
 /// that start no earlier than the lead period's first listed segment.
-fn sibling_reps<'a>(siblings: &'a [(String, Snap)], mark: &PeriodMark, lead_start_us: i64) -> Vec<Rep<'a>> {
+fn sibling_reps<'a>(
+    siblings: &'a [(String, Snap)],
+    mark: &PeriodMark,
+    lead_start_us: i64,
+    prt_wall: &Option<String>,
+) -> Vec<Rep<'a>> {
     let mut out = Vec::new();
     for (name, snap) in siblings {
         let Some(cur) = snap.segs.last().map(|s| s.period.msn) else { continue };
@@ -361,6 +471,7 @@ fn sibling_reps<'a>(siblings: &'a [(String, Snap)], mark: &PeriodMark, lead_star
             track,
             lane,
             pto: rescale(mark.anchor, mark.timescale, track.timescale),
+            prt_wall: prt_wall.clone(),
             segs,
         });
     }

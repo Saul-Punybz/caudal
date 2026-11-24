@@ -58,6 +58,62 @@ pub struct HlsConfig {
     /// video / MP2 audio. Started on a stream's first such request, stopped
     /// after [`TS_IDLE`] without one.
     pub ts: bool,
+    /// The low-latency DASH manifest's `ServiceDescription`
+    /// (`/hls/{name}/ll.mpd`).
+    pub ll_dash: LlDash,
+}
+
+/// What the LL-DASH manifest asks of players (DASH-IF "Low-latency Modes
+/// for DASH", clause 4.X.3.2: `ServiceDescription` with `Latency` and
+/// `PlaybackRate`). A latency of `0` means "derive it from the segment
+/// length" (see [`LlDash::resolve`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LlDash {
+    /// `Latency@target`, milliseconds behind the producer's wall clock.
+    pub target_latency_ms: u32,
+    /// `Latency@min`.
+    pub min_latency_ms: u32,
+    /// `Latency@max`.
+    pub max_latency_ms: u32,
+    /// `PlaybackRate@min`: how much a player may slow down to build buffer.
+    pub min_playback_rate: f64,
+    /// `PlaybackRate@max`: how much it may speed up to catch up.
+    pub max_playback_rate: f64,
+}
+
+impl LlDash {
+    pub const DEFAULT: Self = Self {
+        target_latency_ms: 0,
+        min_latency_ms: 0,
+        max_latency_ms: 0,
+        min_playback_rate: 0.95,
+        max_playback_rate: 1.05,
+    };
+
+    /// Fills the automatic values and repairs inconsistent ones, for
+    /// segments of `segment_ms`: target one second past a segment (DASH-IF
+    /// wants the longest segment under the target when a set has several
+    /// bitrates), min half of it, max twice it, and
+    /// `min <= target <= max`, `0 < min rate <= 1 <= max rate`.
+    pub fn resolve(self, segment_ms: u32) -> Self {
+        let target = if self.target_latency_ms == 0 { segment_ms.saturating_add(1000) } else { self.target_latency_ms };
+        let min = if self.min_latency_ms == 0 { target / 2 } else { self.min_latency_ms.min(target) };
+        let max = if self.max_latency_ms == 0 { target.saturating_mul(2) } else { self.max_latency_ms.max(target) };
+        let ok = |r: f64, lo: f64, hi: f64| r.is_finite() && r >= lo && r <= hi;
+        Self {
+            target_latency_ms: target,
+            min_latency_ms: min,
+            max_latency_ms: max,
+            min_playback_rate: if ok(self.min_playback_rate, 0.01, 1.0) { self.min_playback_rate } else { 0.95 },
+            max_playback_rate: if ok(self.max_playback_rate, 1.0, 100.0) { self.max_playback_rate } else { 1.05 },
+        }
+    }
+}
+
+impl Default for LlDash {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl Default for HlsConfig {
@@ -69,6 +125,7 @@ impl Default for HlsConfig {
             cue_out_tags: false,
             reconnect_grace: Duration::from_secs(10),
             ts: true,
+            ll_dash: LlDash::DEFAULT,
         }
     }
 }
@@ -119,13 +176,15 @@ pub fn router_with_captions(
     trusted_proxies: Vec<caudal_core::Cidr>,
     captions: Option<Arc<dyn CaptionSource>>,
 ) -> axum::Router {
+    let segment_ms = cfg.segment_ms.max(cfg.part_ms.max(10));
     let cfg = HlsConfig {
         part_ms: cfg.part_ms.max(10),
-        segment_ms: cfg.segment_ms.max(cfg.part_ms.max(10)),
+        segment_ms,
         cue_tags: cfg.cue_tags,
         cue_out_tags: cfg.cue_out_tags,
         reconnect_grace: cfg.reconnect_grace,
         ts: cfg.ts,
+        ll_dash: cfg.ll_dash.resolve(segment_ms),
     };
     let hls = Arc::new(Hls { registry: registry.clone(), cfg, trusted_proxies, captions, streams: Mutex::default() });
     match Handle::try_current() {
@@ -613,17 +672,19 @@ async fn hls_file(
         },
     };
     let key = viewer_key(&req, ip);
-    let manifest = file.ends_with(".m3u8") || file == "manifest.mpd";
+    let manifest = file.ends_with(".m3u8") || file == "manifest.mpd" || file == "ll.mpd";
     let refused = if manifest { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
     if refused {
         return error(StatusCode::FORBIDDEN);
     }
-    let resp = if file == "manifest.mpd" {
+    let resp = if file == "manifest.mpd" || file == "ll.mpd" {
         let time_url = {
             let header = |h: &str| req.headers().get(h).and_then(|v| v.to_str().ok());
             dash::time_url(header("host"), header("x-forwarded-proto"))
         };
-        dash_manifest(&hls, &name, &entry, token, time_url).await
+        dash_manifest(&hls, &name, &entry, token, time_url, file == "ll.mpd").await
+    } else if let Some(f) = dash::parse_name(&file) {
+        dash_file(&entry, f, key).await
     } else {
         let apple = loads_subtitle_parts(&req);
         serve_file(&hls, &name, &requested, &entry, &file, query, token, apple).await
@@ -682,10 +743,6 @@ async fn serve_file(
                 None => error(StatusCode::NOT_FOUND),
             }
         }
-        other if dash::parse_name(other).is_some() => match dash::parse_name(other) {
-            Some(f) => dash_file(entry, f).await,
-            None => error(StatusCode::NOT_FOUND),
-        },
         other => match parse_media_name(other) {
             Some((msn, part)) => media(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
@@ -693,16 +750,19 @@ async fn serve_file(
     }
 }
 
-/// `GET /hls/{name}/manifest.mpd`. Like [`master`], a family root (no `+`)
-/// brings in every live `{name}+*` rendition, and a root nobody can play
-/// (no fMP4 segments of its own) gives way to its renditions.
+/// `GET /hls/{name}/manifest.mpd`, or with `ll` the low-latency
+/// `ll.mpd`. Like [`master`], a family root (no `+`) brings in every live
+/// `{name}+*` rendition, and a root nobody can play (no fMP4 segments of
+/// its own) gives way to its renditions.
 async fn dash_manifest(
     hls: &Arc<Hls>,
     name: &str,
     entry: &Entry,
     token: Option<&str>,
     time_url: Option<String>,
+    ll: bool,
 ) -> Response {
+    let snap = if ll { dash::Snap::ll } else { dash::Snap::of };
     let siblings = || -> Vec<(String, dash::Snap)> {
         if name.contains('+') {
             return Vec::new();
@@ -711,17 +771,17 @@ async fn dash_manifest(
         let mut entries: Vec<(String, Arc<Entry>)> =
             hls.streams().iter().filter(|(n, _)| n.starts_with(&prefix)).map(|(n, e)| (n.clone(), e.clone())).collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        entries.into_iter().filter_map(|(n, e)| dash::Snap::of(&e.pkg()).map(|s| (n, s))).collect()
+        entries.into_iter().filter_map(|(n, e)| snap(&e.pkg()).map(|s| (n, s))).collect()
     };
     let (root_now, root_ready) = {
         let p = entry.pkg();
-        (dash::Snap::of(&p), p.ready())
+        (snap(&p), p.ready())
     };
     let mut family = siblings();
     let root = match root_now {
         Some(s) => Some(s),
         None if !root_ready && !family.is_empty() => None,
-        None => entry.wait(entry.block_timeout(), dash::Snap::of).await,
+        None => entry.wait(entry.block_timeout(), snap).await,
     };
     let (lead_name, lead) = match root {
         Some(s) => (name.to_owned(), s),
@@ -740,21 +800,51 @@ async fn dash_manifest(
     respond(StatusCode::OK, dash::CONTENT_TYPE, "no-cache", body)
 }
 
+/// What a DASH media request finds.
+enum DashMedia {
+    /// Complete: its bytes and the track to cut out of them.
+    Whole(Bytes, u32),
+    /// Being built, with at least one part: streamed (LL-DASH).
+    Open(u32),
+    Gone,
+}
+
 /// A one-track init segment or media segment named by a DASH manifest.
-async fn dash_file(entry: &Entry, file: dash::File) -> Response {
+/// A complete segment is cut and sent whole. The segment being built (the
+/// last one `ll.mpd` lists) is answered at once and streamed: each part
+/// (one `moof`+`mdat` CMAF chunk) is cut and sent as it closes, and the
+/// body ends when the segment does, so the chunks add up to exactly the
+/// whole segment's cut. Not-yet-started segments wait as HLS parts do.
+async fn dash_file(entry: &Arc<Entry>, file: dash::File, viewer: u64) -> Response {
     let (video, found) = match file {
         dash::File::Init { video, generation } => (video, dash::init(&entry.pkg(), video, generation)),
         dash::File::Media { video, msn } => {
             let wait = entry.block_timeout();
             let seg = entry
-                .wait(wait, |p| match p.lookup(msn, None) {
-                    Lookup::Found(b) => Some(dash::track_id(p, msn, video).map(|id| (b, id))),
-                    Lookup::Gone => Some(None),
-                    Lookup::Pending => None,
+                .wait(wait, |p| {
+                    let id = || dash::track_id(p, msn, video);
+                    match p.lookup(msn, None) {
+                        Lookup::Found(b) => Some(id().map_or(DashMedia::Gone, |id| DashMedia::Whole(b, id))),
+                        // The one after the open segment: a player that
+                        // read `ll.mpd` early (or whose clock runs a little
+                        // ahead) asks for it before it starts.
+                        Lookup::Gone if !p.ended && p.segments.back().is_some_and(|s| msn == s.msn + 1) => None,
+                        Lookup::Gone => Some(DashMedia::Gone),
+                        Lookup::Pending if p.segment_at(msn).is_some_and(|s| !s.parts.is_empty()) => {
+                            Some(id().map_or(DashMedia::Gone, DashMedia::Open))
+                        }
+                        Lookup::Pending => None,
+                    }
                 })
-                .await
-                .flatten();
-            let cut = seg.and_then(|(b, id)| caudal_cmaf::fmp4::extract_track(&b, id)).filter(|b| !b.is_empty());
+                .await;
+            let cut = match seg {
+                Some(DashMedia::Whole(b, id)) => caudal_cmaf::fmp4::extract_track(&b, id).filter(|b| !b.is_empty()),
+                Some(DashMedia::Open(id)) => {
+                    let ct = if video { "video/mp4" } else { "audio/mp4" };
+                    return respond(StatusCode::OK, ct, "max-age=60", dash_stream(entry.clone(), msn, id, viewer));
+                }
+                Some(DashMedia::Gone) | None => None,
+            };
             (video, cut)
         }
     };
@@ -764,6 +854,55 @@ async fn dash_file(entry: &Entry, file: dash::File) -> Response {
         (dash::File::Media { .. }, Some(b)) => respond(StatusCode::OK, ct, "max-age=60", b),
         (_, None) => error(StatusCode::NOT_FOUND),
     }
+}
+
+/// The body of an open segment's one-track view: its parts as they close.
+/// One task per request, sharing the packager's parts (each is cut when
+/// it is sent; at most one cut chunk is queued per viewer). A part that
+/// does not arrive within the blocking timeout (the publisher stalled
+/// without closing the segment) aborts the body, so the player sees a
+/// failed request rather than a short segment.
+fn dash_stream(entry: Arc<Entry>, msn: u64, track_id: u32, viewer: u64) -> axum::body::Body {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1);
+    tokio::spawn(async move {
+        enum Step {
+            Chunk(Bytes),
+            Done,
+            Gone,
+        }
+        let mut next = 0usize;
+        loop {
+            let step = entry
+                .wait(entry.block_timeout(), |p| match p.segment_at(msn) {
+                    None => Some(Step::Gone),
+                    Some(s) => match s.parts.get(next) {
+                        Some(part) => Some(Step::Chunk(part.data.clone())),
+                        None if s.full.is_some() => Some(Step::Done),
+                        None => None,
+                    },
+                })
+                .await;
+            let chunk = match step {
+                Some(Step::Chunk(b)) => caudal_cmaf::fmp4::extract_track(&b, track_id),
+                Some(Step::Done) => return,
+                Some(Step::Gone) | None => None,
+            };
+            let Some(chunk) = chunk else {
+                let _ = tx.send(Err(std::io::Error::other("segment did not complete"))).await;
+                return;
+            };
+            next += 1;
+            if chunk.is_empty() {
+                continue;
+            }
+            let n = chunk.len() as u64;
+            if tx.send(Ok(chunk)).await.is_err() {
+                return;
+            }
+            entry.add_bytes(viewer, n);
+        }
+    });
+    axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx))
 }
 
 /// `GET /dash/{name}/index.mpd` (MistServer's DASH URL) and the files its
@@ -776,6 +915,7 @@ async fn dash_alias(
 ) -> Response {
     let file = match file.as_str() {
         "index.mpd" | "manifest.mpd" => "manifest.mpd".to_owned(),
+        "ll.mpd" => file,
         f if dash::parse_name(f).is_some() => file,
         _ => return error(StatusCode::NOT_FOUND),
     };

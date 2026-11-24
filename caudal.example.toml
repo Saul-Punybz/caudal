@@ -36,6 +36,12 @@ cue_tags = true  # SCTE-35 cues as EXT-X-DATERANGE (SCTE35-OUT/IN/CMD)
 cue_out_tags = false  # also legacy EXT-X-CUE-OUT / CUE-OUT-CONT / CUE-IN (many SSAI vendors)
 reconnect_grace_secs = 10  # encoder drops and republishes the same name within this: the playlist continues (0 = end at once)
 ts = true  # also classic HLS with MPEG-TS segments at /hls/{name}/ts.m3u8 (old set-top boxes, MPEG-2 + MP2), started on demand; see docs/HLS.md
+# LL-DASH (/hls/{name}/ll.mpd) ServiceDescription; see docs/DASH.md
+dash_target_latency_ms = 0  # latency players aim for (0 = segment_ms + 1000)
+dash_min_latency_ms = 0  # 0 = half the target
+dash_max_latency_ms = 0  # 0 = twice the target
+dash_min_playback_rate = 0.95  # slowest rate a player may use to rebuild buffer
+dash_max_playback_rate = 1.05  # fastest rate a player may use to catch up
 
 # The live buffer every stream keeps in memory, shared by all its viewers.
 # It holds about window_secs x bitrate (a 6 Mbps stream: 0.75 MB per second).

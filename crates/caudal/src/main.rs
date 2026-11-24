@@ -247,6 +247,7 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
             cue_out_tags: cfg.hls.cue_out_tags,
             reconnect_grace: std::time::Duration::from_secs(cfg.hls.reconnect_grace_secs.into()),
             ts: cfg.hls.ts,
+            ll_dash: cfg.hls.ll_dash(),
         },
         trusted_proxies.clone(),
         caption_source,

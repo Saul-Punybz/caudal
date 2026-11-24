@@ -8,13 +8,15 @@ and smart TVs whose native player prefers DASH.
 | URL | What |
 |---|---|
 | `/hls/{name}/manifest.mpd` | dynamic MPD (`type="dynamic"`), the entry point |
+| `/hls/{name}/ll.mpd` | the low-latency (LL-DASH) MPD over the same files; see [Low-latency DASH](#low-latency-dash-llmpd) |
 | `/hls/{name}/v-init{gen}.mp4`, `a-init{gen}.mp4` | one-track init segments (video, audio) |
 | `/hls/{name}/v{msn}.m4s`, `a{msn}.m4s` | one-track media segments |
-| `/dash/{name}/index.mpd` | the same manifest at MistServer's URL (its segment URLs resolve under `/dash/{name}/` too) |
+| `/dash/{name}/index.mpd` | the same manifest at MistServer's URL (its segment URLs resolve under `/dash/{name}/` too); `/dash/{name}/ll.mpd` is the LL one |
 | `/dash/time` | the server clock (ISO 8601), for `UTCTiming` |
 
-There is no configuration: segment length, window and reconnect grace come
-from `[hls]` (see [HLS.md](HLS.md)).
+Segment and part length, window and reconnect grace come from `[hls]` (see
+[HLS.md](HLS.md)); the only DASH keys are the LL manifest's service
+description ([below](#low-latency-dash-llmpd)).
 
 ## Same segments, not a second packager
 
@@ -81,6 +83,74 @@ samples. Nothing is stored twice.
   only itself. A root whose own media is not fMP4-packaged (MPEG-2 from a
   broadcast feed) gives way to its renditions, as in `master.m3u8`.
 
+## Low-latency DASH (`ll.mpd`)
+
+`/hls/{name}/ll.mpd` is the same MPD in DASH-IF's low-latency mode
+("Low-latency Modes for DASH", the DASH-IF IOP v4.3 change request,
+clause 4.X.3; main live offering with `SegmentTimeline` and `$Number$`).
+The LL-HLS packager already closes a part every `part_ms`; each part is
+one `moof`+`mdat` pair, i.e. a CMAF chunk, so LL-DASH needs no new
+packaging, only a different way of handing out the segment being built:
+
+- **The open segment is listed.** As soon as the segment being built has
+  its first part, the timeline gets an `S` for it with its real `t` and
+  its nominal duration (`segment_ms`; a segment runs long when the GOP
+  does, and the next update then lists its real `d`, like every complete
+  segment's).
+- **It is streamed.** A request for that segment (`v{msn}.m4s` /
+  `a{msn}.m4s`) is answered at once with HTTP chunked transfer (no
+  `Content-Length`): the parts it already has, cut to the one track as for
+  complete segments, then each new part as it closes, and the body ends
+  when the segment does. The chunks add up byte for byte to the complete
+  segment, which later requests get whole, with a `Content-Length`, as
+  before. A request for the segment after the open one waits for it to
+  start, then streams it. Viewers share the packager's parts: each
+  request holds at most one cut chunk in flight, nothing per viewer is
+  stored. If no part arrives within three target durations (a publisher
+  that stalled without closing the segment), the response is aborted
+  rather than ended, so the player sees a failed request, not a short
+  segment.
+- **`SegmentTemplate@availabilityTimeOffset`** = `segment_ms` − `part_ms`
+  in seconds (1.8 with the defaults) and
+  **`@availabilityTimeComplete="false"`** (clause 4.X.3.2, 2.e/f: at most
+  the segment duration minus its first chunk; the first part is never
+  longer than `part_ms` and a segment never shorter than `segment_ms`).
+  If `part_ms` ≥ `segment_ms` there is nothing to send early and `ll.mpd`
+  is the plain MPD.
+- **`ServiceDescription`** (clause 4.X.3.2; ISO/IEC 23009-1 Annex K):
+  `Latency` `target`/`min`/`max` (ms, against `ProducerReferenceTime` 0)
+  and `PlaybackRate` `min`/`max`.
+- **`ProducerReferenceTime`** in every `Representation` (clause
+  4.X.3.2, 1): `id="0" type="encoder"`, `presentationTime` = its
+  `presentationTimeOffset` and `wallClockTime` = the period start (the
+  wall clock at which the packager received the period's first frame),
+  with a copy of the MPD's `UTCTiming`.
+- `minimumUpdatePeriod` is `max(part_ms, 500 ms)`, so a player sees the
+  next open segment soon after it starts; `minBufferTime` is one part.
+  `suggestedPresentationDelay` stays the plain MPD's (3 target durations):
+  LL players follow `Latency@target`, and players that ignore the LL
+  attributes and wait for complete segments still get a safe delay.
+
+```toml
+[hls]
+dash_target_latency_ms = 0     # 0 = segment_ms + 1000 (3000 with the defaults)
+dash_min_latency_ms = 0        # 0 = half the target
+dash_max_latency_ms = 0        # 0 = twice the target
+dash_min_playback_rate = 0.95  # how much a player may slow down to rebuild buffer
+dash_max_playback_rate = 1.05  # how much it may speed up to catch up
+```
+
+The automatic target is one second past a segment because DASH-IF asks for
+the longest segment to be shorter than the target when an `AdaptationSet`
+has several bitrates (a family of renditions). Inconsistent values are
+repaired (`min` ≤ `target` ≤ `max`; rates outside `(0, 1]` / `[1, 100]`
+fall back to the defaults).
+
+Use `ll.mpd` with players in their low-latency mode (dash.js's
+low-latency mode, ExoPlayer / Media3, which takes its live target from
+`ServiceDescription`). `manifest.mpd` stays the plain MPD for everything
+else, unchanged.
+
 ## Auth and sessions
 
 Same as HLS: `?token=` or `Authorization: Bearer`, the same `[auth]` /
@@ -91,10 +161,20 @@ kicked player gets 403. `/dash/time` needs no token.
 
 ## Not done
 
-- **No LL-DASH**: segments are listed once complete, there is no
-  `availabilityTimeOffset` and no chunked transfer of the open segment's
-  parts. Latency is that of plain DASH (about 3 segment durations), not
-  LL-HLS's.
+- LL-DASH is verified by Caudal's own tests (the MPD attributes; over a
+  real socket, the open segment's first chunk arriving within
+  milliseconds of the request while its body runs until the segment
+  closes, and its chunks equal to the complete segment byte for byte, for
+  several viewers at once), by GStreamer playing `ll.mpd` (as a plain
+  client: its `dashdemux` ignores `availabilityTimeOffset` and fetches
+  complete segments) and, in CI, by ffmpeg's DASH demuxer. Not yet with
+  dash.js or ExoPlayer in low-latency mode, which are the players it is
+  for; no `Resync` / in-segment random access signalling, no inband MPD
+  validity events.
+- Seen while testing: GStreamer's `dashdemux` (1.28) joining a live MPD
+  whose window is already full skips a segment or two at its first
+  manifest update (plain `manifest.mpd` and `ll.mpd` alike; not when it
+  joins before the window fills). Not investigated yet.
 - No WebVTT/captions `AdaptationSet`, no SCTE-35 `EventStream` yet.
 - A segment with no samples of a track (audio that stopped mid-stream)
   keeps its `S` entry for numbering but its `a{msn}.m4s` answers 404.

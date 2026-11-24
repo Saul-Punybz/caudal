@@ -42,6 +42,56 @@ pub(crate) struct Part {
     pub duration: f64,
     pub independent: bool,
     pub data: Bytes,
+    /// Exact timing of each track's run in `data` (primary, then
+    /// secondary), for the DASH `SegmentTimeline`. `None`: no samples of
+    /// that track in this part.
+    pub runs: [Option<TrackRun>; 2],
+}
+
+/// One track's samples inside a part, on that track's clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrackRun {
+    /// `tfdt` of the run (shifted decode time, in track ticks).
+    pub start: i64,
+    /// Sum of the sample durations, in track ticks.
+    pub dur: u64,
+    /// Sample bytes.
+    pub bytes: u64,
+}
+
+/// Where a segment sits on the DASH presentation timeline. Every segment
+/// after a discontinuity (republish, new init segment, timestamp jump)
+/// opens a new MPD `Period`; the mark is fixed when the period's first
+/// segment opens, so `Period@id`/`@start` never change between MPD updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PeriodMark {
+    /// Msn of the period's first segment (its `Period@id`).
+    pub msn: u64,
+    /// `Period@start`, microseconds after [`Packager::epoch`].
+    pub start_us: i64,
+    /// Primary-track decode time (ticks) at the period start: the
+    /// `presentationTimeOffset`.
+    pub anchor: i64,
+    /// Primary-track timescale `anchor` is on.
+    pub timescale: u32,
+}
+
+/// One track of one init generation as DASH describes it: an
+/// `AdaptationSet`'s worth of attributes plus its own init segment.
+#[derive(Debug, Clone)]
+pub(crate) struct DashTrack {
+    pub track_id: u32,
+    pub video: bool,
+    pub codec: String,
+    pub timescale: u32,
+    pub resolution: Option<(u32, u32)>,
+    pub frame_rate: Option<f64>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u8>,
+    pub lang: Option<String>,
+    /// `ftyp` + `moov` with this track only (same track id as in the muxed
+    /// one, so it decodes the fragments [`fmp4::extract_track`] cuts out).
+    pub init: Bytes,
 }
 
 pub(crate) struct Segment {
@@ -54,6 +104,8 @@ pub(crate) struct Segment {
     pub discontinuity: bool,
     /// Which init segment decodes it (see [`Packager::init_for`]).
     pub init_gen: u32,
+    /// Its DASH period.
+    pub period: PeriodMark,
     /// `Some` once the segment is complete: all its parts, concatenated.
     pub full: Option<Bytes>,
 }
@@ -61,6 +113,19 @@ pub(crate) struct Segment {
 impl Segment {
     pub fn duration(&self) -> f64 {
         self.parts.iter().map(|p| p.duration).sum()
+    }
+
+    /// Track `lane`'s (0 primary, 1 secondary) span over the whole
+    /// segment: first run's start, and the end of its last run minus that.
+    pub fn run(&self, lane: usize) -> Option<TrackRun> {
+        let mut runs = self.parts.iter().filter_map(|p| p.runs[lane]);
+        let first = runs.next()?;
+        let (mut end, mut bytes) = (first.start + first.dur as i64, first.bytes);
+        for r in runs {
+            end = r.start + r.dur as i64;
+            bytes += r.bytes;
+        }
+        Some(TrackRun { start: first.start, dur: (end - first.start).max(0) as u64, bytes })
     }
 }
 
@@ -133,6 +198,12 @@ pub(crate) struct Packager {
     init_gen: u32,
     /// Older init segments that listed segments still need, oldest first.
     old_inits: VecDeque<(u32, Bytes)>,
+    /// The DASH view of the current init segment's tracks (primary first).
+    dash: Vec<DashTrack>,
+    /// Same for the generations in `old_inits`.
+    old_dash: VecDeque<(u32, Vec<DashTrack>)>,
+    /// The MPD's `availabilityStartTime`: wall clock of the first segment.
+    pub epoch: Option<SystemTime>,
     /// The publisher left and a republish may still continue this playlist:
     /// no `#EXT-X-ENDLIST` yet.
     pub suspended: bool,
@@ -229,6 +300,9 @@ impl Packager {
             init: None,
             init_gen: 0,
             old_inits: VecDeque::new(),
+            dash: Vec::new(),
+            old_dash: VecDeque::new(),
+            epoch: None,
             suspended: false,
             part: Vec::new(),
             queue: VecDeque::new(),
@@ -407,10 +481,12 @@ impl Packager {
                 if let Some(old) = self.init.take() {
                     self.old_inits.push_back((self.init_gen, old));
                 }
+                self.old_dash.push_back((self.init_gen, std::mem::take(&mut self.dash)));
                 self.init_gen += 1;
             } else {
                 // Nothing was ever listed: no player can hold the old one.
                 self.old_inits.clear();
+                self.old_dash.clear();
             }
         }
         self.dateranges.clear();
@@ -422,6 +498,7 @@ impl Packager {
         self.floor = None;
         self.waiting_key = true;
         self.init = init;
+        self.dash = if self.init.is_some() { mp4.iter().filter_map(dash_track).collect() } else { Vec::new() };
         self.codecs = mp4.iter().filter_map(|t| codec_string(&t.info)).collect();
         self.resolution =
             mp4.iter().find_map(|t| t.info.video.map(|v| (v.width, v.height))).filter(|&(w, h)| w > 0 && h > 0);
@@ -559,6 +636,26 @@ impl Packager {
             self.waiting_key = false;
         }
         self.seg_start = Some(dts);
+        let epoch = *self.epoch.get_or_insert(now);
+        let period = match self.segments.back() {
+            Some(prev) if !discontinuity => prev.period,
+            prev => {
+                // A new period starts at its wall clock, never before the
+                // previous one's media has run out.
+                let wall = now.duration_since(epoch).map_or(0, |d| d.as_micros() as i64);
+                let after_prev = prev.and_then(|p| {
+                    let end = p.run(0).map(|r| r.start + r.dur as i64)?;
+                    let ts = i128::from(p.period.timescale.max(1));
+                    Some(p.period.start_us + (i128::from(end - p.period.anchor) * 1_000_000 / ts) as i64)
+                });
+                PeriodMark {
+                    msn: self.next_msn,
+                    start_us: wall.max(after_prev.unwrap_or(0)),
+                    anchor: dts,
+                    timescale: lane.timescale,
+                }
+            }
+        };
         self.segments.push_back(Segment {
             msn: self.next_msn,
             parts: Vec::new(),
@@ -566,6 +663,7 @@ impl Packager {
             start_us: media_us,
             discontinuity,
             init_gen: self.init_gen,
+            period,
             full: None,
         });
         self.next_msn += 1;
@@ -599,6 +697,15 @@ impl Packager {
         }
         self.floor = None;
 
+        let span = |s: &[Sample]| -> Option<TrackRun> {
+            let (a, b) = (s.first()?, s.last()?);
+            Some(TrackRun {
+                start: a.dts,
+                dur: (b.dts + i64::from(b.dur) - a.dts).max(0) as u64,
+                bytes: s.iter().map(|x| x.data.len() as u64).sum(),
+            })
+        };
+        let timing = [span(&self.part), span(&audio)];
         self.fragment_seq = self.fragment_seq.wrapping_add(1);
         let mut runs = vec![Run { track_id: primary.track_id, samples: &self.part }];
         if let Some(sec) = self.secondary.as_ref() {
@@ -608,7 +715,7 @@ impl Packager {
         let independent = self.part[0].key;
         self.part.clear();
         if let Some(seg) = self.segments.back_mut().filter(|s| s.full.is_none()) {
-            seg.parts.push(Part { duration, independent, data });
+            seg.parts.push(Part { duration, independent, data, runs: timing });
         }
     }
 
@@ -645,6 +752,7 @@ impl Packager {
         }
         let first_gen = self.segments.front().map_or(self.init_gen, |s| s.init_gen);
         self.old_inits.retain(|(g, _)| *g >= first_gen);
+        self.old_dash.retain(|(g, _)| *g >= first_gen);
         self.prune_dateranges();
     }
 
@@ -717,6 +825,20 @@ impl Packager {
             return self.init.clone();
         }
         self.old_inits.iter().find(|(g, _)| *g == generation).map(|(_, b)| b.clone())
+    }
+
+    /// The DASH tracks of init generation `generation`, while anything
+    /// listed still needs it.
+    pub fn dash_tracks(&self, generation: u32) -> Option<&[DashTrack]> {
+        if generation == self.init_gen {
+            return (!self.dash.is_empty()).then_some(&self.dash[..]);
+        }
+        self.old_dash.iter().find(|(g, _)| *g == generation).map(|(_, t)| &t[..])
+    }
+
+    /// The segment numbered `msn`, if it is still in the window.
+    pub fn segment_at(&self, msn: u64) -> Option<&Segment> {
+        self.segment(msn)
     }
 
     /// `(msn, part index)` of the newest complete part.
@@ -948,6 +1070,22 @@ impl Packager {
 /// so a URI never changes meaning.
 pub(crate) fn init_uri(generation: u32) -> String {
     if generation == 0 { "init.mp4".to_owned() } else { format!("init{generation}.mp4") }
+}
+
+fn dash_track(t: &Mp4Track) -> Option<DashTrack> {
+    let info = &t.info;
+    Some(DashTrack {
+        track_id: t.track_id,
+        video: info.kind() == TrackKind::Video,
+        codec: codec_string(info)?,
+        timescale: info.timescale.max(1),
+        resolution: info.video.map(|v| (v.width, v.height)).filter(|&(w, h)| w > 0 && h > 0),
+        frame_rate: info.video.and_then(|v| v.fps).filter(|f| *f > 0.0),
+        sample_rate: info.audio.map(|a| a.sample_rate).filter(|r| *r > 0),
+        channels: info.audio.map(|a| a.channels).filter(|c| *c > 0),
+        lang: info.lang.clone().filter(|l| l.len() == 3 && l != "und"),
+        init: fmp4::init_segment(std::slice::from_ref(t))?,
+    })
 }
 
 /// RFC 6381 codec string from a track's configuration record.

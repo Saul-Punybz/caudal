@@ -67,11 +67,11 @@ async fn session(client: &reqwest::Client, pull: &HttpPull, registry: &Arc<Regis
     let mut resp = match client.get(&pull.url).send().await {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            tracing::warn!(stream = %pull.stream, url = %pull.url, status = %r.status(), "http pull: not served");
+            tracing::warn!(stream = %pull.stream, url = %caudal_core::net::redact_url(&pull.url), status = %r.status(), "http pull: not served");
             return Outcome::Failed;
         }
         Err(e) => {
-            tracing::warn!(stream = %pull.stream, url = %pull.url, error = %e, "http pull: connect failed");
+            tracing::warn!(stream = %pull.stream, url = %caudal_core::net::redact_url(&pull.url), error = %e.without_url(), "http pull: connect failed");
             return Outcome::Failed;
         }
     };
@@ -82,7 +82,7 @@ async fn session(client: &reqwest::Client, pull: &HttpPull, registry: &Arc<Regis
                 if ingest.is_none() {
                     match registry.publish(&pull.stream, buffer) {
                         Ok(p) => {
-                            tracing::info!(stream = %pull.stream, url = %pull.url, "http pull: data arriving; published");
+                            tracing::info!(stream = %pull.stream, url = %caudal_core::net::redact_url(&pull.url), "http pull: data arriving; published");
                             ingest = Some(TsIngest::new(p));
                         }
                         Err(PublishError::Busy(_)) => {
@@ -100,11 +100,11 @@ async fn session(client: &reqwest::Client, pull: &HttpPull, registry: &Arc<Regis
                 }
             }
             Ok(Ok(None)) => {
-                tracing::info!(stream = %pull.stream, url = %pull.url, "http pull: the source closed the response");
+                tracing::info!(stream = %pull.stream, url = %caudal_core::net::redact_url(&pull.url), "http pull: the source closed the response");
                 break;
             }
             Ok(Err(e)) => {
-                tracing::info!(stream = %pull.stream, url = %pull.url, error = %e, "http pull: read failed");
+                tracing::info!(stream = %pull.stream, url = %caudal_core::net::redact_url(&pull.url), error = %e.without_url(), "http pull: read failed");
                 break;
             }
             Err(_) => {
@@ -130,7 +130,7 @@ async fn run(pull: HttpPull, registry: Arc<Registry>, buffer: BufferConfig) {
             return;
         }
     };
-    tracing::info!(stream = %pull.stream, url = %pull.url, "http pull started");
+    tracing::info!(stream = %pull.stream, url = %caudal_core::net::redact_url(&pull.url), "http pull started");
     let mut backoff = BACKOFF_MIN;
     loop {
         match session(&client, &pull, &registry, buffer).await {

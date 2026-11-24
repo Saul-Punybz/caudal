@@ -23,7 +23,7 @@ pub(crate) async fn run(pull: SrtPull, registry: Arc<Registry>, buffer: BufferCo
         match crate::push::connect(&pull.url).await {
             Ok(mut socket) => match registry.publish(&pull.stream, buffer) {
                 Ok(publisher) => {
-                    tracing::info!(url = %pull.url, stream = %pull.stream, "srt pull connected");
+                    tracing::info!(url = %caudal_core::net::redact_url(&pull.url), stream = %pull.stream, "srt pull connected");
                     let mut ingest = TsIngest::new(publisher);
                     let mut got_any = false;
                     while let Ok(Some(payload)) = socket.recv().await {
@@ -31,7 +31,7 @@ pub(crate) async fn run(pull: SrtPull, registry: Arc<Registry>, buffer: BufferCo
                         ingest.feed(&payload);
                     }
                     drop(ingest);
-                    tracing::info!(url = %pull.url, stream = %pull.stream, "srt pull ended; reconnecting");
+                    tracing::info!(url = %caudal_core::net::redact_url(&pull.url), stream = %pull.stream, "srt pull ended; reconnecting");
                     backoff = if got_any { BACKOFF_MIN } else { (backoff * 2).min(BACKOFF_MAX) };
                 }
                 Err(PublishError::Busy(_)) => {
@@ -44,7 +44,7 @@ pub(crate) async fn run(pull: SrtPull, registry: Arc<Registry>, buffer: BufferCo
                 }
             },
             Err(err) => {
-                tracing::warn!(url = %pull.url, stream = %pull.stream, %err, "srt pull connect failed");
+                tracing::warn!(url = %caudal_core::net::redact_url(&pull.url), stream = %pull.stream, %err, "srt pull connect failed");
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
         }

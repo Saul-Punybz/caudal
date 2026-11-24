@@ -1,5 +1,6 @@
 //! Builds RTMP `VIDEODATA`/`AUDIODATA` message payloads (FLV tag bodies) for
-//! outbound frames.
+//! outbound frames: what `caudal-restream` pushes and what RTMP play
+//! ([`crate::play`]) sends viewers. Also the `onMetaData` a player gets.
 //!
 //! Byte layouts match what `crates/caudal-rtmp/src/demux.rs` reads on the
 //! way in (legacy AVC/AAC tags per the FLV spec, Enhanced RTMP v2 FourCC
@@ -8,11 +9,11 @@
 //! loopback test round-trips through `caudal-rtmp` itself, so a byte
 //! mismatch here fails a test, not a real push.
 //!
-//! Enhanced video frames are always sent as `CodedFramesX` (packet type 3):
-//! no composition-time field, so HEVC/AV1 restreamed through this crate
-//! carry the frame's `pts` as the RTMP timestamp and lose dts/pts
-//! reordering fidelity for B-frames. Legacy H.264 keeps full fidelity via
-//! the AVC packet's 24-bit composition time offset.
+//! Legacy H.264 keeps dts/pts fidelity via the AVC packet's 24-bit
+//! composition time offset. Enhanced HEVC frames with B-frame reordering
+//! are sent as `CodedFrames` (packet type 1), which carries the same
+//! offset; HEVC frames without one, and every AV1 frame (AV1 has no
+//! reordering on the wire), as `CodedFramesX` (packet type 3, no offset).
 
 use bytes::{BufMut, Bytes, BytesMut};
 use caudal_core::{Codec, Frame, TrackInfo};
@@ -36,8 +37,8 @@ const FOURCC_HEVC: [u8; 4] = *b"hvc1";
 const FOURCC_AV1: [u8; 4] = *b"av01";
 const FOURCC_OPUS: [u8; 4] = *b"Opus";
 
-/// Codecs this crate knows how to push over RTMP / Enhanced RTMP.
-pub(crate) fn supported(codec: Codec) -> bool {
+/// Codecs this module knows how to send over RTMP / Enhanced RTMP.
+pub fn supported(codec: Codec) -> bool {
     matches!(codec, Codec::H264 | Codec::H265 | Codec::Av1 | Codec::Aac | Codec::Opus)
 }
 
@@ -65,6 +66,15 @@ fn enhanced_video_tag(frame_type: u8, packet_type: u8, fourcc: [u8; 4], payload:
     b.freeze()
 }
 
+fn enhanced_video_tag_with_cts(frame_type: u8, fourcc: [u8; 4], cts: i32, payload: &Bytes) -> Bytes {
+    let mut b = BytesMut::with_capacity(8 + payload.len());
+    b.put_u8(EX_VIDEO_MARKER | (frame_type << 4) | PT_CODED_FRAMES);
+    b.extend_from_slice(&fourcc);
+    put_i24(&mut b, cts);
+    b.extend_from_slice(payload);
+    b.freeze()
+}
+
 fn legacy_audio_tag(packet_type: u8, payload: &Bytes) -> Bytes {
     let mut b = BytesMut::with_capacity(2 + payload.len());
     // Rate/size/type bits (44kHz/16-bit/stereo) are the encoder's chosen
@@ -87,7 +97,7 @@ fn enhanced_audio_tag(packet_type: u8, fourcc: [u8; 4], payload: &Bytes) -> Byte
 /// The sequence header tag for a track, sent once before its first frame
 /// (and again after `Event::TracksChanged`). `None` for a codec we don't
 /// carry over RTMP.
-pub(crate) fn sequence_header(info: &TrackInfo) -> Option<Bytes> {
+pub fn sequence_header(info: &TrackInfo) -> Option<Bytes> {
     match info.codec {
         Codec::H264 => Some(legacy_video_tag(1, AVC_SEQ_HDR, 0, &info.init)),
         Codec::H265 => Some(enhanced_video_tag(1, PT_SEQUENCE_START, FOURCC_HEVC, &info.init)),
@@ -99,17 +109,91 @@ pub(crate) fn sequence_header(info: &TrackInfo) -> Option<Bytes> {
 }
 
 /// The tag for one coded frame. `cts_ms` is the composition time offset
-/// (pts - dts, in milliseconds); only legacy H.264 carries it on the wire.
-pub(crate) fn frame_tag(info: &TrackInfo, frame: &Frame, cts_ms: i32) -> Option<Bytes> {
+/// (pts - dts, in milliseconds), carried for H.264 and HEVC.
+pub fn frame_tag(info: &TrackInfo, frame: &Frame, cts_ms: i32) -> Option<Bytes> {
     let frame_type = if frame.keyframe { 1 } else { 2 };
     match info.codec {
         Codec::H264 => Some(legacy_video_tag(frame_type, AVC_NALU, cts_ms, &frame.data)),
+        Codec::H265 if cts_ms != 0 => Some(enhanced_video_tag_with_cts(frame_type, FOURCC_HEVC, cts_ms, &frame.data)),
         Codec::H265 => Some(enhanced_video_tag(frame_type, PT_CODED_FRAMES_X, FOURCC_HEVC, &frame.data)),
         Codec::Av1 => Some(enhanced_video_tag(frame_type, PT_CODED_FRAMES_X, FOURCC_AV1, &frame.data)),
         Codec::Aac => Some(legacy_audio_tag(AAC_RAW, &frame.data)),
         Codec::Opus => Some(enhanced_audio_tag(PT_CODED_FRAMES, FOURCC_OPUS, &frame.data)),
         _ => None,
     }
+}
+
+/// The `videocodecid` / `audiocodecid` `onMetaData` gives a codec: the
+/// legacy FLV id, or the Enhanced RTMP FourCC as a number (what FFmpeg's
+/// FLV muxer writes).
+fn metadata_codec_id(codec: Codec) -> Option<f64> {
+    let fourcc = |f: [u8; 4]| f64::from(u32::from_be_bytes(f));
+    match codec {
+        Codec::H264 => Some(f64::from(AVC_CODEC_ID)),
+        Codec::H265 => Some(fourcc(FOURCC_HEVC)),
+        Codec::Av1 => Some(fourcc(FOURCC_AV1)),
+        Codec::Aac => Some(f64::from(AAC_SOUND_FORMAT)),
+        Codec::Opus => Some(fourcc(FOURCC_OPUS)),
+        _ => None,
+    }
+}
+
+fn put_amf0_key(b: &mut BytesMut, key: &str) {
+    b.put_u16(key.len() as u16);
+    b.extend_from_slice(key.as_bytes());
+}
+
+/// The AMF0 `onMetaData` message for a player: the string `onMetaData`
+/// then an object describing `video` and `audio` (either may be absent).
+/// Live, so `duration` is 0.
+///
+/// An AMF0 object (marker 3) rather than the ECMA array (marker 8) FFmpeg's
+/// muxer writes; FFmpeg's FLV demuxer reads both, and so does the patched
+/// `scuffle-amf0` (see `vendor/README.md`).
+pub fn metadata(video: Option<&TrackInfo>, audio: Option<&TrackInfo>) -> Bytes {
+    let mut numbers: Vec<(&str, f64)> = vec![("duration", 0.0)];
+    let mut stereo = None;
+    if let Some(v) = video {
+        if let Some(id) = metadata_codec_id(v.codec) {
+            numbers.push(("videocodecid", id));
+        }
+        if let Some(p) = v.video {
+            if p.width > 0 && p.height > 0 {
+                numbers.push(("width", f64::from(p.width)));
+                numbers.push(("height", f64::from(p.height)));
+            }
+            if let Some(fps) = p.fps {
+                numbers.push(("framerate", fps));
+            }
+        }
+    }
+    if let Some(a) = audio {
+        if let Some(id) = metadata_codec_id(a.codec) {
+            numbers.push(("audiocodecid", id));
+        }
+        if let Some(p) = a.audio {
+            numbers.push(("audiosamplerate", f64::from(p.sample_rate)));
+            numbers.push(("audiochannels", f64::from(p.channels)));
+            stereo = Some(p.channels >= 2);
+        }
+    }
+
+    let mut b = BytesMut::with_capacity(32 + numbers.len() * 24);
+    b.put_u8(0x02); // AMF0 string
+    put_amf0_key(&mut b, "onMetaData");
+    b.put_u8(0x03); // AMF0 object
+    for (key, value) in numbers {
+        put_amf0_key(&mut b, key);
+        b.put_u8(0x00); // AMF0 number
+        b.put_f64(value);
+    }
+    if let Some(stereo) = stereo {
+        put_amf0_key(&mut b, "stereo");
+        b.put_u8(0x01); // AMF0 boolean
+        b.put_u8(u8::from(stereo));
+    }
+    b.extend_from_slice(&[0x00, 0x00, 0x09]); // object end
+    b.freeze()
 }
 
 #[cfg(test)]
@@ -173,6 +257,31 @@ mod tests {
         let tag = sequence_header(&info).unwrap();
         assert_eq!(tag[0] & 0x80, 0x80);
         assert_eq!(&tag[1..5], b"hvc1");
+    }
+
+    #[test]
+    fn hevc_with_reordering_carries_composition_time() {
+        let info = TrackInfo { codec: Codec::H265, ..h264() };
+        let frame = Frame { track: TrackId(0), dts: 0, pts: 3000, keyframe: true, data: Bytes::from_static(b"nalu") };
+        let tag = frame_tag(&info, &frame, 33).unwrap();
+        assert_eq!(tag[0], EX_VIDEO_MARKER | (1 << 4) | PT_CODED_FRAMES);
+        assert_eq!(&tag[1..5], b"hvc1");
+        assert_eq!(&tag[5..8], &[0, 0, 33]);
+        assert_eq!(&tag[8..], b"nalu");
+        let tag = frame_tag(&info, &frame, 0).unwrap();
+        assert_eq!(tag[0] & 0x0f, PT_CODED_FRAMES_X);
+        assert_eq!(&tag[5..], b"nalu");
+    }
+
+    #[test]
+    fn metadata_is_an_object_our_own_parser_reads() {
+        let video = TrackInfo { video: Some(VideoParams { width: 1280, height: 720, fps: Some(30.0) }), ..h264() };
+        let data = metadata(Some(&video), Some(&aac()));
+        assert_eq!(data[0], 0x02);
+        assert_eq!(&data[3..13], b"onMetaData");
+        assert_eq!(data[13], 0x03);
+        assert!(data.ends_with(&[0, 0, 9]));
+        assert_eq!(crate::demux::parse_metadata_fps(data), Some(30.0));
     }
 
     #[test]

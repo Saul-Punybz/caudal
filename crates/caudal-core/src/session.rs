@@ -88,6 +88,20 @@ pub struct Sessions {
     open: Mutex<HashMap<u64, Arc<Entry>>>,
     /// `(stream, ip)` → blocked until.
     blocked: Mutex<HashMap<(Arc<str>, IpAddr), Instant>>,
+    /// Bytes sent by sessions that already closed, per protocol. Added
+    /// under the `open` lock at the moment a session leaves it, so a
+    /// scrape sees each byte either in a live session or here, never both.
+    closed_bytes: Mutex<HashMap<&'static str, u64>>,
+}
+
+/// Per-protocol totals for `/metrics`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProtocolTotals {
+    pub protocol: &'static str,
+    /// Sessions open right now.
+    pub sessions: u64,
+    /// Bytes sent to viewers since start, closed sessions included.
+    pub bytes_out: u64,
 }
 
 impl Sessions {
@@ -117,6 +131,24 @@ impl Sessions {
         let mut v: Vec<SessionInfo> =
             self.open.lock().values().filter(|e| stream.is_none_or(|s| &*e.stream == s)).map(|e| info(e)).collect();
         v.sort_by_key(|s| s.id);
+        v
+    }
+
+    /// Open-session count and cumulative bytes sent per protocol, sorted by
+    /// protocol. A protocol that has had a session stays listed (with 0
+    /// open sessions) so its gauge drops to 0 instead of vanishing.
+    pub fn protocol_totals(&self) -> Vec<ProtocolTotals> {
+        let open = self.open.lock();
+        let closed = self.closed_bytes.lock();
+        let mut by: HashMap<&'static str, ProtocolTotals> =
+            closed.iter().map(|(&p, &b)| (p, ProtocolTotals { protocol: p, sessions: 0, bytes_out: b })).collect();
+        for e in open.values() {
+            let t = by.entry(e.protocol).or_insert(ProtocolTotals { protocol: e.protocol, sessions: 0, bytes_out: 0 });
+            t.sessions += 1;
+            t.bytes_out += e.bytes_out.load(Ordering::Relaxed);
+        }
+        let mut v: Vec<_> = by.into_values().collect();
+        v.sort_by_key(|t| t.protocol);
         v
     }
 
@@ -198,7 +230,10 @@ impl Sessions {
     }
 
     fn close(&self, id: u64) {
-        self.open.lock().remove(&id);
+        let mut open = self.open.lock();
+        if let Some(e) = open.remove(&id) {
+            *self.closed_bytes.lock().entry(e.protocol).or_insert(0) += e.bytes_out.load(Ordering::Relaxed);
+        }
     }
 }
 
@@ -334,6 +369,34 @@ mod tests {
         assert_eq!(ids, vec![a.id(), c.id()]);
         assert_eq!(s.kick_matching(&Selector { stream: Some("cam".into()), tag: None }, None).len(), 2);
         assert!(b.is_kicked());
+    }
+
+    #[tokio::test]
+    async fn protocol_totals_keep_closed_bytes() {
+        let s = Arc::new(Sessions::default());
+        let a = s.open("cam".into(), "srt", None);
+        let b = s.open("cam".into(), "srt", None);
+        let c = s.open("cam".into(), "whep", None);
+        a.add_bytes(1000);
+        b.add_bytes(500);
+        c.add_bytes(7);
+        let t = s.protocol_totals();
+        assert_eq!(
+            t,
+            vec![
+                ProtocolTotals { protocol: "srt", sessions: 2, bytes_out: 1500 },
+                ProtocolTotals { protocol: "whep", sessions: 1, bytes_out: 7 },
+            ]
+        );
+        drop(a);
+        let t = s.protocol_totals();
+        assert_eq!(t[0], ProtocolTotals { protocol: "srt", sessions: 1, bytes_out: 1500 }, "closed bytes kept once");
+        b.add_bytes(1);
+        drop(b);
+        drop(c);
+        let t = s.protocol_totals();
+        assert_eq!(t[0], ProtocolTotals { protocol: "srt", sessions: 0, bytes_out: 1501 });
+        assert_eq!(t[1], ProtocolTotals { protocol: "whep", sessions: 0, bytes_out: 7 });
     }
 
     #[test]

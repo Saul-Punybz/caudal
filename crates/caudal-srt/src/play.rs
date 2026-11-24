@@ -23,10 +23,15 @@ pub(crate) async fn handle(
     name: &str,
     token: Option<&str>,
 ) {
-    if let Err(denied) = registry.authorize(Access::Play, name, token, Some(std::net::IpAddr::V4(*peer.ip()))).await {
-        tracing::info!(%peer, stream = %name, reason = ?denied, "srt play rejected");
-        return;
-    }
+    let name = match registry.resolve(Access::Play, "srt", name, token, Some(std::net::IpAddr::V4(*peer.ip()))).await {
+        Ok(n) => n,
+        Err(denied) => {
+            let stream = registry.loggable(name);
+            tracing::info!(%peer, %stream, reason = ?denied, "srt play rejected");
+            return;
+        }
+    };
+    let name = name.as_str();
     // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
     let Some(stream) = registry.get_or_demand(name).await else {
         tracing::debug!(%peer, stream = %name, "srt play rejected: stream not found");

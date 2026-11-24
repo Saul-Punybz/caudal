@@ -27,6 +27,8 @@ mod play;
 mod pull;
 mod push;
 
+pub use push::check_caller_url;
+
 #[derive(Debug, Clone)]
 pub struct SrtConfig {
     pub bind: SocketAddr,

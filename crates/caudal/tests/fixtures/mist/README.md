@@ -1,6 +1,6 @@
 # MistServer config fixtures
 
-These three `.json` files are hand-written to match MistServer's own
+These `.json` files are hand-written to match MistServer's own
 `config.json` shape, not captured from a real MistServer install. The shape
 was read from MistServer's source (github.com/DDVTECH/mistserver,
 Unlicense) — see the doc comment at the top of
@@ -13,8 +13,17 @@ Unlicense) — see the doc comment at the top of
 - `push_and_record.json` — an RTMP connector, `auto_push` with an RTMP
   restream target and a file (record) target, one scheduled push, two
   triggers, and a local user account (password not migrated).
-- `rtsp_webrtc_files.json` — RTSP + TSSRT + WebRTC connectors, a connector
-  Caudal has no output for (`HTTPTS`), an RTSP pull source, a single-file
+- `rtsp_webrtc_files.json` — RTSP + TSSRT + WebRTC connectors, an HTTP-TS
+  connector (always on in Caudal, so only reported), an RTSP pull source, a single-file
   and a folder source (both become channels), and the legacy `autopushes`
   array form (not auto-upgraded by this importer — see the note it
   produces).
+- `migration_pulls_hooks.json` — a realistic migration: an SRT caller pull,
+  a TS-over-UDP multicast pull, an HLS pull, a blocking `USER_NEW` trigger
+  (`[auth.hook]`), a `PUSH_REWRITE` trigger (`[auth.rewrite]`), an RTMP
+  auto-push, and two pushes with `scheduletime`/`completetime` (a file one
+  that becomes `[[record.schedule]]`, an SRT one written commented out
+  until `[[push.auto]]` has time windows).
+
+The generated `whsec_` secrets are random, so the golden test replaces
+them with `whsec_GENERATED` before comparing.

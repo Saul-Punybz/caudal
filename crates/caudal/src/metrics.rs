@@ -77,6 +77,8 @@ pub fn render(
         let _ = writeln!(out, "caudal_heap_free_bytes {free}");
     }
 
+    render_sessions(&mut out, &registry.sessions().protocol_totals());
+
     if let Some(health) = health {
         let _ = writeln!(out, "# HELP caudal_alerts_active Stream health alerts currently active.");
         let _ = writeln!(out, "# TYPE caudal_alerts_active gauge");
@@ -107,6 +109,21 @@ pub fn render(
     out
 }
 
+/// `caudal_sessions` (open viewer sessions) and `caudal_bytes_out_total`
+/// (media bytes sent to viewers, closed sessions included), per protocol.
+fn render_sessions(out: &mut String, totals: &[caudal_core::ProtocolTotals]) {
+    let _ = writeln!(out, "# HELP caudal_sessions Open viewer sessions, by protocol.");
+    let _ = writeln!(out, "# TYPE caudal_sessions gauge");
+    for t in totals {
+        let _ = writeln!(out, "caudal_sessions{{protocol=\"{}\"}} {}", escape(t.protocol), t.sessions);
+    }
+    let _ = writeln!(out, "# HELP caudal_bytes_out_total Media bytes sent to viewers, by protocol.");
+    let _ = writeln!(out, "# TYPE caudal_bytes_out_total counter");
+    for t in totals {
+        let _ = writeln!(out, "caudal_bytes_out_total{{protocol=\"{}\"}} {}", escape(t.protocol), t.bytes_out);
+    }
+}
+
 /// `caudal_auth_hook_*`: calls to `[auth.hook]` by outcome, requests
 /// answered from its cache, and time spent waiting on it.
 pub fn render_auth_hook(out: &mut String, stats: &caudal_auth::GateHookStats) {
@@ -128,6 +145,50 @@ pub fn render_auth_hook(out: &mut String, stats: &caudal_auth::GateHookStats) {
     let _ = writeln!(out, "# TYPE caudal_auth_hook_wait_seconds_total counter");
     for (action, s) in stats.wait_seconds() {
         let _ = writeln!(out, "caudal_auth_hook_wait_seconds_total{{action=\"{action}\"}} {s}");
+    }
+}
+
+/// `caudal_stream_key_requests_total`: publish/play requests checked
+/// against the stream key table. Labels are the action and the result,
+/// never a key or a stream name.
+pub fn render_stream_keys(out: &mut String, stats: &caudal_auth::StreamKeyStats) {
+    let _ = writeln!(
+        out,
+        "# HELP caudal_stream_key_requests_total Requests checked against the stream keys, by action and result \
+         (hit: came with a key; miss: the name was not a key; refused: the stream takes its key only)."
+    );
+    let _ = writeln!(out, "# TYPE caudal_stream_key_requests_total counter");
+    for m in stats.snapshot() {
+        let _ = writeln!(
+            out,
+            "caudal_stream_key_requests_total{{action=\"{}\",result=\"{}\"}} {}",
+            m.action, m.result, m.count
+        );
+    }
+}
+
+/// `caudal_rewrite_hook_*`: calls to `[auth.rewrite]` by outcome, requests
+/// answered from its cache, and time spent waiting on it.
+pub fn render_rewrite_hook(out: &mut String, stats: &caudal_auth::RewriteHookStats) {
+    let _ =
+        writeln!(out, "# HELP caudal_rewrite_hook_calls_total Calls sent to [auth.rewrite], by action and outcome.");
+    let _ = writeln!(out, "# TYPE caudal_rewrite_hook_calls_total counter");
+    for m in stats.calls() {
+        let _ = writeln!(
+            out,
+            "caudal_rewrite_hook_calls_total{{action=\"{}\",outcome=\"{}\"}} {}",
+            m.action, m.outcome, m.count
+        );
+    }
+    let _ = writeln!(out, "# HELP caudal_rewrite_hook_cached_total Requests answered from the [auth.rewrite] cache.");
+    let _ = writeln!(out, "# TYPE caudal_rewrite_hook_cached_total counter");
+    for (action, n) in stats.cached() {
+        let _ = writeln!(out, "caudal_rewrite_hook_cached_total{{action=\"{action}\"}} {n}");
+    }
+    let _ = writeln!(out, "# HELP caudal_rewrite_hook_wait_seconds_total Time spent waiting on [auth.rewrite].");
+    let _ = writeln!(out, "# TYPE caudal_rewrite_hook_wait_seconds_total counter");
+    for (action, s) in stats.wait_seconds() {
+        let _ = writeln!(out, "caudal_rewrite_hook_wait_seconds_total{{action=\"{action}\"}} {s}");
     }
 }
 
@@ -337,6 +398,34 @@ mod tests {
         // One HELP/TYPE per metric family.
         assert_eq!(out.matches("# TYPE caudal_omt_frames_dropped_total").count(), 1);
         assert_eq!(out.matches("# TYPE caudal_omt_tally").count(), 1);
+    }
+
+    #[test]
+    fn sessions_and_bytes_out_by_protocol_keep_closed_sessions() {
+        let registry = Registry::new();
+        let a = registry.open_session("cam", "srt", None);
+        let b = registry.open_session("cam", "hls", None);
+        a.add_bytes(1316);
+        b.add_bytes(100);
+        let body = render(&registry, None, None);
+        assert!(body.contains("# TYPE caudal_sessions gauge\n"), "{body}");
+        assert!(body.contains("# TYPE caudal_bytes_out_total counter\n"), "{body}");
+        assert!(body.contains("caudal_sessions{protocol=\"srt\"} 1\n"), "{body}");
+        assert!(body.contains("caudal_bytes_out_total{protocol=\"srt\"} 1316\n"), "{body}");
+        assert_eq!(body.matches("# TYPE caudal_sessions").count(), 1);
+
+        drop(a);
+        let body = render(&registry, None, None);
+        assert!(body.contains("caudal_sessions{protocol=\"srt\"} 0\n"), "{body}");
+        assert!(
+            body.contains("caudal_bytes_out_total{protocol=\"srt\"} 1316\n"),
+            "closed session keeps its bytes: {body}"
+        );
+        assert!(body.contains("caudal_sessions{protocol=\"hls\"} 1\n"), "{body}");
+        assert!(body.contains("caudal_bytes_out_total{protocol=\"hls\"} 100\n"), "{body}");
+        drop(b);
+        let body = render(&registry, None, None);
+        assert!(body.contains("caudal_bytes_out_total{protocol=\"hls\"} 100\n"), "{body}");
     }
 
     #[test]

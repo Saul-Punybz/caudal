@@ -30,14 +30,14 @@ One edit runs at a time.
 | `POST /api/v1/pulls` `{"stream": "cam1", "url": "rtsp://10.0.0.5/live"}` | adds a `[[rtsp.pull]]` |
 | `DELETE /api/v1/pulls/{stream}[?url=...]` | removes the stream's pulls (only that url when given) |
 
-A pull can be `rtsp://`/`rtsps://` (`[[rtsp.pull]]`), `srt://` (`[[srt.pull]]`, Caudal calls the listener), `udp://`/`rtp://` (`[[udp.pull]]`, MPEG-TS over UDP), `http://`/`https://` with a path ending in `.m3u8` (`[[hls.pull]]`, an HLS or LL-HLS playlist) or any other `http://`/`https://` (`[[http.pull]]`, MPEG-TS served over HTTP). A stream can have one pull, across all of them. See `docs/PULL-INPUTS.md`.
+A pull can be `rtsp://`/`rtsps://` (`[[rtsp.pull]]`), `srt://` (`[[srt.pull]]`, Caudal calls the listener), `udp://`/`rtp://` (`[[udp.pull]]`, MPEG-TS over UDP), `http://`/`https://` with a path ending in `.m3u8` (`[[hls.pull]]`, an HLS or LL-HLS playlist), any other `http://`/`https://` (`[[http.pull]]`, MPEG-TS served over HTTP) or `rtmp://`/`rtmps://` (`[[rtmp.pull]]`, Caudal plays from a remote RTMP server). A stream can have one pull, across all of them. See `docs/PULL-INPUTS.md`.
 
 ## Pushes
 
 | | |
 |---|---|
 | `GET /api/v1/pushes` | `[{"stream", "url", "section"}]` |
-| `POST /api/v1/pushes` `{"stream": "show", "url": "rtmps://live.example/app/KEY"}` | `rtmp://`/`rtmps://` → `[[restream]]`, `srt://` → `[[srt.push]]`, `udp://`/`rtp://` → `[[udp.push]]` (an IP address) |
+| `POST /api/v1/pushes` `{"stream": "show", "url": "rtmps://live.example/app/KEY"}` | `rtmp://`/`rtmps://` → `[[restream]]`, `srt://` → `[[srt.push]]`, `udp://`/`rtp://` → `[[udp.push]]` (an IP address), `whip://`/`whip+http://` → `[[webrtc.push]]` (optional `"token"` in the body, sent as `Authorization: Bearer`; `docs/WHIP-PUSH.md`) |
 | `DELETE /api/v1/pushes/{stream}[?url=...]` | removes the stream's pushes (only that url when given) |
 
 A push starts when its stream is live and keeps retrying while it is.
@@ -58,7 +58,9 @@ and the URL template, but are not added or removed here. `GET
   config file.
 
 Listings mask secrets: an RTMP stream key shows as `****`, so do SRT
-`passphrase` / `streamid` values and an RTSP camera's password. The file
+`passphrase` / `streamid` values, an RTSP camera's password, an HTTP(S)
+pull's password and query values (a CDN's signed token), and a WHIP URL's
+key-like path segments and query values (a WHIP `token` is never listed). The file
 itself keeps them; protect it like a password (the server keeps its mode).
 
 ## Thumbnails

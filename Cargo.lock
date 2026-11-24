@@ -785,6 +785,7 @@ dependencies = [
  "bytes",
  "caudal-access",
  "caudal-admin",
+ "caudal-audio",
  "caudal-auth",
  "caudal-captions",
  "caudal-channel",
@@ -796,6 +797,7 @@ dependencies = [
  "caudal-hls-pull",
  "caudal-http-pull",
  "caudal-moq",
+ "caudal-mp4",
  "caudal-multicast",
  "caudal-omt",
  "caudal-record",
@@ -814,6 +816,7 @@ dependencies = [
  "dhat",
  "hang",
  "hex",
+ "jiff",
  "jsonwebtoken",
  "libc",
  "maxminddb-writer",
@@ -831,6 +834,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "standardwebhooks",
  "tempfile",
  "time",
  "tokio",
@@ -841,6 +845,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
  "x509-parser",
 ]
 
@@ -881,11 +886,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "caudal-audio"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-core",
+ "caudal-ts",
+ "futures-util",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "caudal-auth"
 version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "caudal-core",
  "ed25519-dalek 2.2.0",
  "http",
  "jsonwebtoken",
@@ -895,7 +915,9 @@ dependencies = [
  "rsa 0.9.10",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "standardwebhooks",
+ "subtle",
  "thiserror 2.0.20",
  "time",
  "tokio",
@@ -1027,11 +1049,15 @@ dependencies = [
  "bytes",
  "caudal-cmaf",
  "caudal-core",
+ "caudal-http-pull",
  "caudal-scte35",
  "caudal-ts",
  "mp4-atom",
+ "roxmltree",
  "rustix",
+ "serde_json",
  "tokio",
+ "tokio-stream",
  "tower",
  "tracing",
  "ureq",
@@ -1042,8 +1068,12 @@ name = "caudal-hls-pull"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
+ "caudal-cmaf",
  "caudal-core",
+ "caudal-hls",
  "caudal-ts",
+ "mp4-atom",
  "parking_lot",
  "reqwest 0.12.28",
  "tempfile",
@@ -1085,6 +1115,21 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "caudal-mp4"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "caudal-cmaf",
+ "caudal-core",
+ "caudal-ts",
+ "futures-util",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -1159,14 +1204,11 @@ dependencies = [
  "caudal-rtmp",
  "parking_lot",
  "rml_rtmp",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
- "tokio-rustls",
  "tower",
  "tracing",
- "webpki-roots 1.0.12",
 ]
 
 [[package]]
@@ -1177,7 +1219,11 @@ dependencies = [
  "bytes",
  "caudal-core",
  "caudal-scte35",
+ "caudal-tls",
  "parking_lot",
+ "rcgen 0.13.2",
+ "rml_rtmp",
+ "rustls",
  "scuffle-aac",
  "scuffle-amf0",
  "scuffle-av1",
@@ -1185,8 +1231,11 @@ dependencies = [
  "scuffle-h264",
  "scuffle-h265",
  "scuffle-rtmp",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
@@ -1332,13 +1381,16 @@ dependencies = [
  "getrandom 0.3.4",
  "if-addrs",
  "mp4-atom",
+ "parking_lot",
  "quinn-udp",
+ "reqwest 0.12.28",
  "scuffle-h264",
  "socket2 0.6.5",
  "str0m",
  "tokio",
  "tracing",
  "ureq",
+ "url",
 ]
 
 [[package]]

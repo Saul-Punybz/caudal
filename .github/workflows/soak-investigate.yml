@@ -12,28 +12,36 @@ on:
 jobs:
   soak:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        # Round 4: the same 70-min churn run, now recording the server's own
-        # memory figures next to RSS (stream buffers alive, glibc heap in
-        # use vs free), with malloc_trim on and off. Round 3 (run
-        # 44957285864, 70 min): glibc + trim +42.6 MB/h (one +35 MB step
-        # at ~37 min, flat before and after), musl + mimalloc +16.3.
+        # Round 5: does RSS plateau? Round 4 (run 44964968157, 70 min):
+        # without trim the live heap and RSS were flat from ~20 min (live
+        # heap -0.33 MB/h from 35 min) and the +8.7 MB/h slope came from
+        # warm-up and churn noise; with trim every 10 s RSS was +42.6 MB/h
+        # (re-faulted pages), so the periodic trim does not help. Here the
+        # runs are long enough to tell a plateau from slow growth, and the
+        # musl entry is the release binary (mimalloc).
+        # Round 3 (run 44957285864, 70 min): glibc + trim +42.6 MB/h (one
+        # +35 MB step at ~37 min), musl + mimalloc +16.3.
         # Round 2 (run 44952665812, 30 min): glibc control +31.1, fixed
         # mmap_threshold +21.1, two arenas +9.0, trim every 10 s -63.8,
         # musl's malloc +723.5. Round 1 (run 44944552859): publisher
         # restarts alone +28.9, viewer batches alone +14.5, mimalloc on
         # glibc +9.6 over 60 min.
         include:
-          - name: glibc-trim-heap-70m
-            minutes: 70
-            features: heap-metrics
-          - name: glibc-notrim-heap-70m
-            minutes: 70
+          - name: glibc-notrim-160m
+            minutes: 160
             features: heap-metrics
             env: CAUDAL_MALLOC_TRIM_SECS=0
+          - name: glibc-notrim-arena2-160m
+            minutes: 160
+            features: heap-metrics
+            env: CAUDAL_MALLOC_TRIM_SECS=0 MALLOC_ARENA_MAX=2
+          - name: musl-mimalloc-160m
+            minutes: 160
+            musl: true
     name: soak ${{ matrix.name }}
     env:
       MINUTES: ${{ matrix.minutes || 30 }}
@@ -77,7 +85,7 @@ jobs:
         run: |
           set -o pipefail
           ulimit -n 65536 || true
-          if [ -n "${{ matrix.env }}" ]; then export "${{ matrix.env }}"; fi
+          if [ -n "${{ matrix.env }}" ]; then export ${{ matrix.env }}; fi
           echo "${{ matrix.name }}: env '${{ matrix.env }}'; $MINUTES min, churn ($CHURN_KIND) every $CHURN_MINUTES min"
           csv="$(python3 bench/soak.py run --minutes "$MINUTES" \
             --churn-minutes "$CHURN_MINUTES" --churn-kind "$CHURN_KIND")"

@@ -3,7 +3,7 @@
 //! smallest correct change per section:
 //!
 //! - **Hot, no restart:** `[[restream]]`, `[[multicast]]`, `[[channel]]`,
-//!   `[[failover]]`, `[[srt.push]]`, `[[push.auto]]`, `[[rtsp.pull]]`, `[[omt.pull]]`,
+//!   `[[failover]]`, `[[srt.push]]`, `[[webrtc.push]]`, `[[push.auto]]`, `[[rtsp.pull]]`, `[[omt.pull]]`,
 //!   `[[omt.output]]` (and `[omt] ffmpeg`) are each their own subsystem with a `reload` that
 //!   diffs by identity — unchanged entries keep their task untouched, so
 //!   a reload never drops an unrelated viewer or publisher. `[auth]` and
@@ -20,13 +20,15 @@
 //!   keeps streaming until it disconnects on its own. Revoking an
 //!   in-progress session needs killing its connection some other way
 //!   (there is no per-session kill switch today).
-//! - **Restarted (this listener only):** `[rtmp]`, `[srt]`'s bind/
+//! - **Restarted (this listener only):** `[rtmp]` (plain and RTMPS
+//!   together), `[srt]`'s bind/
 //!   latency/passphrase, and `[rtsp]`'s server/RTSPS fields each restart
 //!   only their own listener task. Aborting it never drops an
 //!   already-accepted connection: every connection handler is its own
 //!   independently spawned task, not a child of the listener's accept
 //!   loop.
-//! - **`requires_restart`:** `[server]`, `[tls]`, `[webrtc]`, `[moq]`,
+//! - **`requires_restart`:** `[server]`, `[tls]`, `[webrtc]` (not its
+//!   `[[webrtc.push]]`), `[moq]`,
 //!   `[hls]`, `[record]`, `[buffer]`, `[admin]`, `[health]`, `[captions]`, `[cluster]` are wired once at startup into the
 //!   single `axum::Router` passed to `axum::serve`; swapping them without
 //!   restarting the process is out of scope here. A reload reports these
@@ -88,7 +90,7 @@ impl caudal_core::Gate for CombinedGate {
                 caudal_core::Access::Publish => caudal_auth::Action::Publish,
                 caudal_core::Access::Play => caudal_auth::Action::Play,
             };
-            self.auth.check(action, stream, token).await.map_err(|e| match e {
+            self.auth.check_request(action, stream, token, ip).await.map_err(|e| match e {
                 caudal_auth::AuthError::Missing => caudal_core::Denied::Missing,
                 other => caudal_core::Denied::Refused(other.to_string()),
             })?;
@@ -98,6 +100,73 @@ impl caudal_core::Gate for CombinedGate {
             Ok(())
         })
     }
+
+    /// A valid stream key stands in for the token; the network rules and
+    /// `[auth.hook]` still judge the stream (the hook gets no token, so a
+    /// key never reaches it).
+    fn check_keyed<'a>(
+        &'a self,
+        access: caudal_core::Access,
+        stream: &'a str,
+        ip: Option<std::net::IpAddr>,
+    ) -> caudal_core::GateFuture<'a> {
+        Box::pin(async move {
+            if let Err(denied) = self.access.check(access, stream, ip) {
+                tracing::info!(
+                    stream, ip = ?ip, reason = denied.reason, detail = %denied.detail,
+                    action = ?access, "access denied",
+                );
+                return Err(caudal_core::Denied::Refused(denied.to_string()));
+            }
+            if let Some(hook) = &self.hook {
+                let action = match access {
+                    caudal_core::Access::Publish => caudal_auth::Action::Publish,
+                    caudal_core::Access::Play => caudal_auth::Action::Play,
+                };
+                hook.check(action, stream, None, ip).await.map_err(caudal_core::Denied::Refused)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// `[auth.rewrite]` as the core's [`caudal_core::Rewrite`]: asks the
+/// routing service which stream a publish or play really goes to.
+struct RewriteRouter {
+    hook: Arc<caudal_auth::RewriteHook>,
+    /// An edge pulling from this node plays the name its own rewrite
+    /// already produced: a valid inter-node token is never routed again.
+    cluster: Option<caudal_cluster::Secret>,
+}
+
+impl caudal_core::Rewrite for RewriteRouter {
+    fn rewrite<'a>(&'a self, req: caudal_core::RewriteRequest<'a>) -> caudal_core::RewriteFuture<'a> {
+        Box::pin(async move {
+            if req.access == caudal_core::Access::Play
+                && let (Some(secret), Some(t)) = (&self.cluster, req.token)
+                && secret.verify(t).is_some()
+            {
+                return Ok(req.stream.to_owned());
+            }
+            let action = match req.access {
+                caudal_core::Access::Publish => caudal_auth::Action::Publish,
+                caudal_core::Access::Play => caudal_auth::Action::Play,
+            };
+            self.hook
+                .rewrite(action, req.protocol, req.stream, req.token, req.ip)
+                .await
+                .map_err(caudal_core::Denied::Refused)
+        })
+    }
+}
+
+/// The `[auth.hook]`, `[auth.rewrite]` and stream key counters: one set
+/// for the process, so `/metrics` survives reloads of `[auth]`.
+#[derive(Clone, Default)]
+pub struct HookStats {
+    pub gate: Arc<caudal_auth::GateHookStats>,
+    pub rewrite: Arc<caudal_auth::RewriteHookStats>,
+    pub stream_keys: Arc<caudal_auth::StreamKeyStats>,
 }
 
 /// Applies the loaded `[auth]` section to the registry: reinstalls the
@@ -108,7 +177,7 @@ fn apply_auth(
     registry: &Arc<Registry>,
     access: &Arc<caudal_access::Checker>,
     cluster: &Option<caudal_cluster::Secret>,
-    hook_stats: &Arc<caudal_auth::GateHookStats>,
+    hook_stats: &HookStats,
     section: &config::AuthSection,
 ) {
     let auth = section.to_auth_config().expect("validated");
@@ -119,9 +188,9 @@ fn apply_auth(
     }
     let hook = section.hook_config().expect("validated").map(|cfg| {
         let url = cfg.url.clone();
-        match caudal_auth::GateHook::new(cfg, hook_stats.clone()) {
+        match caudal_auth::GateHook::new(cfg, hook_stats.gate.clone()) {
             Ok(h) => {
-                tracing::info!(%url, "auth hook enabled");
+                tracing::info!(url = %caudal_core::net::redact_url(&url), "auth hook enabled");
                 Arc::new(h)
             }
             // Validated already; a failure here is an HTTP client that would
@@ -129,10 +198,39 @@ fn apply_auth(
             // rather than silently skipping it.
             Err(e) => {
                 tracing::error!(error = %e, "auth hook could not start; refusing what it guards");
-                Arc::new(caudal_auth::GateHook::refusing(hook_stats.clone()))
+                Arc::new(caudal_auth::GateHook::refusing(hook_stats.gate.clone()))
             }
         }
     });
+    match section.rewrite_config().expect("validated") {
+        Some(cfg) => {
+            let (url, publish, play) = (cfg.url.clone(), cfg.publish, cfg.play);
+            let hook = match caudal_auth::RewriteHook::new(cfg, hook_stats.rewrite.clone()) {
+                Ok(h) => {
+                    tracing::info!(url = %caudal_core::net::redact_url(&url), publish, play, "rewrite hook enabled");
+                    h
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "rewrite hook could not start; refusing what it routes");
+                    caudal_auth::RewriteHook::refusing(publish, play, hook_stats.rewrite.clone())
+                }
+            };
+            registry.set_rewrite(Arc::new(RewriteRouter { hook: Arc::new(hook), cluster: cluster.clone() }));
+        }
+        None => registry.clear_rewrite(),
+    }
+    let keys = section.stream_keys().expect("validated");
+    if keys.is_empty() {
+        registry.clear_stream_keys();
+    } else {
+        // Counts only, never the keys.
+        tracing::info!(keys = keys.len(), keys_only = section.stream_keys_only, "stream keys enabled");
+        registry.set_stream_keys(Arc::new(caudal_auth::StreamKeyTable::new(
+            &keys,
+            section.stream_keys_only,
+            hook_stats.stream_keys.clone(),
+        )));
+    }
     registry.set_gate(Arc::new(CombinedGate {
         auth: caudal_auth::Authorizer::new(auth),
         access: access.clone(),
@@ -189,10 +287,10 @@ fn apply_hooks(
     }
 }
 
-/// The RTMP listener task, restarted whole when `[rtmp]` changes. The
-/// compare key is simply `old.rtmp != new.rtmp` on the last-applied
-/// `Config` (see `Supervisor::reload`), so there's nothing to keep here
-/// beyond the task itself.
+/// The RTMP listener task, restarted whole when `[rtmp]`'s `bind`, `app` or
+/// `play` changes. The compare key is `RtmpSection::listener_changed` on the
+/// last-applied `Config` (see `Supervisor::reload`; `[[rtmp.pull]]` reloads
+/// on its own), so there's nothing to keep here beyond the task itself.
 struct RtmpListener {
     task: tokio::task::JoinHandle<()>,
 }
@@ -201,11 +299,26 @@ fn spawn_rtmp(
     registry: Arc<Registry>,
     buffer: caudal_core::BufferConfig,
     section: &config::RtmpSection,
+    tls: &config::TlsSection,
 ) -> RtmpListener {
-    let cfg = caudal_rtmp::RtmpConfig { bind: section.bind, app: section.app.clone(), buffer };
-    tracing::info!(bind = %cfg.bind, app = %cfg.app, "starting rtmp listener");
+    let cfg = caudal_rtmp::RtmpConfig { bind: section.bind, app: section.app.clone(), buffer, play: section.play };
+    let rtmps = section.tls_source(tls).expect("validated");
+    tracing::info!(bind = %cfg.bind, app = %cfg.app, play = cfg.play, tls_bind = ?rtmps.as_ref().map(|(b, _)| b), "starting rtmp listener");
     let task = tokio::spawn(async move {
-        match caudal_rtmp::serve(cfg, registry).await {
+        let plain = caudal_rtmp::serve(cfg.clone(), registry.clone());
+        let result = match rtmps {
+            None => plain.await,
+            Some((bind, source)) => {
+                let secure = async {
+                    let acceptor = caudal_tls::tls_acceptor(&source)
+                        .await
+                        .map_err(|e| std::io::Error::new(e.kind(), format!("rtmps tls: {e}")))?;
+                    caudal_rtmp::serve_tls(caudal_rtmp::RtmpConfig { bind, ..cfg }, acceptor, registry).await
+                };
+                tokio::try_join!(plain, secure).map(|_| ())
+            }
+        };
+        match result {
             Ok(()) => tracing::info!("rtmp listener stopped"),
             Err(e) => tracing::error!(error = %e, "rtmp listener failed"),
         }
@@ -320,12 +433,13 @@ pub struct Supervisor {
 
     channel: caudal_channel::ChannelHandle,
     failover: caudal_failover::FailoverHandle,
-    /// Owns the target lists of `[[restream]]`, `[[srt.push]]` and
-    /// `[[multicast]]`/`[[udp.push]]`, plus `[[push.auto]]`'s expansions.
+    /// Owns the target lists of `[[restream]]`, `[[srt.push]]`,
+    /// `[[multicast]]`/`[[udp.push]]` and `[[webrtc.push]]`, plus `[[push.auto]]`'s expansions.
     auto_push: crate::auto_push::AutoPush,
     srt_pull: caudal_srt::PullHandle,
     udp_pull: caudal_udp::UdpPullHandle,
     http_pull: caudal_http_pull::HttpPullHandle,
+    rtmp_pull: caudal_rtmp::RtmpPullHandle,
     hls_pull: caudal_hls_pull::HlsPullHandle,
     rtsp_pull: caudal_rtsp::PullHandle,
     omt: Arc<crate::omt::OmtRuntime>,
@@ -337,9 +451,9 @@ pub struct Supervisor {
     access: Arc<caudal_access::Checker>,
     /// `[cluster]`'s secret, fixed at startup (`[cluster]` needs a restart).
     cluster: Option<caudal_cluster::Secret>,
-    /// `[auth.hook]` counters; one for the process, so `/metrics` survives
-    /// reloads of `[auth]`.
-    hook_stats: Arc<caudal_auth::GateHookStats>,
+    /// `[auth.hook]` and `[auth.rewrite]` counters; one set for the
+    /// process, so `/metrics` survives reloads of `[auth]`.
+    hook_stats: HookStats,
 
     /// The last config a reload was applied against (or the startup
     /// config); also the mutex that serializes concurrent reloads (SIGHUP
@@ -363,8 +477,8 @@ pub struct Started {
     /// For `main::run` to hand to `api::AppState::set_access`, so
     /// `/metrics` can render `caudal_access_denied_total`.
     pub access: Arc<caudal_access::Checker>,
-    /// For `/metrics` (`caudal_auth_hook_*`).
-    pub hook_stats: Arc<caudal_auth::GateHookStats>,
+    /// For `/metrics` (`caudal_auth_hook_*`, `caudal_rewrite_hook_*`).
+    pub hook_stats: HookStats,
     /// For `api::AppState::set_omt`: `/api/v1/omt/sources`, the `omt`
     /// fields of `/api/v1/streams/{name}` and `caudal_omt_*`.
     pub omt: Arc<crate::omt::OmtRuntime>,
@@ -382,17 +496,18 @@ impl Supervisor {
 
         let access = cfg.access.to_access_config().expect("validated").checker().expect("validated");
         let cluster = cfg.cluster.as_ref().map(|c| c.secret().expect("validated"));
-        let hook_stats = Arc::new(caudal_auth::GateHookStats::default());
+        let hook_stats = HookStats::default();
         apply_auth(&registry, &access, &cluster, &hook_stats, &cfg.auth);
         let hooks_task = Mutex::new(None);
         apply_hooks(&registry, &hooks_task, &cfg.hooks);
 
-        let rtmp = Mutex::new(spawn_rtmp(registry.clone(), buffer, &cfg.rtmp));
+        let rtmp = Mutex::new(spawn_rtmp(registry.clone(), buffer, &cfg.rtmp, &cfg.tls));
         let srt_listen = Mutex::new(spawn_srt(registry.clone(), buffer, &cfg.srt));
         let srt_push = caudal_srt::start_pushes(registry.clone(), cfg.srt.push_targets());
         let srt_pull = caudal_srt::start_pulls(registry.clone(), buffer, cfg.srt.pull_targets());
         let udp_pull = caudal_udp::start_pulls(registry.clone(), buffer, cfg.udp.pull_targets());
         let http_pull = caudal_http_pull::start_pulls(registry.clone(), buffer, cfg.http.pull_targets());
+        let rtmp_pull = caudal_rtmp::start_pulls(registry.clone(), buffer, cfg.rtmp.pull_targets());
         let hls_pull = caudal_hls_pull::start_pulls(registry.clone(), buffer, cfg.hls.pull_targets());
         let rtsp_listen = Mutex::new(spawn_rtsp(registry.clone(), buffer, &cfg.rtsp));
         let rtsp_pull = caudal_rtsp::start_pulls(registry.clone(), buffer, cfg.rtsp.pull_targets());
@@ -410,7 +525,7 @@ impl Supervisor {
         let multicast = caudal_multicast::start(registry.clone(), cfg.multicast_targets().expect("validated"));
         let multicast_router = caudal_multicast::router(multicast.clone());
 
-        // From here on the three push engines get their target lists only
+        // From here on the four push engines get their target lists only
         // through `auto_push` (static entries + live `[[push.auto]]` matches).
         let auto_push = crate::auto_push::AutoPush::start(
             registry.clone(),
@@ -418,6 +533,7 @@ impl Supervisor {
             restream.clone(),
             srt_push,
             multicast.clone(),
+            caudal_webrtc::start_pushes(registry.clone(), cfg.webrtc.push_targets()),
         );
 
         let channel = caudal_channel::start(
@@ -453,6 +569,7 @@ impl Supervisor {
             srt_pull,
             udp_pull,
             http_pull,
+            rtmp_pull,
             hls_pull,
             rtsp_pull,
             omt: omt.clone(),
@@ -491,6 +608,12 @@ impl Supervisor {
         self.auto_push.rules()
     }
 
+    /// Overrides `[[push.auto]]` rule `index`'s `enabled` at runtime;
+    /// `false` when there is no such rule.
+    pub fn set_auto_push_enabled(&self, index: usize, enabled: bool) -> bool {
+        self.auto_push.set_enabled(index, enabled)
+    }
+
     pub fn reload(&self, new_cfg: Config) -> Result<ReloadReport, String> {
         new_cfg.validate()?;
 
@@ -500,14 +623,15 @@ impl Supervisor {
         let old = current.clone();
         let mut report = ReloadReport::default();
 
-        // [[restream]], [[srt.push]], [[multicast]], [[udp.push]] and
-        // [[push.auto]] all reach their engines through `auto_push`, which
+        // [[restream]], [[srt.push]], [[multicast]], [[udp.push]],
+        // [[webrtc.push]] and [[push.auto]] all reach their engines through `auto_push`, which
         // diffs by target: unchanged pushes keep running.
         let push_sections = [
             ("restream", old.restream != new_cfg.restream),
             ("srt.push", old.srt.push != new_cfg.srt.push),
             ("multicast", old.multicast != new_cfg.multicast),
             ("udp.push", old.udp.push != new_cfg.udp.push),
+            ("webrtc.push", old.webrtc.push != new_cfg.webrtc.push),
             ("push.auto", old.push != new_cfg.push),
         ];
         if push_sections.iter().any(|(_, changed)| *changed) {
@@ -537,6 +661,10 @@ impl Supervisor {
         if old.http.pull != new_cfg.http.pull {
             self.http_pull.reload(&self.registry, new_cfg.http.pull_targets());
             report.applied.push("http.pull".into());
+        }
+        if old.rtmp.pull != new_cfg.rtmp.pull {
+            self.rtmp_pull.reload(&self.registry, new_cfg.rtmp.pull_targets());
+            report.applied.push("rtmp.pull".into());
         }
         if old.hls.pull != new_cfg.hls.pull {
             self.hls_pull.reload(&self.registry, new_cfg.hls.pull_targets());
@@ -587,7 +715,7 @@ impl Supervisor {
             report.applied.push("hooks".into());
         }
 
-        if old.rtmp != new_cfg.rtmp {
+        if old.rtmp.listener_changed(&new_cfg.rtmp) {
             tracing::info!(
                 old_bind = %old.rtmp.bind, new_bind = %new_cfg.rtmp.bind,
                 old_app = %old.rtmp.app, new_app = %new_cfg.rtmp.app,
@@ -595,7 +723,7 @@ impl Supervisor {
             );
             let mut l = self.rtmp.lock();
             l.task.abort();
-            *l = spawn_rtmp(self.registry.clone(), self.buffer, &new_cfg.rtmp);
+            *l = spawn_rtmp(self.registry.clone(), self.buffer, &new_cfg.rtmp, &new_cfg.tls);
             report.restarted.push("rtmp".into());
         }
         let new_srt_core = srt_core_key(&new_cfg.srt);
@@ -632,7 +760,7 @@ impl Supervisor {
         if old.tls != new_cfg.tls {
             report.requires_restart.push("tls".into());
         }
-        if old.webrtc != new_cfg.webrtc {
+        if old.webrtc.listener_changed(&new_cfg.webrtc) {
             report.requires_restart.push("webrtc".into());
         }
         if old.moq != new_cfg.moq {
@@ -698,6 +826,7 @@ mod tests {
             keys: Some(caudal_auth::KeySource::Secret(secret.into())),
             publish: true,
             play: false,
+            ..Default::default()
         };
         let access = caudal_access::AccessConfig {
             rules: vec![caudal_access::Rule {
@@ -717,6 +846,7 @@ mod tests {
                 secret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw".into(),
                 timeout: std::time::Duration::from_millis(500),
                 on_error: caudal_auth::OnError::Deny,
+                reply: caudal_auth::ReplyMode::Status,
                 publish: true,
                 play: false,
                 allow_cache: std::time::Duration::from_secs(30),
@@ -748,6 +878,66 @@ mod tests {
         assert_eq!(gate.check(Access::Play, "cam", None, ip).await, Ok(()), "play is not guarded here");
     }
 
+    /// A handler moved over from MistServer answers `200 true` / `200
+    /// false`. With `reply = "mistserver"` the registry lets the `true`s
+    /// publish and play and refuses the `false`s (and the empty answers).
+    #[tokio::test]
+    async fn a_mistserver_style_hook_allows_and_denies_through_the_registry() {
+        let app = axum::Router::new().route(
+            "/gate",
+            axum::routing::post(|body: axum::body::Bytes| async move {
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                match v["data"]["stream"].as_str().unwrap() {
+                    "open" => "true\n",
+                    "empty" => "",
+                    _ => "false",
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/gate", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let hook = caudal_auth::GateHook::new(
+            caudal_auth::GateHookConfig {
+                url,
+                secret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw".into(),
+                timeout: std::time::Duration::from_millis(500),
+                on_error: caudal_auth::OnError::Allow,
+                reply: caudal_auth::ReplyMode::MistServer,
+                publish: true,
+                play: true,
+                allow_cache: std::time::Duration::from_secs(30),
+                deny_cache: std::time::Duration::from_secs(5),
+            },
+            Arc::default(),
+        )
+        .unwrap();
+        let gate = CombinedGate {
+            auth: caudal_auth::Authorizer::new(caudal_auth::AuthConfig {
+                keys: None,
+                publish: false,
+                play: false,
+                ..Default::default()
+            }),
+            access: caudal_access::AccessConfig { rules: Vec::new(), geoip_db: None }.checker().unwrap(),
+            cluster: None,
+            hook: Some(Arc::new(hook)),
+        };
+        let reg = caudal_core::Registry::new();
+        reg.set_gate(Arc::new(gate));
+        let ip = Some("198.51.100.4".parse().unwrap());
+        for (access, protocol) in [(Access::Publish, "rtmp"), (Access::Play, "hls")] {
+            assert_eq!(reg.resolve(access, protocol, "open", None, ip).await, Ok("open".into()), "{access:?}");
+            for denied in ["closed", "empty"] {
+                assert!(
+                    matches!(reg.resolve(access, protocol, denied, None, ip).await, Err(Denied::Refused(_))),
+                    "{access:?} {denied}"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn cluster_tokens_may_play_past_auth() {
         let cluster = caudal_cluster::Secret::new("the-cluster-secret").unwrap();
@@ -755,6 +945,7 @@ mod tests {
             keys: Some(caudal_auth::KeySource::Secret("0123456789abcdef0123456789abcdef".into())),
             publish: true,
             play: true,
+            ..Default::default()
         };
         let access = caudal_access::AccessConfig { rules: Vec::new(), geoip_db: None }.checker().unwrap();
         let gate = CombinedGate {
@@ -771,5 +962,56 @@ mod tests {
         let other = caudal_cluster::Secret::new("some-other-secret!").unwrap().mint("edge-1");
         assert!(matches!(gate.check(Access::Play, "cam", Some(&other), None).await, Err(Denied::Refused(_))));
         assert_eq!(gate.check(Access::Play, "cam", None, None).await, Err(Denied::Missing));
+    }
+
+    /// Through `Registry::resolve` with the real gate, from a TOML
+    /// `[auth]`: a key stands in for the token but not for
+    /// `[[access.rules]]`; an `ipa` token plays only from its address.
+    #[tokio::test]
+    async fn stream_keys_and_ipa_through_resolve() {
+        let secret = "0123456789abcdef0123456789abcdef";
+        let cfg: Config = toml::from_str(&format!(
+            "[auth]\nsecret = \"{secret}\"\npublish = true\nplay = true\n\
+             [[auth.stream_keys]]\nkey = \"sk_cam_000111222333\"\nstream = \"cam\"\n\
+             [[access.rules]]\nstreams = [\"cam\"]\npublish_deny = [\"192.0.2.0/24\"]\n"
+        ))
+        .unwrap();
+        cfg.validate().unwrap();
+        let registry = caudal_core::Registry::new();
+        let access = cfg.access.to_access_config().unwrap().checker().unwrap();
+        apply_auth(&registry, &access, &None, &HookStats::default(), &cfg.auth);
+
+        let ok_ip = "198.51.100.4".parse().ok();
+        let blocked_ip = "192.0.2.9".parse().ok();
+        let key = "sk_cam_000111222333";
+        assert_eq!(registry.resolve(Access::Publish, "rtmp", key, None, ok_ip).await, Ok("cam".into()));
+        assert!(matches!(
+            registry.resolve(Access::Publish, "rtmp", key, None, blocked_ip).await,
+            Err(Denied::Refused(_))
+        ));
+        assert_eq!(registry.resolve(Access::Publish, "rtmp", "cam", None, ok_ip).await, Err(Denied::Missing));
+        assert_eq!(
+            registry.resolve(Access::Publish, "rtmp", "sk_cam_000111222334", None, ok_ip).await,
+            Err(Denied::Missing),
+            "a wrong key is a name like any other"
+        );
+
+        let exp = jsonwebtoken::get_current_timestamp() + 600;
+        let ipa = jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &serde_json::json!({ "sub": "cam", "act": "play", "exp": exp, "ipa": "198.51.100.0/24" }),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(registry.resolve(Access::Play, "hls", "cam", Some(&ipa), ok_ip).await, Ok("cam".into()));
+        let elsewhere = "203.0.113.1".parse().ok();
+        assert!(matches!(
+            registry.resolve(Access::Play, "hls", "cam", Some(&ipa), elsewhere).await,
+            Err(Denied::Refused(_))
+        ));
+        assert!(matches!(
+            registry.resolve(Access::Play, "moq", "cam", Some(&ipa), None).await,
+            Err(Denied::Refused(_))
+        ));
     }
 }

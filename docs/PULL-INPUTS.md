@@ -1,7 +1,7 @@
-# Pulling streams in: SRT caller, MPEG-TS over UDP, MPEG-TS over HTTP, HLS
+# Pulling streams in: SRT caller, MPEG-TS over UDP, MPEG-TS over HTTP, HLS, RTMP
 
 Besides receiving publishers (RTMP, SRT listener, WHIP, MoQ) and pulling
-cameras (`[[rtsp.pull]]`), Caudal can go and get a stream four more ways.
+cameras (`[[rtsp.pull]]`), Caudal can go and get a stream five more ways.
 All can be added from the API too (`POST /api/v1/pulls`, see
 `docs/STREAM-API.md`).
 
@@ -20,6 +20,14 @@ connecting in. A dropped connection ends the stream; Caudal reconnects
 (1 s, doubling to 30 s; back to 1 s once data flowed) and publishes it again.
 The URL takes the same `streamid`, `passphrase` and `latency` options as
 `[[srt.push]]`.
+
+**No rendezvous mode.** Pulls and pushes are SRT callers; a URL with
+`mode=rendezvous` (the ffmpeg / `srt-live-transmit` spelling) or
+`mode=listener` is refused when the config loads (and by `POST
+/api/v1/pulls` / `pushes`, which validate the same way). The SRT library Caudal uses
+(`rsrt`, 0.3.6 and 0.4.0 checked) implements caller and listener only and
+drops rendezvous handshakes. Between two sites behind NAT, open one UDP port
+on one side and make the other side the caller.
 
 ## `[[udp.pull]]`: MPEG-TS over UDP, unicast or multicast
 
@@ -94,7 +102,11 @@ video_kbps = 3000
 Some sources serve their transport stream as one endless HTTP response
 instead of sending it: VLC with `#standard{access=http,mux=ts,dst=...}`,
 ffmpeg with `-listen 1 http://...`, encoders and IRDs with an "HTTP TS"
-output, and what MistServer calls an `http-ts://` input.
+output, MistServer's `/{name}.ts`, and what MistServer calls an
+`http-ts://` input. Another Caudal serves exactly this at
+`/ts/{name}.ts` (see [HLS.md](HLS.md#http-ts-one-endless-mpeg-ts-response)),
+so one Caudal can pull a stream from another:
+`url = "http://origin:8080/ts/cam.ts?token=JWT"`.
 
 ```toml
 [[http.pull]]
@@ -130,8 +142,21 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
 - Live: Caudal starts three segments from the newest, as players do, and
   reloads the media playlist every target duration (half of one when
   nothing was new, RFC 8216 §6.3.4). Each segment is fetched once, in
-  media-sequence order, and demuxed with the same code as SRT, UDP and
-  HTTP-TS (H.264, H.265, AAC, MPEG-2, MP2/MP3, SCTE-35).
+  media-sequence order.
+- MPEG-TS segments are demuxed with the same code as SRT, UDP and HTTP-TS
+  (H.264, H.265, AAC, MPEG-2, MP2/MP3, SCTE-35).
+- fMP4/CMAF segments (`EXT-X-MAP` + `.m4s`, what Caudal's own LL-HLS,
+  Apple's LL-HLS examples and most modern packagers write) are read with
+  `caudal_cmaf::demux`: the init segment announces the tracks (H.264,
+  H.265 `hvc1`/`hev1`, AV1, AAC, Opus) when the stream is published, and
+  each segment's `moof`/`mdat` pairs become frames on each track's own
+  timescale (`tfdt`, `trun` durations, sizes, composition offsets and
+  sync flags, with `tfhd`/`trex` defaults). So one Caudal can pull
+  another's `/hls/<stream>/master.m3u8`. A new `EXT-X-MAP` mid-playlist
+  (the source republished with other settings) is fetched, its tracks
+  are announced again, and the timeline is spliced as at a
+  discontinuity. Timed text and metadata tracks in the init segment are
+  left out.
 - LL-HLS playlists are read like plain ones: whole segments only, no
   parts and no blocking reload, so the delay is that of plain HLS (a few
   target durations behind the source).
@@ -140,8 +165,9 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
 - `EXT-X-DISCONTINUITY` (an ad splice, another encoder), and a media
   sequence that starts over (the source restarted), are spliced: the
   frames after it continue the timeline where the previous ones ended, so
-  viewers see one monotonic stream. Codec parameters that change across a
-  discontinuity (a new resolution) are not announced again.
+  viewers see one monotonic stream. With TS segments, codec parameters
+  that change across a discontinuity (a new resolution) are not announced
+  again; with fMP4 they come with the new `EXT-X-MAP`.
 - The stream is published on the first segment: a source that is down
   leaves no empty stream. It ends after three target durations (at least
   4 s) without a new segment; the pull then retries with backoff (1 s,
@@ -150,13 +176,47 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
   most two target durations ahead of real time, so a finished playlist is
   not dumped at once), then the stream ends. Caudal keeps checking the
   playlist and resumes only if it goes live again; it is not replayed.
-- MPEG-TS segments only. fMP4/CMAF segments (`EXT-X-MAP`, what Apple's
-  LL-HLS examples and Caudal's own HLS output use), encrypted segments
-  (`EXT-X-KEY` with a method) and packed-audio segments (`.aac` with ID3)
-  are refused with a log line, retried every 30 s.
+- Encrypted segments (`EXT-X-KEY` with a method), packed-audio segments
+  (`.aac` with ID3), fMP4 segments without an `EXT-X-MAP`, and an init
+  segment with no track Caudal reads are refused with a log line, retried
+  every 30 s. A playlist that switches between TS and fMP4 segments
+  starts a new session (the stream ends and is published again).
 - From the API: `POST /api/v1/pulls` with an `http://` or `https://` URL
   whose path ends in `.m3u8` adds an `[[hls.pull]]`. A playlist at a path
   without `.m3u8` can still be pulled by writing `[[hls.pull]]` by hand.
+
+## `[[rtmp.pull]]`: play a stream from a remote RTMP server
+
+```toml
+[[rtmp.pull]]
+stream = "remote"
+url = "rtmp://203.0.113.7/live/cam1"      # or rtmps://host[:port]/app/key
+```
+
+Caudal connects as a player, the way VLC or ffplay would: `connect` to the
+app, `createStream`, then `play` the last path segment of the URL (anything
+before it is the app, so `rtmp://h/app/_definst_/key` works, and a
+`?token=...` on the key is sent as part of the `play`). This is how
+MistServer's `rtmp://` inputs work: pull from nginx-rtmp, SRS, Wowza,
+another MistServer, or an encoder that serves RTMP.
+
+- What arrives goes through the same FLV demuxer as an RTMP publisher
+  connecting in: H.264, AAC, and Enhanced RTMP H.265 and AV1. `onMetaData`'s
+  frame rate is kept.
+- The stream is published when the first audio or video message arrives:
+  a server without the stream leaves no empty stream. The stream ends when
+  the connection closes, when the server says so (`NetStream.Play.Stop`,
+  `.Complete`, `.UnpublishNotify`), or after 5 s without media; the pull
+  then reconnects with backoff (1 s, doubling to 30 s, back to 1 s once
+  media flowed). `NetStream.Play.StreamNotFound` counts as a failed attempt.
+- `rtmps://` uses the system-independent WebPKI roots (port 443 by
+  default); a server with a self-signed certificate is refused.
+- The stream key never appears in a log line: logs print
+  `rtmp://host/app/****`, like `[[restream]]`.
+- One pull per stream across every pull kind, checked at config load.
+- From the API: `POST /api/v1/pulls` with an `rtmp://` or `rtmps://` URL.
+- Not carried: AMF0 `onCuePoint` SCTE-35 cues (a publisher connecting in
+  keeps them; the client library only surfaces `onMetaData`).
 
 ## Tested with
 
@@ -184,7 +244,30 @@ url = "https://cdn.example/live/master.m3u8"   # a master or a media playlist
   + MP2 (the lower one does not exist): both tracks published. Two
   finished encodes joined by `EXT-X-DISCONTINUITY` with `EXT-X-ENDLIST`:
   played paced, on one monotonic timeline, the stream ends and is not
-  replayed. Not tested: a real CDN, HTTPS, LL-HLS from a real LL-HLS
-  server (only the parser sees `EXT-X-PART`), H.265 segments, a master
-  playlist with alternate audio renditions (`EXT-X-MEDIA`, not used: the
-  variant's own audio is what is pulled).
+  replayed.
+- HLS fMP4, Caudal pulling Caudal: 12 s of H.264 (B-frames) + AAC
+  published into one registry and served by Caudal's own LL-HLS router
+  over a local HTTP listener; `[[hls.pull]]` on its `master.m3u8` into a
+  second registry gets H.264 + AAC with the same codec records and
+  timescales, and every frame with the same decode times, composition
+  offsets, keyframe flags and payloads. ffmpeg's fMP4 HLS (`-f hls
+  -hls_segment_type fmp4`): live H.264 + AAC (frames keep arriving,
+  monotonic, 25 fps on the track's timescale) and finished H.265 (`hvc1`)
+  + Opus (both announced, played to the end). Unit tests cover the box
+  parsing (tfhd/trex defaults, a missing `tfdt`, 2-byte NAL lengths,
+  truncated boxes).
+- Not tested: a real CDN, HTTPS, LL-HLS parts and blocking reload (not
+  used: whole segments only), an fMP4 init change from a real source
+  (only the playlist side is unit-tested), AV1 in fMP4, a master playlist
+  with alternate audio renditions (`EXT-X-MEDIA`, not used: the variant's
+  own audio is what is pulled).
+- Caudal to Caudal: a pull of another registry's `/ts/{name}.ts` publishes
+  H.264 + AAC (`crates/caudal-hls/tests/http_ts.rs`).
+- RTMP: ffmpeg as the RTMP server (`-f flv -listen 1 rtmp://127.0.0.1:PORT/live/cam1`),
+  which answers `connect`/`createStream`/`play` with `NetStream.Play.Start`
+  and sends FLV: H.264 + AAC published (320x240 read from the avcC), frames
+  keep arriving, the stream ends when the server goes away and is
+  republished when it comes back; libx265 over Enhanced RTMP publishes an
+  H.265 track. Not tested: nginx-rtmp, SRS, Wowza, MistServer as the
+  server, `rtmps://`, `NetStream.Play.UnpublishNotify` from a server that
+  keeps the connection open.

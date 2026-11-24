@@ -7,6 +7,9 @@ Every published stream is served as HLS twice, from the same `/hls/` route:
 | LL-HLS (default) | `/hls/{name}/master.m3u8` (media playlist `index.m3u8`) | fMP4/CMAF, 200 ms parts | browsers (hls.js, Safari), iOS/tvOS, Android, current smart TVs |
 | Classic HLS | `/hls/{name}/ts.m3u8` | MPEG-TS (`t{seq}.ts`) | older set-top boxes and smart TVs, IPTV middleware, MPEG-2 / MP2 feeds |
 
+The same CMAF segments are also served as live MPEG-DASH at
+`/hls/{name}/manifest.mpd`; see [DASH.md](DASH.md).
+
 ```toml
 [hls]
 part_ms = 200
@@ -97,3 +100,38 @@ path is the LL-HLS media playlist, so the TS one lives at `ts.m3u8`. A
 player configured with a MistServer TS-HLS URL needs `index.m3u8`
 changed to `ts.m3u8`. MistServer's `SAMPLE-AES` encryption is not
 implemented.
+
+## HTTP-TS: one endless MPEG-TS response
+
+`GET /ts/{name}.ts` serves the live stream as a single chunked
+`video/mp2t` response that never ends while the stream is live: what VLC,
+ffmpeg, IRDs, set-top boxes and playout software open as a plain URL, and
+what another server pulls (another Caudal with `[[http.pull]]`, see
+[PULL-INPUTS.md](PULL-INPUTS.md); MistServer with an `http-ts://` input).
+
+```sh
+ffplay http://caudal:8080/ts/cam.ts
+ffmpeg -i "http://caudal:8080/ts/cam.ts?token=JWT" -c copy cam.ts
+```
+
+- Always on; no config. The same codecs as SRT play and TS-HLS: H.264,
+  H.265, AAC, MPEG-2 video, MP2/MP3, plus SCTE-35 cues on their own PID.
+  Opus has no TS mapping and is dropped.
+- The response starts at the newest keyframe with PAT/PMT first, then
+  runs continuously, with PSI and PCR on the media clock. It ends when the
+  stream ends; a republish is a new request.
+- A slow client never grows memory: at most 32 muxed frames wait for its
+  socket (plus whatever the OS buffers on the connection); behind that the
+  stream's own buffer (`[buffer] window_secs`) moves it forward to the
+  next keyframe. A client that reads nothing for 15 s is disconnected.
+- When the stream ends the response ends with a proper chunked
+  terminator (curl exits 0). `ffmpeg -xerror` reading it live still
+  reports an I/O error at that point: it does so for any endless HTTP
+  body that ends, from any server.
+- Auth and sessions: the same `?token=` / `Authorization: Bearer` and
+  `[auth]` / `[[access.rules]]` decision as every playback route (401
+  without a token where one is required, 403 when refused, 404 for an
+  unknown stream). Each request is one viewer session, protocol `http-ts`,
+  with bytes counted; kicking it closes the response.
+- Compared with MistServer: MistServer serves this at `/{name}.ts`; in
+  Caudal the root belongs to the UI and API, so it lives under `/ts/`.

@@ -18,28 +18,29 @@
 //! Wire format: a POST signed per Standard Webhooks (same as `[hooks]`),
 //! body `{"type": "gate.publish" | "gate.play", "timestamp", "data":
 //! {"stream", "ip", "token"}}`. The token is passed through so the service
-//! can check its own credentials. Answer: any 2xx allows; 401/403 deny
-//! (an optional `{"reason": "..."}` body is logged); anything else, a
-//! timeout or a connection error is a failure, decided by `on_error`.
+//! can check its own credentials. How the answer is read depends on
+//! [`ReplyMode`]:
+//!
+//! - `status` (default): any 2xx allows.
+//! - `mistserver`: a 2xx allows only when its body reads as true under
+//!   MistServer's rule ([`mist_bool`]); `false`, `0`, an empty body or
+//!   anything else denies. This is how a MistServer blocking trigger
+//!   handler answers (`200` with `true`/`false`), so a handler moved over
+//!   from MistServer does not let everyone in by answering `200 false`.
+//!
+//! In both modes 401/403 deny (an optional `{"reason": "..."}` body is
+//! logged); anything else, a timeout or a connection error is a failure,
+//! decided by `on_error`.
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use serde_json::json;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
-use tokio::sync::OnceCell;
 
 use crate::Action;
-
-/// Cached decisions kept before expired ones are swept.
-const SWEEP_AT: usize = 10_000;
-/// Longest denial reason kept from the service's answer (for logs).
-const MAX_REASON: usize = 200;
+use crate::blocking::{FlightCache, Signer, deny_reason, small_body};
 
 /// What to do when the service does not answer in time or answers with
 /// something other than 2xx/401/403.
@@ -49,6 +50,42 @@ pub enum OnError {
     Allow,
 }
 
+/// How a 2xx answer is read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ReplyMode {
+    /// The status decides: any 2xx allows, whatever the body.
+    #[default]
+    Status,
+    /// MistServer's blocking-trigger answer: a 2xx allows only when its
+    /// body is true per [`mist_bool`].
+    MistServer,
+}
+
+/// MistServer's `Util::stringToBool` (`lib/bitfields.cpp:62-73` at the
+/// commit pinned in `docs/research/MISTSERVER-REVERSE.md`), which
+/// `lib/triggers.cpp:291-297` applies to a blocking trigger's answer.
+///
+/// It drops every whitespace byte (C `isspace`: space, `\t`, `\n`, `\v`,
+/// `\f`, `\r`) anywhere in the body, lowercases the first four bytes left,
+/// and is true when those start with `1`, `yes`, `true` or `cont`. So
+/// `TRUE\n`, ` yes`, `1`, `10`, `continue` and `t r u e` are true; `false`,
+/// `0`, `no`, `ok` and an empty body are false.
+pub fn mist_bool(body: &[u8]) -> bool {
+    let mut head = [0u8; 4];
+    let mut n = 0;
+    for &b in body {
+        if n == head.len() {
+            break;
+        }
+        if !matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+            head[n] = b.to_ascii_lowercase();
+            n += 1;
+        }
+    }
+    let head = &head[..n];
+    [&b"1"[..], b"yes", b"true", b"cont"].iter().any(|p| head.starts_with(p))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateHookConfig {
     pub url: String,
@@ -56,6 +93,8 @@ pub struct GateHookConfig {
     pub secret: String,
     pub timeout: Duration,
     pub on_error: OnError,
+    /// How a 2xx answer is read.
+    pub reply: ReplyMode,
     /// Ask on publish.
     pub publish: bool,
     /// Ask on play.
@@ -138,34 +177,24 @@ impl GateHookStats {
     }
 }
 
-type Key = (Action, String, Option<IpAddr>, Option<String>);
-
-struct Entry {
-    created: Instant,
-    cell: Arc<OnceCell<Decision>>,
-}
+/// The reply mode is part of the key so a decision read one way is never
+/// served to a request that would read it the other way.
+type Key = (ReplyMode, Action, String, Option<IpAddr>, Option<String>);
 
 /// The blocking webhook. Cheap to share behind an `Arc`.
 pub struct GateHook {
     cfg: GateHookConfig,
     /// `None`: a hook that could not start and refuses everything.
-    client: Option<(standardwebhooks::Webhook, reqwest::Client)>,
-    cache: Mutex<HashMap<Key, Entry>>,
+    client: Option<Signer>,
+    cache: FlightCache<Key, Decision>,
     stats: Arc<GateHookStats>,
 }
 
 impl GateHook {
     /// `Err` on a secret Standard Webhooks cannot parse.
     pub fn new(cfg: GateHookConfig, stats: Arc<GateHookStats>) -> Result<Self, String> {
-        let webhook = standardwebhooks::Webhook::new(&cfg.secret).map_err(|e| format!("[auth.hook] secret: {e}"))?;
-        let http = reqwest::Client::builder()
-            .timeout(cfg.timeout)
-            .connect_timeout(cfg.timeout)
-            // A redirect would send the token somewhere the config never named.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| format!("[auth.hook] http client: {e}"))?;
-        Ok(Self { cfg, client: Some((webhook, http)), cache: Mutex::new(HashMap::new()), stats })
+        let client = Signer::new("[auth.hook]", &cfg.url, &cfg.secret, cfg.timeout)?;
+        Ok(Self { cfg, client: Some(client), cache: FlightCache::default(), stats })
     }
 
     /// A hook that refuses every publish and play: what the server installs
@@ -176,12 +205,13 @@ impl GateHook {
             secret: String::new(),
             timeout: Duration::from_millis(100),
             on_error: OnError::Deny,
+            reply: ReplyMode::Status,
             publish: true,
             play: true,
             allow_cache: Duration::ZERO,
             deny_cache: Duration::ZERO,
         };
-        Self { cfg, client: None, cache: Mutex::new(HashMap::new()), stats }
+        Self { cfg, client: None, cache: FlightCache::default(), stats }
     }
 
     fn asks(&self, action: Action) -> bool {
@@ -191,15 +221,13 @@ impl GateHook {
         }
     }
 
-    fn fresh(&self, e: &Entry, now: Instant) -> bool {
-        let ttl = match e.cell.get() {
-            None => return true, // in flight: share it
-            Some(Decision::Allow) => self.cfg.allow_cache,
+    fn ttl(&self, d: &Decision) -> Duration {
+        match d {
+            Decision::Allow => self.cfg.allow_cache,
             // Denials and failures (even ones on_error allowed) are asked
             // again sooner, so a recovered service takes over quickly.
-            Some(_) => self.cfg.deny_cache,
-        };
-        now.duration_since(e.created) < ttl
+            _ => self.cfg.deny_cache,
+        }
     }
 
     /// `Ok` to go ahead; `Err(reason)` to refuse.
@@ -216,26 +244,8 @@ impl GateHook {
         if self.client.is_none() {
             return Err("authorization service unavailable".into());
         }
-        let key: Key = (action, stream.to_owned(), ip, token.map(str::to_owned));
-        let now = Instant::now();
-        let (cell, from_cache) = {
-            let mut cache = self.cache.lock();
-            if cache.len() >= SWEEP_AT {
-                cache.retain(|_, e| self.fresh(e, now));
-                if cache.len() >= SWEEP_AT {
-                    // Still full of live entries: start over rather than grow.
-                    cache.clear();
-                }
-            }
-            match cache.get(&key) {
-                Some(e) if self.fresh(e, now) => (e.cell.clone(), e.cell.get().is_some()),
-                _ => {
-                    let cell = Arc::new(OnceCell::new());
-                    cache.insert(key, Entry { created: now, cell: cell.clone() });
-                    (cell, false)
-                }
-            }
-        };
+        let key: Key = (self.cfg.reply, action, stream.to_owned(), ip, token.map(str::to_owned));
+        let (cell, from_cache) = self.cache.cell(key, |d| self.ttl(d));
         if from_cache {
             self.stats.cached[action_index(action)].fetch_add(1, Ordering::Relaxed);
         }
@@ -267,49 +277,51 @@ impl GateHook {
             );
             Decision::Failed(allowed)
         };
-        let timestamp = OffsetDateTime::now_utc();
-        let body = json!({
-            "type": format!("gate.{}", action.as_str()),
-            "timestamp": timestamp.format(&Rfc3339).unwrap_or_default(),
-            "data": { "stream": stream, "ip": ip.map(|i| i.to_string()), "token": token },
-        });
-        let Some((webhook, http)) = &self.client else { return failed("not started") };
-        let Ok(payload) = serde_json::to_vec(&body) else { return failed("serialize") };
-        let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
-        let Ok(signature) = webhook.sign(&msg_id, timestamp.unix_timestamp(), &payload) else {
-            return failed("sign");
-        };
-        let sent = http
-            .post(&self.cfg.url)
-            .header("content-type", "application/json")
-            .header("webhook-id", msg_id.as_str())
-            .header("webhook-timestamp", timestamp.unix_timestamp().to_string())
-            .header("webhook-signature", signature.as_str())
-            .body(payload)
-            .send()
-            .await;
-        let resp = match sent {
+        let Some(client) = &self.client else { return failed("not started") };
+        let data = json!({ "stream": stream, "ip": ip.map(|i| i.to_string()), "token": token });
+        let resp = match client.post(&format!("gate.{}", action.as_str()), data).await {
             Ok(r) => r,
-            Err(e) if e.is_timeout() => return failed("timeout"),
-            Err(_) => return failed("connection"),
+            Err(e) => return failed(e.as_str()),
         };
         let status = resp.status();
         if status.is_success() {
-            return Decision::Allow;
+            if self.cfg.reply == ReplyMode::Status {
+                return Decision::Allow;
+            }
+            let Some(body) = small_body(resp, self.cfg.timeout).await else {
+                return failed("unreadable answer body");
+            };
+            if mist_bool(&body) {
+                return Decision::Allow;
+            }
+            tracing::info!(stream, action = action.as_str(), %status, "auth hook denied (MistServer-style false)");
+            return Decision::Deny("refused by the authorization service".into());
         }
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            let text = tokio::time::timeout(self.cfg.timeout, resp.text()).await.ok().and_then(Result::ok);
-            let reason = text
-                .and_then(|t| {
-                    serde_json::from_str::<serde_json::Value>(&t)
-                        .ok()
-                        .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(str::to_owned))
-                })
-                .map(|r| r.chars().take(MAX_REASON).collect::<String>())
+            let reason = deny_reason(resp, self.cfg.timeout)
+                .await
                 .unwrap_or_else(|| "refused by the authorization service".into());
             tracing::info!(stream, action = action.as_str(), %status, reason, "auth hook denied");
             return Decision::Deny(reason);
         }
         failed(status.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mist_bool;
+
+    #[test]
+    fn mist_bool_matches_mistserver_string_to_bool() {
+        for t in ["true", "TRUE\n", " yes", "Yes please", "1", "10", "cont", "continue", "t r u e", "\r\n\x0btrue"] {
+            assert!(mist_bool(t.as_bytes()), "{t:?} is true");
+        }
+        for f in ["", " \n", "false", "0", "no", "ok", "y", "tru", "yeah", "allow", "\0true", "on", "-1"] {
+            assert!(!mist_bool(f.as_bytes()), "{f:?} is false");
+        }
+        // Only the first four non-whitespace bytes are looked at.
+        assert!(mist_bool(b"truefalse"));
+        assert!(!mist_bool(b"\xc3\xa9true"));
     }
 }

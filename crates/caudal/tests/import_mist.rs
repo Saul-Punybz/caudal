@@ -29,8 +29,17 @@ fn run_import(json_name: &str) -> (String, String, PathBuf, tempfile::TempDir) {
     assert!(output.status.success(), "import-mist failed: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     let report = stdout.split_once('\n').map(|(_, rest)| rest).unwrap_or("").to_string();
-    let toml = std::fs::read_to_string(&out).unwrap();
+    let toml = mask_secrets(&std::fs::read_to_string(&out).unwrap());
     (report, toml, out, dir)
+}
+
+/// The importer generates a fresh `whsec_` secret per hook; mask it so
+/// the golden file is stable.
+fn mask_secrets(toml: &str) -> String {
+    toml.lines()
+        .map(|l| if l.starts_with("secret = \"whsec_") { "secret = \"whsec_GENERATED\"" } else { l })
+        .map(|l| format!("{l}\n"))
+        .collect()
 }
 
 fn assert_golden(actual: &str, golden_path: &Path) {
@@ -66,12 +75,39 @@ fn rtsp_webrtc_files_golden() {
     golden_case("rtsp_webrtc_files.json");
 }
 
+/// The migration case: SRT caller, TS-UDP and HLS pulls, a blocking
+/// `USER_NEW` trigger, a `PUSH_REWRITE` trigger and scheduled auto-pushes.
+#[test]
+fn migration_pulls_hooks_golden() {
+    golden_case("migration_pulls_hooks.json");
+}
+
+#[test]
+fn migration_pulls_hooks_maps_each_feature() {
+    let (_, toml, ..) = run_import("migration_pulls_hooks.json");
+    for expected in [
+        "[[srt.pull]]\nstream = \"venue\"\nurl = \"srt://203.0.113.7:9000?streamid=play/main&latency=200\"",
+        "[[udp.pull]]\nstream = \"catv\"\nurl = \"udp://239.1.1.1:5000\"",
+        "[[hls.pull]]\nstream = \"news\"\nurl = \"https://cdn.example.com/live/news/index.m3u8\"",
+        "[auth.hook]\nurl = \"https://auth.example.com/mist/user_new\"\nsecret = \"whsec_GENERATED\"\nreply = \"mistserver\"\non_error = \"deny\"\npublish = false\nplay = true",
+        "[auth.rewrite]\nurl = \"https://auth.example.com/mist/push_rewrite\"\nsecret = \"whsec_GENERATED\"\non_error = \"deny\"\npublish = true\nplay = false",
+        "[[push.auto]]\nstreams = [\"studio\"]\nurl = \"rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx\"",
+        "[[record.schedule]]\nstreams = [\"studio\"]\nstart = \"2026-12-24T22:00:00Z\"\nduration_secs = 10800",
+        "[[push.auto]]\nstreams = [\"venue\"]",
+        "start = \"2026-12-24T22:00:00Z\"\nstop = \"2026-12-25T01:00:00Z\"",
+    ] {
+        assert!(toml.contains(expected), "missing {expected:?} in:\n{toml}");
+    }
+}
+
 /// Every fixture's generated `caudal.toml` must pass `caudal check` too —
 /// the same validation `import-mist` already ran on itself before writing
 /// the file, checked again here through the actual `check` subcommand.
 #[test]
 fn every_fixture_output_passes_caudal_check() {
-    for json_name in ["basic_rtmp_hls.json", "push_and_record.json", "rtsp_webrtc_files.json"] {
+    for json_name in
+        ["basic_rtmp_hls.json", "push_and_record.json", "rtsp_webrtc_files.json", "migration_pulls_hooks.json"]
+    {
         let (_, _, out_path, _dir) = run_import(json_name);
         let check =
             Command::new(env!("CARGO_BIN_EXE_caudal")).arg("check").arg(&out_path).output().expect("run caudal check");

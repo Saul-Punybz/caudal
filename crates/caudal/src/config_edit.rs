@@ -31,12 +31,16 @@ pub enum Kind {
     UdpPull,
     /// `[[http.pull]]`: Caudal GETs MPEG-TS served over HTTP(S).
     HttpPull,
+    /// `[[rtmp.pull]]`: Caudal plays a stream from a remote RTMP(S) server.
+    RtmpPull,
     /// `[[hls.pull]]`: Caudal polls an HLS playlist and fetches its segments.
     HlsPull,
     /// `[[udp.push]]`: Caudal sends MPEG-TS over UDP (or RTP) to a receiver.
     UdpPush,
     /// `[[restream]]`: Caudal pushes the stream over RTMP(S).
     Restream,
+    /// `[[webrtc.push]]`: Caudal pushes the stream to a WHIP endpoint.
+    WhipPush,
 }
 
 impl Kind {
@@ -47,9 +51,11 @@ impl Kind {
             Kind::SrtPull => &["srt", "pull"],
             Kind::UdpPull => &["udp", "pull"],
             Kind::HttpPull => &["http", "pull"],
+            Kind::RtmpPull => &["rtmp", "pull"],
             Kind::HlsPull => &["hls", "pull"],
             Kind::UdpPush => &["udp", "push"],
             Kind::Restream => &["restream"],
+            Kind::WhipPush => &["webrtc", "push"],
         }
     }
 
@@ -61,9 +67,11 @@ impl Kind {
             Kind::SrtPull => "[[srt.pull]]",
             Kind::UdpPull => "[[udp.pull]]",
             Kind::HttpPull => "[[http.pull]]",
+            Kind::RtmpPull => "[[rtmp.pull]]",
             Kind::HlsPull => "[[hls.pull]]",
             Kind::UdpPush => "[[udp.push]]",
             Kind::Restream => "[[restream]]",
+            Kind::WhipPush => "[[webrtc.push]]",
         }
     }
 
@@ -75,8 +83,10 @@ impl Kind {
             Some("udp" | "rtp") => Ok(Kind::UdpPull),
             Some("http" | "https") if caudal_hls_pull::is_playlist_url(url) => Ok(Kind::HlsPull),
             Some("http" | "https") => Ok(Kind::HttpPull),
+            Some("rtmp" | "rtmps") => Ok(Kind::RtmpPull),
             _ => Err(format!(
-                "pull url {url:?}: expected rtsp://, rtsps://, srt://, udp://, rtp://, http:// or https://"
+                "pull url {url:?}: expected rtsp://, rtsps://, srt://, udp://, rtp://, http://, https://, rtmp:// \
+                 or rtmps://"
             )),
         }
     }
@@ -87,12 +97,19 @@ impl Kind {
             Some("rtmp" | "rtmps") => Ok(Kind::Restream),
             Some("srt") => Ok(Kind::SrtPush),
             Some("udp" | "rtp") => Ok(Kind::UdpPush),
-            _ => Err(format!("push url {url:?}: expected rtmp://, rtmps://, srt://, udp:// or rtp://")),
+            // Plain https:// is ambiguous here; `[[webrtc.push]]` in the
+            // file takes it.
+            Some("whip" | "whip+http") => Ok(Kind::WhipPush),
+            _ => Err(format!(
+                "push url {:?}: expected rtmp://, rtmps://, srt://, udp://, rtp://, whip:// or whip+http://",
+                redact(url)
+            )),
         }
     }
 
-    pub const PULLS: [Kind; 5] = [Kind::RtspPull, Kind::SrtPull, Kind::UdpPull, Kind::HttpPull, Kind::HlsPull];
-    pub const PUSHES: [Kind; 3] = [Kind::SrtPush, Kind::UdpPush, Kind::Restream];
+    pub const PULLS: [Kind; 6] =
+        [Kind::RtspPull, Kind::SrtPull, Kind::UdpPull, Kind::HttpPull, Kind::HlsPull, Kind::RtmpPull];
+    pub const PUSHES: [Kind; 4] = [Kind::SrtPush, Kind::UdpPush, Kind::Restream, Kind::WhipPush];
 }
 
 fn scheme(url: &str) -> Option<&str> {
@@ -109,9 +126,15 @@ pub struct EntryJson {
 
 /// `url` with its secrets masked, for listing: an RTMP stream key (the last
 /// path segment, as `caudal-restream` shows it), SRT `passphrase` /
-/// `streamid` values, and the password of an RTSP camera's `user:pass@`.
+/// `streamid` values, the password of an RTSP camera's `user:pass@`, and
+/// for a WHIP URL its user info, query values and any path segment long
+/// enough to be a key (see `caudal_webrtc::redact_whip_url`), and for an
+/// HTTP(S) pull (`[[http.pull]]`, `[[hls.pull]]`) its password and query
+/// values (a CDN's signed token).
 pub fn redact(url: &str) -> String {
     match url.split_once("://") {
+        Some(("whip" | "whip+http", _)) => caudal_webrtc::redact_whip_url(url),
+        Some(("http" | "https", _)) => caudal_core::net::redact_url(url),
         Some(("rtmp" | "rtmps", rest)) => match rest.rsplit_once('/') {
             Some((head, key)) if !key.is_empty() && head.contains('/') => {
                 format!("{}://{head}/****", url.split_once("://").unwrap().0)
@@ -156,11 +179,15 @@ pub fn list(cfg: &Config, kinds: &[Kind]) -> Vec<EntryJson> {
             Kind::SrtPull => cfg.srt.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::UdpPull => cfg.udp.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::HttpPull => cfg.http.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
+            Kind::RtmpPull => cfg.rtmp.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::HlsPull => cfg.hls.pull.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::UdpPush => cfg.udp.push.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
             Kind::Restream => cfg.restream.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
+            Kind::WhipPush => cfg.webrtc.push.iter().map(|e| (e.stream.clone(), e.url.clone())).collect(),
         };
-        v.extend(pairs.into_iter().map(|(stream, url)| EntryJson { stream, url: redact(&url), section: k.section() }));
+        // A WHIP endpoint may be https://, which `redact` leaves alone.
+        let mask = |u: &str| if k == Kind::WhipPush { caudal_webrtc::redact_whip_url(u) } else { redact(u) };
+        v.extend(pairs.into_iter().map(|(stream, url)| EntryJson { stream, url: mask(&url), section: k.section() }));
     }
     v
 }
@@ -216,6 +243,14 @@ fn field<'a>(t: &'a Table, key: &str) -> Option<&'a str> {
 /// `text` with `{ stream, url }` appended to `kind`. An identical entry is
 /// a conflict, not a second copy.
 pub fn add(text: &str, kind: Kind, stream: &str, url: &str) -> Result<String, EditError> {
+    add_with(text, kind, stream, url, None)
+}
+
+/// [`add`], plus a `token` key (`[[webrtc.push]]` only; refused elsewhere).
+pub fn add_with(text: &str, kind: Kind, stream: &str, url: &str, token: Option<&str>) -> Result<String, EditError> {
+    if token.is_some() && kind != Kind::WhipPush {
+        return Err(EditError::Invalid(format!("`token` only applies to {}", Kind::WhipPush.section())));
+    }
     let mut doc: DocumentMut = text.parse().map_err(|e| EditError::Invalid(format!("config file: {e}")))?;
     let arr = array(&mut doc, kind, true).map_err(EditError::Invalid)?.expect("created");
     if arr.iter().any(|t| field(t, "stream") == Some(stream) && field(t, "url") == Some(url)) {
@@ -224,6 +259,9 @@ pub fn add(text: &str, kind: Kind, stream: &str, url: &str) -> Result<String, Ed
     let mut t = Table::new();
     t.insert("stream", value(stream));
     t.insert("url", value(url));
+    if let Some(tok) = token {
+        t.insert("token", value(tok));
+    }
     arr.push(t);
     Ok(doc.to_string())
 }
@@ -252,7 +290,8 @@ pub enum EditError {
 
 /// Parses and validates `text` as a whole config.
 pub fn check(text: &str) -> Result<Config, String> {
-    let cfg: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+    let mut cfg: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+    cfg.read_external()?;
     cfg.validate()?;
     Ok(cfg)
 }
@@ -332,6 +371,31 @@ mod tests {
         assert_eq!(redact("srt://h:9000"), "srt://h:9000");
         assert_eq!(redact("rtsp://admin:s3cret@10.0.0.5:554/live"), "rtsp://admin:****@10.0.0.5:554/live");
         assert_eq!(redact("rtsp://10.0.0.5/live"), "rtsp://10.0.0.5/live");
+        assert_eq!(
+            redact("https://cdn.example/live/index.m3u8?token=SIGNED&exp=9"),
+            "https://cdn.example/live/index.m3u8?token=****&exp=****"
+        );
+        assert_eq!(redact("http://u:pw@10.0.0.5:8080/stream.ts"), "http://u:****@10.0.0.5:8080/stream.ts");
+        assert_eq!(
+            redact("whip://customer-a.cloudflarestream.com/0123456789abcdef0123456789abcdef/webRTC/publish"),
+            "whip://customer-a.cloudflarestream.com/****/webRTC/publish"
+        );
+    }
+
+    #[test]
+    fn whip_pushes_keep_their_token_out_of_listings() {
+        let out =
+            add_with("", Kind::WhipPush, "show", "https://h.example/whip/0123456789abcdef0123", Some("tok3n")).unwrap();
+        let cfg = check(&out).unwrap();
+        assert_eq!(cfg.webrtc.push[0].token.as_deref(), Some("tok3n"));
+        let rows = list(&cfg, &Kind::PUSHES);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].url, "https://h.example/whip/****");
+        assert_eq!(rows[0].section, "[[webrtc.push]]");
+        assert!(!serde_json::to_string(&rows).unwrap().contains("tok3n"));
+        assert!(matches!(add_with("", Kind::SrtPush, "a", "srt://h:1", Some("x")), Err(EditError::Invalid(_))));
+        let (gone, _) = remove(&out, Kind::WhipPush, "show", None).unwrap();
+        assert!(check(&gone).unwrap().webrtc.push.is_empty());
     }
 
     #[test]
@@ -343,6 +407,8 @@ mod tests {
         assert_eq!(Kind::for_pull("rtp://:5004"), Ok(Kind::UdpPull));
         assert_eq!(Kind::for_pull("http://10.0.0.5:8080/stream.ts"), Ok(Kind::HttpPull));
         assert_eq!(Kind::for_pull("https://encoder.example/live"), Ok(Kind::HttpPull));
+        assert_eq!(Kind::for_pull("rtmp://10.0.0.5/live/cam1"), Ok(Kind::RtmpPull));
+        assert_eq!(Kind::for_pull("rtmps://live.example/app/KEY"), Ok(Kind::RtmpPull));
         assert_eq!(Kind::for_pull("https://cdn.example/live/index.m3u8"), Ok(Kind::HlsPull));
         assert_eq!(Kind::for_pull("http://h/Master.M3U8?token=x"), Ok(Kind::HlsPull));
         assert_eq!(Kind::for_pull("http://h/stream.ts?list=a.m3u8"), Ok(Kind::HttpPull), "the path decides");
@@ -350,6 +416,8 @@ mod tests {
         assert_eq!(Kind::for_push("srt://h:1"), Ok(Kind::SrtPush));
         assert_eq!(Kind::for_push("udp://10.0.0.20:5000"), Ok(Kind::UdpPush));
         assert_eq!(Kind::for_push("rtp://10.0.0.20:5004"), Ok(Kind::UdpPush));
+        assert_eq!(Kind::for_push("whip://h/whip/a"), Ok(Kind::WhipPush));
+        assert_eq!(Kind::for_push("whip+http://h:8080/whip/a"), Ok(Kind::WhipPush));
         assert!(Kind::for_push("http://h:1").is_err());
     }
 

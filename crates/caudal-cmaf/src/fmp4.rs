@@ -6,9 +6,9 @@
 use bytes::Bytes;
 use caudal_core::{Codec, TrackInfo, TrackKind};
 use mp4_atom::{
-    Atom, Audio, Avc1, Avcc, Dinf, Dops, Dref, Encode, Esds, Ftyp, Hdlr, Hvc1, Hvcc, Mdhd, Mdia, Mfhd, Minf, Moof,
-    Moov, Mp4a, Mvex, Mvhd, Opus, Smhd, Stbl, Stco, Stsd, Tfdt, Tfhd, Tkhd, Traf, Trak, Trex, Trun, TrunEntry, Url,
-    Visual, Vmhd, esds,
+    Atom, Audio, Avc1, Avcc, Decode, Dinf, Dops, Dref, Encode, Esds, Ftyp, Hdlr, Hvc1, Hvcc, Mdhd, Mdia, Mfhd, Minf,
+    Moof, Moov, Mp4a, Mvex, Mvhd, Opus, Smhd, Stbl, Stco, Stsd, Tfdt, Tfhd, Tkhd, Traf, Trak, Trex, Trun, TrunEntry,
+    Url, Visual, Vmhd, esds,
 };
 
 /// `sample_depends_on = 2` (does not depend on others): a sync sample.
@@ -261,4 +261,110 @@ pub fn fragment(sequence: u32, runs: &[Run<'_>]) -> Bytes {
         out.extend_from_slice(&s.data);
     }
     out.into()
+}
+
+/// One track out of muxed fragments: for every `moof` + `mdat` pair in
+/// `data` (as [`fragment`] writes them, possibly several back to back), a
+/// `moof` holding only `track_id`'s `traf` (data offset fixed up) and an
+/// `mdat` holding only its samples. Pairs without a run for the track are
+/// left out. `None` when `data` is not a sequence of such pairs.
+///
+/// MPEG-DASH players want one media type per Representation, while the
+/// LL-HLS segments carry video and audio together; this turns one stored
+/// segment into either view without storing it twice.
+pub fn extract_track(data: &[u8], track_id: u32) -> Option<Bytes> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut at = 0usize;
+    let header = |at: usize| -> Option<(usize, [u8; 4])> {
+        let h = data.get(at..at + 8)?;
+        let size = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as usize;
+        (size >= 8 && at + size <= data.len()).then(|| (size, [h[4], h[5], h[6], h[7]]))
+    };
+    while at < data.len() {
+        let (moof_size, kind) = header(at)?;
+        if &kind != b"moof" {
+            return None;
+        }
+        let moof_start = at;
+        let mut moof = Moof::decode(&mut &data[at..at + moof_size]).ok()?;
+        at += moof_size;
+        let (mdat_size, kind) = header(at)?;
+        if &kind != b"mdat" {
+            return None;
+        }
+        at += mdat_size;
+        let Some(mut traf) = moof.traf.drain(..).find(|t| t.tfhd.track_id == track_id) else { continue };
+        if traf.trun.len() != 1 {
+            return None;
+        }
+        let run = &traf.trun[0];
+        let len: usize = run.entries.iter().map(|e| e.size.map(|s| s as usize)).sum::<Option<usize>>()?;
+        let from = moof_start.checked_add_signed(run.data_offset? as isize)?;
+        let payload = data.get(from..from.checked_add(len)?)?;
+        traf.trun[0].data_offset = Some(0);
+        let mut one = Moof { mfhd: moof.mfhd.clone(), traf: vec![traf] };
+        let mut probe = Vec::new();
+        one.encode(&mut probe).ok()?;
+        one.traf[0].trun[0].data_offset = Some(probe.len() as i32 + 8);
+        let before = out.len();
+        one.encode(&mut out).ok()?;
+        debug_assert_eq!(out.len() - before, probe.len());
+        out.extend_from_slice(&((len + 8) as u32).to_be_bytes());
+        out.extend_from_slice(b"mdat");
+        out.extend_from_slice(payload);
+    }
+    Some(out.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn samples(base: i64, n: usize, byte: u8) -> Vec<Sample> {
+        (0..n)
+            .map(|i| Sample {
+                dts: base + i as i64 * 10,
+                cts: 0,
+                dur: 10,
+                key: i == 0,
+                data: Bytes::from(vec![byte; 3 + i]),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn extract_track_keeps_one_run_per_fragment() {
+        let (v1, a1, v2) = (samples(0, 3, 0x11), samples(5, 2, 0xa1), samples(30, 2, 0x22));
+        let mut data = fragment(1, &[Run { track_id: 1, samples: &v1 }, Run { track_id: 2, samples: &a1 }]).to_vec();
+        // A second fragment with no audio run at all.
+        data.extend_from_slice(&fragment(2, &[Run { track_id: 1, samples: &v2 }, Run { track_id: 2, samples: &[] }]));
+
+        let audio = extract_track(&data, 2).unwrap();
+        let mut buf = &audio[..];
+        let moof = Moof::decode(&mut buf).unwrap();
+        assert_eq!(moof.traf.len(), 1);
+        assert_eq!(moof.traf[0].tfhd.track_id, 2);
+        assert_eq!(moof.traf[0].tfdt.as_ref().unwrap().base_media_decode_time, 5);
+        let mdat = mp4_atom::Mdat::decode(&mut buf).unwrap();
+        assert_eq!(mdat.data, [vec![0xa1; 3], vec![0xa1; 4]].concat());
+        assert!(buf.is_empty(), "the audio-less fragment is left out");
+        let off = moof.traf[0].trun[0].data_offset.unwrap() as usize;
+        assert_eq!(&audio[off..off + 3], &[0xa1; 3]);
+
+        let video = extract_track(&data, 1).unwrap();
+        let mut buf = &video[..];
+        let mut seqs = Vec::new();
+        let mut payload = Vec::new();
+        while !buf.is_empty() {
+            let m = Moof::decode(&mut buf).unwrap();
+            assert_eq!(m.traf.len(), 1);
+            seqs.push(m.mfhd.sequence_number);
+            payload.extend(mp4_atom::Mdat::decode(&mut buf).unwrap().data);
+        }
+        assert_eq!(seqs, [1, 2]);
+        let want: Vec<u8> = v1.iter().chain(&v2).flat_map(|s| s.data.to_vec()).collect();
+        assert_eq!(payload, want);
+
+        assert!(extract_track(b"garbage!", 1).is_none());
+    }
 }

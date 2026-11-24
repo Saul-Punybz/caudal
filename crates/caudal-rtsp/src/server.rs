@@ -129,7 +129,10 @@ impl Drop for SetupTransport {
 
 struct ConnState {
     session_id: Option<String>,
+    /// The name in the request URI (what SETUP and PLAY must repeat).
     stream_name: Option<String>,
+    /// The stream actually served: `stream_name` after the rewrite hook.
+    play_name: Option<String>,
     stream: Option<Arc<caudal_core::Stream>>,
     tracks: Vec<TrackInfo>,
     setups: HashMap<TrackId, SetupTransport>,
@@ -159,6 +162,7 @@ impl ConnState {
         Self {
             session_id: None,
             stream_name: None,
+            play_name: None,
             stream: None,
             tracks: Vec::new(),
             setups: HashMap::new(),
@@ -416,16 +420,18 @@ async fn handle_describe(req: &Request<Vec<u8>>, registry: &Arc<Registry>, state
     let Some((name, _segments, token)) = parse_uri(req) else {
         return simple(StatusCode::BadRequest);
     };
-    if let Err(d) = registry.authorize(Access::Play, &name, token.as_deref(), Some(state.peer_ip)).await {
-        return denied(d);
-    }
+    let play_name = match registry.resolve(Access::Play, "rtsp", &name, token.as_deref(), Some(state.peer_ip)).await {
+        Ok(n) => n,
+        Err(d) => return denied(d),
+    };
     // `get_or_demand`: on a cluster edge, the first viewer starts the pull.
-    let Some(stream) = registry.get_or_demand(&name).await else {
+    let Some(stream) = registry.get_or_demand(&play_name).await else {
         return simple(StatusCode::NotFound);
     };
     let tracks = stream.tracks();
 
     state.stream_name = Some(name.clone());
+    state.play_name = Some(play_name);
     state.stream = Some(stream);
     state.tracks = tracks.clone();
 
@@ -590,11 +596,16 @@ async fn handle_play(
     if state.setups.is_empty() {
         return simple(StatusCode::MethodNotValidInThisState);
     }
-    let Some(stream_name) = state.stream_name.clone() else {
+    // The served name, already rewritten at DESCRIBE: asking the gate
+    // again (a token can expire between the two) but not the rewrite hook.
+    let Some(stream_name) = state.play_name.clone() else {
         return simple(StatusCode::MethodNotValidInThisState);
     };
     let token = parse_uri(req).and_then(|(_, _, t)| t);
-    if let Err(d) = registry.authorize(Access::Play, &stream_name, token.as_deref(), Some(state.peer_ip)).await {
+    let requested = state.stream_name.clone().unwrap_or_else(|| stream_name.clone());
+    if let Err(d) =
+        registry.recheck(Access::Play, &requested, &stream_name, token.as_deref(), Some(state.peer_ip)).await
+    {
         return denied(d);
     }
     let Some(stream) = state.stream.clone() else {

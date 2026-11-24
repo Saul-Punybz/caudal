@@ -26,6 +26,8 @@ heap-metrics = []
 caudal-core.workspace = true
 caudal-rtmp.workspace = true
 caudal-hls.workspace = true
+caudal-audio.workspace = true
+caudal-mp4.workspace = true
 caudal-srt.workspace = true
 caudal-ui.workspace = true
 caudal-tls.workspace = true
@@ -33,6 +35,8 @@ caudal-auth.workspace = true
 caudal-webrtc.workspace = true
 caudal-moq.workspace = true
 caudal-record.workspace = true
+# `[[push.auto]]` schedules: instants from caudal-record's timetables.
+jiff = "0.2"
 caudal-rtsp.workspace = true
 caudal-channel.workspace = true
 caudal-restream.workspace = true
@@ -83,12 +87,16 @@ toml_edit = "0.25"
 tempfile = "3"
 
 [dev-dependencies]
+# Paused clock for the [[push.auto]] schedule tests.
+tokio = { version = "1", features = ["full", "test-util"] }
 jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
 rcgen = "0.14"
 time = "0.3"
 serde_json.workspace = true
 tower = { version = "0.5", features = ["util"] }
 hex = "=0.4.3"
+# Verifies the signature on [auth.rewrite] calls in rewrite_e2e.rs.
+standardwebhooks = "1"
 # Builds a tiny in-memory .mmdb for the [access] geoip_db config test.
 maxminddb-writer = "0.1"
 # In-process MoQ "encoder" for the ingest e2e test (no publisher CLI ships
@@ -104,10 +112,12 @@ mp4-atom = "0.15.0"
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
-
-[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
-# `malloc_trim` (src/malloc_trim.rs).
+# `process_*` metrics (sysconf, getrusage, proc_pidinfo); already in the tree.
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# `process_*` metrics (GetProcessTimes, GetProcessMemoryInfo); already in the tree.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 # The global allocator on musl (see main.rs).

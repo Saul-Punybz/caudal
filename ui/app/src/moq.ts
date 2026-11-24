@@ -35,3 +35,17 @@ export function buildMoqUrl(relayUrl: string, token?: string): URL {
   if (token) url.searchParams.set('jwt', token);
   return url;
 }
+
+/**
+ * Rejects with `"<what> did not finish in <ms> ms"` if `promise` has not
+ * settled by then. The player awaits a lazily loaded module before it can
+ * connect; without a bound, a load that never settles leaves the page on
+ * "Connecting…" forever with nothing in the console.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not finish in ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}

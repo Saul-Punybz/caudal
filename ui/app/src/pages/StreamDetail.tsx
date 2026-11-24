@@ -8,10 +8,11 @@ import { Player, type AuthErrorKind } from '../components/Player';
 import { WebRtcPlayer } from '../components/WebRtcPlayer';
 import { MoqPlayer } from '../components/MoqPlayer';
 import { CopyRow } from '../components/CopyRow';
+import { ViewersPanel } from '../components/ViewersPanel';
 import { ErrorBanner, ErrorState } from '../components/ErrorState';
 import { formatCount, formatSeconds, summarizeTrack } from '../format';
 
-type Tab = 'outputs' | 'tracks' | 'health';
+type Tab = 'outputs' | 'tracks' | 'viewers' | 'health';
 type PlaybackMode = 'hls' | 'webrtc' | 'moq';
 
 export function StreamDetail() {
@@ -113,6 +114,9 @@ export function StreamDetail() {
               mode={mode}
               moqDisabled={!moqSupported}
               onChange={(m) => {
+                // Paired with MoqPlayer's `[moq-ui]` step lines: a MoQ run
+                // that never connects first says whether the switch happened.
+                console.debug(`[moq-ui] playback mode ${m}`);
                 setMode(m);
                 setAuthError(null);
                 setLatency(null);
@@ -183,6 +187,7 @@ export function StreamDetail() {
           <div role="tablist" aria-label="Detail sections" className="flex border-b border-outline-variant">
             <TabButton id="outputs" current={tab} onSelect={setTab} label="Outputs" />
             <TabButton id="tracks" current={tab} onSelect={setTab} label="Tracks" />
+            <TabButton id="viewers" current={tab} onSelect={setTab} label="Viewers" />
             <TabButton id="health" current={tab} onSelect={setTab} label="Health" />
           </div>
 
@@ -251,6 +256,8 @@ export function StreamDetail() {
               ))}
             </div>
           )}
+
+          {tab === 'viewers' && <ViewersPanel stream={stream.name} />}
 
           {tab === 'health' && (
             <div role="tabpanel" className="flex flex-col gap-1 p-4">

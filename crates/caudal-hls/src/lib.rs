@@ -1,12 +1,14 @@
 //! LL-HLS / CMAF output, classic HLS with MPEG-TS segments (`tsseg`, on
-//! demand), and the `/play/{name}` page. Entry point fixed by the
-//! orchestrator.
+//! demand), the `/play/{name}` page, and continuous MPEG-TS over HTTP
+//! (`/ts/{name}.ts`, [`http_ts`]). Entry point fixed by the orchestrator.
 //!
 //! One packager task per published stream turns frames into CMAF parts as
 //! they arrive, so parts exist before the first viewer asks. HTTP handlers
 //! only read the packager state; blocking playlist reloads and requests for
 //! the preload-hinted part wait on a `watch` channel bumped by the packager.
 
+mod dash;
+pub mod http_ts;
 mod packager;
 mod tsseg;
 mod vtt;
@@ -89,7 +91,9 @@ const PLAY_HTML: &str = include_str!("../static/play.html");
 /// Serves `/hls/{name}/master.m3u8` (players enter here), `/hls/{name}/index.m3u8`, `/hls/{name}/init.mp4`,
 /// `/hls/{name}/{segment}.m4s` and `/play/{name}`; with [`HlsConfig::ts`],
 /// also classic HLS at `/hls/{name}/ts.m3u8` + `/hls/{name}/t{seq}.ts`
-/// (see `tsseg`). Mounted at the root by
+/// (see `tsseg`); and live MPEG-DASH over the same segments at
+/// `/hls/{name}/manifest.mpd` (see `dash`), with `/dash/time` for its
+/// `UTCTiming`. Mounted at the root by
 /// the server; paths are absolute.
 ///
 /// Must be called inside a tokio runtime: it spawns the task that starts a
@@ -136,7 +140,12 @@ pub fn router_with_captions(
         }
         Err(_) => tracing::error!("caudal_hls::router called outside a tokio runtime; no packagers will run"),
     }
-    Router::new().route("/hls/{name}/{file}", get(hls_file)).route("/play/{name}", get(play)).with_state(hls)
+    Router::new()
+        .route("/hls/{name}/{file}", get(hls_file))
+        .route("/play/{name}", get(play))
+        .route("/dash/time", get(dash_time))
+        .route("/dash/{name}/{file}", get(dash_alias))
+        .with_state(hls)
 }
 
 struct Hls {
@@ -580,42 +589,58 @@ async fn hls_file(
     let query = query.as_deref().unwrap_or("");
     let token = request_token(query, &req);
     let ip = client_ip(&req, &hls.trusted_proxies);
-    let entry = match hls.get(&name) {
-        Some(e) => e,
-        None => match demand(&hls, &name, token, ip).await {
-            Some(e) => e,
-            None => return error(StatusCode::NOT_FOUND),
-        },
-    };
     if token.is_some_and(|t| !token_is_url_safe(t)) {
-        return error(StatusCode::FORBIDDEN);
+        return if hls.get(&name).is_some() { error(StatusCode::FORBIDDEN) } else { error(StatusCode::NOT_FOUND) };
     }
-    match hls.registry.authorize(caudal_core::Access::Play, &name, token, ip).await {
-        Ok(()) => {}
+    // The rewrite hook (if any) and the gate, on the final name. Refusals
+    // for a name nobody serves stay a plain 404, as before clustering.
+    let requested = name;
+    let name = match hls.registry.resolve(caudal_core::Access::Play, "hls", &requested, token, ip).await {
+        Ok(n) => n,
+        Err(_) if hls.get(&requested).is_none() => return error(StatusCode::NOT_FOUND),
         Err(caudal_core::Denied::Missing) => {
             let mut r = error(StatusCode::UNAUTHORIZED);
             r.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
             return r;
         }
         Err(caudal_core::Denied::Refused(_)) => return error(StatusCode::FORBIDDEN),
-    }
+    };
+    let entry = match hls.get(&name) {
+        Some(e) => e,
+        None => match demand(&hls, &name).await {
+            Some(e) => e,
+            None => return error(StatusCode::NOT_FOUND),
+        },
+    };
     let key = viewer_key(&req, ip);
-    let refused =
-        if file.ends_with(".m3u8") { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
+    let manifest = file.ends_with(".m3u8") || file == "manifest.mpd";
+    let refused = if manifest { entry.seen(&hls.registry, &name, key, ip).is_err() } else { entry.kicked(key) };
     if refused {
         return error(StatusCode::FORBIDDEN);
     }
-    let apple = loads_subtitle_parts(&req);
-    let resp = serve_file(&hls, &name, &entry, &file, query, token, apple).await;
+    let resp = if file == "manifest.mpd" {
+        let time_url = {
+            let header = |h: &str| req.headers().get(h).and_then(|v| v.to_str().ok());
+            dash::time_url(header("host"), header("x-forwarded-proto"))
+        };
+        dash_manifest(&hls, &name, &entry, token, time_url).await
+    } else {
+        let apple = loads_subtitle_parts(&req);
+        serve_file(&hls, &name, &requested, &entry, &file, query, token, apple).await
+    };
     if let Some(n) = axum::body::HttpBody::size_hint(resp.body()).exact() {
         entry.add_bytes(key, n);
     }
     resp
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_file(
     hls: &Arc<Hls>,
     name: &str,
+    // The name in the URL, before the rewrite hook: the master's URI for
+    // `name` itself keeps it, so a routed viewer stays on its alias.
+    requested: &str,
     entry: &Arc<Entry>,
     file: &str,
     query: &str,
@@ -633,7 +658,7 @@ async fn serve_file(
     let entry = entry.as_ref();
     match file {
         "index.m3u8" => playlist(hls, name, entry, query, token).await,
-        "master.m3u8" => master(hls, entry, name, token).await,
+        "master.m3u8" => master(hls, entry, name, requested, token).await,
         "subs.m3u8" if hls.text_track(name).is_some() => {
             let flavor = Flavor::Subtitles { parts: apple };
             playlist_of(hls, name, entry, query, token, flavor).await
@@ -657,11 +682,111 @@ async fn serve_file(
                 None => error(StatusCode::NOT_FOUND),
             }
         }
+        other if dash::parse_name(other).is_some() => match dash::parse_name(other) {
+            Some(f) => dash_file(entry, f).await,
+            None => error(StatusCode::NOT_FOUND),
+        },
         other => match parse_media_name(other) {
             Some((msn, part)) => media(entry, msn, part).await,
             None => error(StatusCode::NOT_FOUND),
         },
     }
+}
+
+/// `GET /hls/{name}/manifest.mpd`. Like [`master`], a family root (no `+`)
+/// brings in every live `{name}+*` rendition, and a root nobody can play
+/// (no fMP4 segments of its own) gives way to its renditions.
+async fn dash_manifest(
+    hls: &Arc<Hls>,
+    name: &str,
+    entry: &Entry,
+    token: Option<&str>,
+    time_url: Option<String>,
+) -> Response {
+    let siblings = || -> Vec<(String, dash::Snap)> {
+        if name.contains('+') {
+            return Vec::new();
+        }
+        let prefix = format!("{name}+");
+        let mut entries: Vec<(String, Arc<Entry>)> =
+            hls.streams().iter().filter(|(n, _)| n.starts_with(&prefix)).map(|(n, e)| (n.clone(), e.clone())).collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.into_iter().filter_map(|(n, e)| dash::Snap::of(&e.pkg()).map(|s| (n, s))).collect()
+    };
+    let (root_now, root_ready) = {
+        let p = entry.pkg();
+        (dash::Snap::of(&p), p.ready())
+    };
+    let mut family = siblings();
+    let root = match root_now {
+        Some(s) => Some(s),
+        None if !root_ready && !family.is_empty() => None,
+        None => entry.wait(entry.block_timeout(), dash::Snap::of).await,
+    };
+    let (lead_name, lead) = match root {
+        Some(s) => (name.to_owned(), s),
+        None => {
+            if family.is_empty() {
+                family = siblings();
+            }
+            if family.is_empty() {
+                return error(if entry.pkg().ended { StatusCode::NOT_FOUND } else { StatusCode::SERVICE_UNAVAILABLE });
+            }
+            family.remove(0)
+        }
+    };
+    let ctx = dash::Ctx { token, time_url, now: SystemTime::now() };
+    let body = dash::render((&lead_name, &lead), &family, &ctx);
+    respond(StatusCode::OK, dash::CONTENT_TYPE, "no-cache", body)
+}
+
+/// A one-track init segment or media segment named by a DASH manifest.
+async fn dash_file(entry: &Entry, file: dash::File) -> Response {
+    let (video, found) = match file {
+        dash::File::Init { video, generation } => (video, dash::init(&entry.pkg(), video, generation)),
+        dash::File::Media { video, msn } => {
+            let wait = entry.block_timeout();
+            let seg = entry
+                .wait(wait, |p| match p.lookup(msn, None) {
+                    Lookup::Found(b) => Some(dash::track_id(p, msn, video).map(|id| (b, id))),
+                    Lookup::Gone => Some(None),
+                    Lookup::Pending => None,
+                })
+                .await
+                .flatten();
+            let cut = seg.and_then(|(b, id)| caudal_cmaf::fmp4::extract_track(&b, id)).filter(|b| !b.is_empty());
+            (video, cut)
+        }
+    };
+    let ct = if video { "video/mp4" } else { "audio/mp4" };
+    match (file, found) {
+        (dash::File::Init { .. }, Some(b)) => respond(StatusCode::OK, ct, "no-cache", b),
+        (dash::File::Media { .. }, Some(b)) => respond(StatusCode::OK, ct, "max-age=60", b),
+        (_, None) => error(StatusCode::NOT_FOUND),
+    }
+}
+
+/// `GET /dash/{name}/index.mpd` (MistServer's DASH URL) and the files its
+/// manifest names: the same as under `/hls/{name}/`, DASH files only.
+async fn dash_alias(
+    State(hls): State<Arc<Hls>>,
+    Path((name, file)): Path<(String, String)>,
+    query: RawQuery,
+    req: Request,
+) -> Response {
+    let file = match file.as_str() {
+        "index.mpd" | "manifest.mpd" => "manifest.mpd".to_owned(),
+        f if dash::parse_name(f).is_some() => file,
+        _ => return error(StatusCode::NOT_FOUND),
+    };
+    hls_file(State(hls), Path((name, file)), query, req).await
+}
+
+/// `GET /dash/time`: the server's clock for MPD `UTCTiming`
+/// (`urn:mpeg:dash:utc:http-iso:2014`), so players compute the live edge on
+/// the same clock that dated the segments.
+async fn dash_time() -> Response {
+    respond(StatusCode::OK, "text/plain; charset=utf-8", "no-store", packager::rfc3339(SystemTime::now()))
 }
 
 /// `t{seq}.ts` → `seq`: a segment of the TS rendition.
@@ -812,13 +937,9 @@ fn loads_subtitle_parts(req: &Request) -> bool {
 
 /// A request for a name with no packager: on a cluster edge, an
 /// authorized viewer's first request starts the pull
-/// ([`Registry::get_or_demand`]) and waits for its packager. Refusals and
-/// names nobody has stay a plain 404, as before clustering.
-async fn demand(hls: &Arc<Hls>, name: &str, token: Option<&str>, ip: Option<std::net::IpAddr>) -> Option<Arc<Entry>> {
-    if token.is_some_and(|t| !token_is_url_safe(t)) {
-        return None;
-    }
-    hls.registry.authorize(caudal_core::Access::Play, name, token, ip).await.ok()?;
+/// ([`Registry::get_or_demand`]) and waits for its packager. Only called
+/// after `Registry::resolve` allowed the request.
+async fn demand(hls: &Arc<Hls>, name: &str) -> Option<Arc<Entry>> {
     hls.registry.get_or_demand(name).await?;
     // The packager starts from the publish event, on another task.
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1016,7 +1137,7 @@ fn rendition_reports(hls: &Hls, name: &str) -> String {
 /// highest `BANDWIDTH` first. When `name` already names one rendition
 /// (contains `+`), the master keeps working as a single-variant playlist for
 /// just that stream, as it always has.
-async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) -> Response {
+async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, requested: &str, token: Option<&str>) -> Response {
     let siblings = || -> Vec<(String, VariantAttrs)> {
         if name.contains('+') {
             return Vec::new();
@@ -1035,12 +1156,12 @@ async fn master(hls: &Arc<Hls>, entry: &Entry, name: &str, token: Option<&str>) 
         (p.variant_attrs(), p.ready())
     };
     let mut variants = match root_now {
-        Some(a) => vec![(name.to_owned(), a)],
+        Some(a) => vec![(requested.to_owned(), a)],
         None if !root_ready && !siblings().is_empty() => Vec::new(),
         None => {
             let wait = entry.block_timeout();
             match entry.wait(wait, |p| p.variant_attrs()).await {
-                Some(a) => vec![(name.to_owned(), a)],
+                Some(a) => vec![(requested.to_owned(), a)],
                 None => Vec::new(),
             }
         }
@@ -1161,6 +1282,9 @@ mod tests;
 
 #[cfg(test)]
 mod ts_tests;
+
+#[cfg(test)]
+mod dash_tests;
 
 #[cfg(test)]
 mod token_tests {

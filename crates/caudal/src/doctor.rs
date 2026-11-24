@@ -4,7 +4,8 @@
 //!
 //! Offline by default: the only I/O is reading local files, binding local
 //! sockets (and immediately releasing them) and local DNS resolution for
-//! `[tls] acme_domains`. The `--online` flag additionally makes one HTTPS
+//! `[tls] acme_domains` and the `[auth.hook]` / `[auth.rewrite]` hosts.
+//! The `--online` flag additionally makes one HTTPS
 //! request, to compare the system clock against a reference server.
 //!
 //! Exit code: 0 all OK, 1 any FAIL, 2 only WARNs (see [`Report::exit_code`]).
@@ -119,7 +120,9 @@ pub fn run(config_path: Option<&Path>, opts: &Options) -> Report {
     check_acme(&cfg, &mut checks);
     check_clock(opts.online, &mut checks);
     check_ffmpeg(&cfg, &mut checks);
+    check_thumbnail_ffmpeg(&cfg, &mut checks);
     check_omt_ffmpeg(&cfg, &mut checks);
+    check_hook_hosts(&cfg, resolve_host, &mut checks);
     check_ulimit(&cfg, &mut checks);
     check_captions(&mut checks);
     if let Some(url) = &opts.url {
@@ -220,6 +223,9 @@ fn check_binds(cfg: &Config, checks: &mut Vec<Check>) {
         tcp_bind_check("bind https", tls_bind, http_bind, checks);
     }
     tcp_bind_check("bind rtmp", cfg.rtmp.bind, http_bind, checks);
+    if let Some(bind) = cfg.rtmp.tls_bind {
+        tcp_bind_check("bind rtmps", bind, http_bind, checks);
+    }
     if let Some(bind) = cfg.rtsp.bind {
         tcp_bind_check("bind rtsp", bind, http_bind, checks);
     }
@@ -607,6 +613,34 @@ fn check_ffmpeg(cfg: &Config, checks: &mut Vec<Check>) {
     }
 }
 
+/// Dashboard thumbnails (`GET /api/v1/streams/{name}/thumbnail.jpg`) run
+/// `[transcode] ffmpeg` whatever the ladders say. Without ladders (or with
+/// another engine) [`check_ffmpeg`] does not look, so this does; a missing
+/// ffmpeg only costs the thumbnails, so it is a warning.
+fn check_thumbnail_ffmpeg(cfg: &Config, checks: &mut Vec<Check>) {
+    if !cfg.transcode.ladder.is_empty() && cfg.transcode.engine == "ffmpeg" {
+        return;
+    }
+    let ffmpeg = &cfg.transcode.ffmpeg;
+    let name = "ffmpeg (thumbnails)";
+    match std::process::Command::new(ffmpeg).arg("-version").output() {
+        Ok(out) if out.status.success() => {
+            let first_line = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string();
+            checks.push(Check::ok(name, first_line));
+        }
+        Ok(out) => checks.push(Check::warn(
+            name,
+            format!("{} -version exited with {}: the dashboard shows no thumbnails", ffmpeg.display(), out.status),
+            "check the [transcode] ffmpeg path",
+        )),
+        Err(e) => checks.push(Check::warn(
+            name,
+            format!("{} not runnable ({e}): the dashboard shows no thumbnails", ffmpeg.display()),
+            "install ffmpeg (on PATH) or set [transcode] ffmpeg; nothing else needs it without ladders or OMT pulls",
+        )),
+    }
+}
+
 /// `[[omt.pull]]` always encodes with ffmpeg (`[omt] ffmpeg`, else
 /// `[transcode] ffmpeg`), whatever `[transcode] engine` says.
 fn check_omt_ffmpeg(cfg: &Config, checks: &mut Vec<Check>) {
@@ -630,6 +664,56 @@ fn check_omt_ffmpeg(cfg: &Config, checks: &mut Vec<Check>) {
             format!("{} not runnable: {e}", ffmpeg.display()),
             "[[omt.pull]] needs ffmpeg to encode H.264/AAC: install it or set [omt] ffmpeg",
         )),
+    }
+}
+
+// ---------------------------------------------------------------- hooks ---
+
+/// The host and port of `url`, if it has a host.
+fn url_host_port(url: &str) -> Option<(String, u16)> {
+    let u = url::Url::parse(url).ok()?;
+    let host = u.host_str().filter(|h| !h.is_empty())?.trim_matches(['[', ']']).to_string();
+    Some((host, u.port_or_known_default().unwrap_or(443)))
+}
+
+fn resolve_host(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
+    Ok((host, port).to_socket_addrs()?.map(|a| a.ip()).collect())
+}
+
+/// `[auth.hook]` and `[auth.rewrite]` are asked before every publish and
+/// play, so a host that does not resolve turns every one into `on_error`.
+/// Local DNS only (like `acme_domains`): whether the service answers is
+/// not tested. Only the host is printed, never the URL (it may carry a
+/// token in its query).
+fn check_hook_hosts(cfg: &Config, resolve: impl Fn(&str, u16) -> io::Result<Vec<IpAddr>>, checks: &mut Vec<Check>) {
+    let hooks = [
+        ("auth.hook", cfg.auth.hook.as_ref().map(|h| (&h.url, &h.on_error))),
+        ("auth.rewrite", cfg.auth.rewrite.as_ref().map(|h| (&h.url, &h.on_error))),
+    ];
+    for (section, hook) in hooks {
+        let Some((url, on_error)) = hook else { continue };
+        let name = format!("{section} dns");
+        let Some((host, port)) = url_host_port(url) else {
+            checks.push(Check::fail(name, "url has no host", format!("set [{section}] url to http(s)://host/path")));
+            continue;
+        };
+        match resolve(&host, port) {
+            Ok(ips) if !ips.is_empty() => {
+                let ip_list = ips.iter().map(IpAddr::to_string).collect::<Vec<_>>().join(", ");
+                checks
+                    .push(Check::ok(name, format!("{host} resolves to {ip_list} (the service itself is not called)")));
+            }
+            Ok(_) => checks.push(Check::warn(
+                name,
+                format!("{host} resolved to no addresses: every publish/play gets on_error = \"{on_error}\""),
+                "check the hook's host name and this machine's DNS",
+            )),
+            Err(e) => checks.push(Check::warn(
+                name,
+                format!("{host} does not resolve ({e}): every publish/play gets on_error = \"{on_error}\""),
+                "check the hook's host name and this machine's DNS",
+            )),
+        }
     }
 }
 
@@ -1034,6 +1118,48 @@ mod tests {
         let mut checks = Vec::new();
         check_ffmpeg(&cfg, &mut checks);
         assert_eq!(find(&checks, "ffmpeg").status, Status::Fail);
+    }
+
+    #[test]
+    fn thumbnail_ffmpeg_checked_without_ladders_and_only_warns() {
+        let cfg: Config = toml::from_str("[transcode]\nffmpeg = \"/nonexistent/ffmpeg-binary\"\n").unwrap();
+        let mut checks = Vec::new();
+        check_thumbnail_ffmpeg(&cfg, &mut checks);
+        assert_eq!(find(&checks, "ffmpeg (thumbnails)").status, Status::Warn);
+
+        let cfg: Config = toml::from_str(
+            "[[transcode.ladder]]\nstreams = [\"a\"]\n[[transcode.ladder.rendition]]\nlabel = \"lo\"\nheight = 360\nvideo_kbps = 500\n",
+        )
+        .unwrap();
+        let mut checks = Vec::new();
+        check_thumbnail_ffmpeg(&cfg, &mut checks);
+        assert!(checks.is_empty(), "check_ffmpeg already covers an ffmpeg ladder");
+    }
+
+    #[test]
+    fn hook_hosts_are_resolved_and_a_miss_warns() {
+        let cfg: Config = toml::from_str(
+            "[auth.hook]\nurl = \"https://auth.example.com/caudal?key=SECRET\"\nsecret = \"whsec_x\"\n\
+             [auth.rewrite]\nurl = \"http://route.internal:8081/r\"\nsecret = \"whsec_x\"\n",
+        )
+        .unwrap();
+        let mut checks = Vec::new();
+        check_hook_hosts(
+            &cfg,
+            |host, port| match (host, port) {
+                ("auth.example.com", 443) => Ok(vec!["192.0.2.1".parse().unwrap()]),
+                ("route.internal", 8081) => Err(io::Error::other("no such host")),
+                other => panic!("unexpected lookup {other:?}"),
+            },
+            &mut checks,
+        );
+        assert_eq!(find(&checks, "auth.hook dns").status, Status::Ok);
+        assert_eq!(find(&checks, "auth.rewrite dns").status, Status::Warn);
+        assert!(checks.iter().all(|c| !c.detail.contains("SECRET")), "the URL's query is never printed");
+
+        let mut checks = Vec::new();
+        check_hook_hosts(&Config::default(), |_, _| panic!("no hooks, no lookups"), &mut checks);
+        assert!(checks.is_empty());
     }
 
     #[test]

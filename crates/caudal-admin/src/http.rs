@@ -42,7 +42,7 @@ const PUBLIC_AUTH: [&str; 4] =
 
 /// Media routes that stay public: each checks its own publish/play token
 /// (`[auth]`) where one is required. Players and encoders cannot log in.
-const PUBLIC_PREFIXES: [&str; 6] = ["/hls/", "/play/", "/vod/", "/whip/", "/whep/", "/moq/"];
+const PUBLIC_PREFIXES: [&str; 8] = ["/hls/", "/audio/", "/mp4/", "/play/", "/vod/", "/whip/", "/whep/", "/moq/"];
 
 /// Origin-edge cluster endpoints (`caudal-cluster`).
 const CLUSTER_PREFIX: &str = "/api/v1/cluster/";
@@ -345,6 +345,8 @@ mod tests {
             "/readyz",
             "/hls/live/index.m3u8",
             "/play/live",
+            "/audio/live.mp3",
+            "/mp4/live.mp4",
             "/vod/live/1/index.m3u8",
             "/moq/fingerprint",
             "/api/v1/auth/session",

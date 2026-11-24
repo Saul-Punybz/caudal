@@ -1,11 +1,65 @@
 # STATUS — Caudal
 
-**Last updated:** 21 Nov 2026 (Rolando's MPEG-2 chain merged; Windows port in review; v0.1.0 tag still blocked by per-churn RSS growth)
+**Last updated:** 22 Nov 2026 (MistServer gap batch: 14 PRs merged; v0.1.0 tag still blocked by per-churn RSS growth)
 
 ## What it is
 Open-source rewrite of MistServer in Rust. Full plan and evidence in `PLAN.md`; reuse inventory in `REUSE.md`.
 
-## RESUME HERE (21 Nov 2026) — read this block first
+## RESUME HERE (22 Nov 2026) — read this block first
+
+**Batch of 21-22 Nov: the remaining MistServer gaps, by parallel agents** (each in its own clone and
+CARGO_TARGET_DIR, one heavy build at a time). Merged, every one with CI green (Windows included) and
+re-checked (merge with main, compile, `cargo test -p caudal --bins`) right before its merge:
+
+| PR | What |
+|---|---|
+| #49 | dashboard: thumbnails, viewers tab (kick), pulls / pushes / auto-push lists, `liveDurationInfinity` |
+| #50 | `[[rtmp.pull]]` (RTMP/RTMPS play from a remote server); RTMP client moved into `caudal-rtmp` |
+| #51 | audio-only HTTP outputs `/audio/{name}.aac` and `.mp3` (MP2/MP3 passed through; internet radio) |
+| #52 | `[[hls.pull]]` with fMP4/CMAF segments (`caudal-cmaf::demux`): Caudal can pull Caudal's LL-HLS |
+| #53 | `[auth.rewrite]` (PUSH_REWRITE / PLAY_REWRITE) through one `Registry::resolve` |
+| #54 | HTTP-TS output `/ts/{name}.ts` |
+| #55 | Firefox MoQ flake: the MoQ radio moved under the click when the icon font loaded; fixed widths, setup logging, retry |
+| #56 | RTMPS publish (`[rtmp] tls_bind`); SRT `mode=rendezvous` refused (rsrt has no rendezvous) |
+| #57 | `[[push.auto]]` schedules (`start`/`stop`, `cron`+`tz`), `enabled`, `inhibit`, idle reasons in the API |
+| #59 | RTMP play for viewers (`[rtmp] play`) |
+| #60 | progressive fMP4 output `/mp4/{name}.mp4` |
+| #61 | `[[webrtc.push]]` WHIP push out (also as an auto-push target) |
+| #62 | `import-mist` maps pulls, blocking/rewrite triggers (`reply = "mistserver"`), scheduled auto-pushes |
+| #64 | `[auth.hook] reply = "mistserver"`: a 2xx allows only if the body is true (MistServer's `stringToBool`) |
+
+**Merged later on 21-22 Nov:** #58 DASH, #63 WebKit post-seam stall (play.html pauses after a 1 s playlist
+stall and resumes 1-2 s behind live), #67 RTMP `onMetaData` ECMA-array framerate, #68 process + bytes-out
+metrics, #70 stream keys (`[[auth.stream_keys]]`, `stream_keys_file`, `stream_keys_only`) and JWT `ipa`,
+`[auth.secret_permissions]`, `[[auth.key_permissions]]`.
+
+**Open PRs, in merge order (merge only with CI green incl. Windows, re-checked against main first):**
+
+| PR | What | State at pause |
+|---|---|---|
+| #75 | mimalloc as global allocator on musl (release binaries) | CI running |
+| #69 | on-demand pulls + `[auth.source]` (STREAM_SOURCE) | **conflicts with #70** in caudal-auth/lib.rs, caudal-core/registry.rs, caudal/config.rs, caudal/subsystems.rs: resolve (keep both) |
+| #72 | release audit: example config blocks validated by a test, doctor ffmpeg/DNS checks, `redact_url` | fixed (Windows os error 3, permissions example blocks); CI running |
+| #73 | audit leftovers: `redact_url_host` for webhooks/health alerts, hand-written `Debug` on 15 secret-holding configs, hls-pull errors masked, import-mist `whip://`/`whips://`, doctor UDP pull ports, flaky port test, PLAN.md | stacked on #72: retarget to main after #72 merges |
+| #71 | cluster weighted load balancing (MistUtilLoad scoring), `/cluster/redirect/{name}` | was green; recheck vs main |
+| #74 | LL-DASH: `/hls/{name}/ll.mpd`, open segment streamed chunk by chunk | CI running |
+
+**v0.1.0 is still BLOCKED by soak RSS growth (#65, not a complete fix).** Findings (soaks on GitHub, churn
+every 2 min): the live heap (dhat) stops growing after its peak; RSS keeps growing = allocator retention, at
+least in part. Every ended publish is freed (100 republishes test). 30 min: glibc +31.1 MB/h, glibc +
+`malloc_trim(0)` every 10 s -63.8 MB/h (PASS), musl +723.5 MB/h. **70 min: glibc + trim +42.6 MB/h FAIL, musl +
+mimalloc +16.3 MB/h FAIL** (bar: < 1 MB/h). Run 44964968157 (70 min, live heap with and without trim) was
+still running at the pause: read it first; it decides allocator fragmentation vs real retention. Only the
+mimalloc part was split out (#75).
+
+**Still missing vs MistServer (niche):** RIST, WebRTC data channel, SRT rendezvous (library),
+`start_rule`/`end_rule` conditions (need MistServer "variables").
+
+**Notes for whoever continues:** worktrees fail in this checkout (Google Drive hard-links files in
+`~/Downloads/.../.git`): use plain clones outside Downloads. `target/` is a link to `~/.cargo-target/caudal`
+(it once grew to 168 GB). `gh pr merge N --merge -R Saul-Punybz/caudal` is allowed by a settings rule.
+
+## 21 Nov 2026 (Rolando's MPEG-2 chain, Windows port)
 
 **Goal of this batch: Rolando's ATSC chain on Caudal.** At CAtv, VLC sends MPEG-2 720p59.94 + MPEG
 audio over UDP to a Technalogix TP1000 multiplexer (ASI to the exciter), on a **Windows 10** tower PC.

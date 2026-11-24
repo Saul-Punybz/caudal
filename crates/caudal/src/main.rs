@@ -14,6 +14,7 @@ mod import_mist;
 mod malloc_trim;
 mod metrics;
 mod omt;
+mod process_metrics;
 mod reload;
 mod shutdown;
 mod subsystems;
@@ -112,7 +113,15 @@ enum CaptionsCommand {
 }
 
 fn make_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // The RTMP library logs every `releaseStream` / `FCPublish` with its
+    // argument at debug: the encoder's stream key (and any `?token=`).
+    // Kept at info unless `RUST_LOG` names it on purpose.
+    if std::env::var("RUST_LOG").is_ok_and(|v| v.contains("scuffle_rtmp")) {
+        filter
+    } else {
+        filter.add_directive("scuffle_rtmp=info".parse().expect("static directive"))
+    }
 }
 
 /// JSON logs when `CAUDAL_LOG_FORMAT=json`, pretty otherwise. Level from
@@ -244,6 +253,13 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
         caption_source,
     );
 
+    // `/audio/{name}.aac|.mp3`: a stream's audio alone, internet-radio style.
+    let audio_router = caudal_audio::router(registry.clone(), trusted_proxies.clone());
+    // `/ts/{name}.ts`: the stream as one endless MPEG-TS response.
+    let http_ts_router = caudal_hls::http_ts::router(registry.clone(), trusted_proxies.clone());
+    // `/mp4/{name}.mp4`: the stream as one endless fragmented MP4 response.
+    let mp4_router = caudal_mp4::router(registry.clone(), trusted_proxies.clone());
+
     let state = api::AppState::new(registry.clone());
     state.set_access(started.access.clone());
     state.set_hook_stats(started.hook_stats.clone());
@@ -355,6 +371,9 @@ async fn run(cfg: config::Config, config_path: Option<PathBuf>) -> ExitCode {
     // The UI router is a catch-all fallback, so it goes last.
     let app = api::router(state.clone())
         .merge(hls_router)
+        .merge(audio_router)
+        .merge(http_ts_router)
+        .merge(mp4_router)
         .merge(webrtc_router)
         .merge(moq_router)
         .merge(record_router)

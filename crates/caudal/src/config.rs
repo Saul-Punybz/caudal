@@ -81,12 +81,62 @@ pub struct RtmpSection {
     pub bind: SocketAddr,
     #[serde(default = "default_rtmp_app")]
     pub app: String,
+    /// Let viewers `play` streams over RTMP (`rtmp://host/app/stream`), as
+    /// VLC, ffplay or another server's RTMP pull do. Same auth as every
+    /// other output. On by default.
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// RTMPS publish (`rtmps://host:port/{app}/{stream}`) on this address,
+    /// with `[tls]`'s certificate (files or ACME). Off when absent.
+    pub tls_bind: Option<SocketAddr>,
+    /// Pull streams in from remote RTMP/RTMPS servers (Caudal plays them).
+    pub pull: Vec<RtmpPullEntry>,
 }
 
 impl Default for RtmpSection {
     fn default() -> Self {
-        Self { bind: default_rtmp_bind(), app: default_rtmp_app() }
+        Self { bind: default_rtmp_bind(), app: default_rtmp_app(), play: true, tls_bind: None, pull: Vec::new() }
     }
+}
+
+impl RtmpSection {
+    /// RTMPS needs a certificate, and the only place one is configured is
+    /// `[tls]`. `Ok(None)` when RTMPS is off.
+    pub fn tls_source(&self, tls: &TlsSection) -> Result<Option<(SocketAddr, caudal_tls::CertSource)>, String> {
+        let Some(bind) = self.tls_bind else { return Ok(None) };
+        if bind == self.bind {
+            return Err("[rtmp] tls_bind must differ from bind".into());
+        }
+        match tls.to_tls_config()? {
+            Some(t) if t.bind == bind => {
+                Err("[rtmp] tls_bind must differ from [tls] bind (one port, one protocol)".into())
+            }
+            Some(t) => Ok(Some((bind, t.source))),
+            None => Err("[rtmp] tls_bind needs a certificate in [tls] (cert + key, or acme_domains)".into()),
+        }
+    }
+}
+
+impl RtmpSection {
+    /// Whether the listeners themselves (`bind`, `app`, `play`, the RTMPS
+    /// `tls_bind`) differ: pulls reload on their own without restarting them.
+    pub fn listener_changed(&self, other: &Self) -> bool {
+        self.bind != other.bind || self.app != other.app || self.play != other.play || self.tls_bind != other.tls_bind
+    }
+
+    /// `[[rtmp.pull]]` as the runtime type `caudal-rtmp` takes.
+    pub fn pull_targets(&self) -> Vec<caudal_rtmp::RtmpPull> {
+        self.pull.iter().map(|p| caudal_rtmp::RtmpPull { stream: p.stream.clone(), url: p.url.clone() }).collect()
+    }
+}
+
+/// One `[[rtmp.pull]]`: play `url` (`rtmp://host[:port]/app/key`, or
+/// `rtmps://`) from a remote RTMP server and publish it as `stream`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpPullEntry {
+    pub stream: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -145,7 +195,7 @@ pub struct HlsSection {
     #[serde(default = "default_true")]
     pub ts: bool,
     /// HLS or LL-HLS pulled in (`[[hls.pull]]`): a remote playlist with
-    /// MPEG-TS segments published as a stream. Reloadable, unlike the
+    /// MPEG-TS or fMP4/CMAF segments published as a stream. Reloadable, unlike the
     /// output settings above.
     #[serde(default)]
     pub pull: Vec<HlsPullEntry>,
@@ -477,7 +527,7 @@ pub struct PushSection {
 /// `$stream` replaced by its name; stop when it ends. The URL's scheme
 /// picks the engine, the same ones the static pushes use: `rtmp://` /
 /// `rtmps://` (`[[restream]]`), `srt://` (`[[srt.push]]`), `udp://` /
-/// `rtp://` (`[[udp.push]]`).
+/// `rtp://` (`[[udp.push]]`), `whip://` / `whip+http://` (`[[webrtc.push]]`).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AutoPushEntry {
@@ -497,6 +547,39 @@ pub struct AutoPushEntry {
     /// `udp://` / `rtp://` only: as `[[udp.push]]` `pacing` (default on).
     #[serde(default)]
     pub pacing: Option<bool>,
+    /// `whip://` / `whip+http://` only: as `[[webrtc.push]]` `token`.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Schedule, one-off: RFC 3339 instant from which the rule pushes
+    /// (MistServer's `scheduletime`). Without `stop`/`duration_secs` the
+    /// window never closes.
+    #[serde(default)]
+    pub start: Option<String>,
+    /// Schedule, one-off: RFC 3339 instant at which the rule stops pushing
+    /// (MistServer's `completetime`). Without `start` the window is open
+    /// from now until then.
+    #[serde(default)]
+    pub stop: Option<String>,
+    /// Schedule, recurring: a 5-field crontab (`min hour dom month dow`),
+    /// as in `[[record.schedule]]`; each window is `duration_secs` long.
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// IANA zone for `cron` (default UTC).
+    #[serde(default)]
+    pub tz: Option<String>,
+    /// Window length: required with `cron`, or with `start` instead of
+    /// `stop`.
+    #[serde(default)]
+    pub duration_secs: Option<u32>,
+    /// `false` keeps the rule in the file but pushes nothing. The API can
+    /// override it at runtime (`POST /api/v1/auto-pushes/{index}/enable`).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Stream patterns (as `streams`): while any live stream matches one,
+    /// the rule pushes nothing. E.g. a backup feed pushed only while the
+    /// main one is down.
+    #[serde(default)]
+    pub inhibit: Vec<String>,
 }
 
 /// Which push engine an auto-push URL goes to.
@@ -505,6 +588,7 @@ pub enum AutoPushKind {
     Restream,
     Srt,
     Udp,
+    Whip,
 }
 
 impl AutoPushKind {
@@ -513,6 +597,7 @@ impl AutoPushKind {
             AutoPushKind::Restream => "rtmp",
             AutoPushKind::Srt => "srt",
             AutoPushKind::Udp => "udp",
+            AutoPushKind::Whip => "whip",
         }
     }
 }
@@ -553,12 +638,36 @@ impl AutoPushEntry {
             Some("rtmp" | "rtmps") => Ok(AutoPushKind::Restream),
             Some("srt") => Ok(AutoPushKind::Srt),
             Some("udp" | "rtp") => Ok(AutoPushKind::Udp),
-            _ => Err(self.ctx("expected an rtmp://, rtmps://, srt://, udp:// or rtp:// url")),
+            Some("whip" | "whip+http") => Ok(AutoPushKind::Whip),
+            _ => Err(self.ctx("expected an rtmp://, rtmps://, srt://, udp://, rtp://, whip:// or whip+http:// url")),
         }
     }
 
     pub fn matches(&self, name: &str) -> bool {
         self.streams.iter().any(|p| stream_pattern_matches(p, name))
+    }
+
+    /// The first live stream in `live` that inhibits this rule.
+    pub fn inhibited_by<'a>(&self, live: &'a [String]) -> Option<&'a String> {
+        live.iter().find(|n| self.inhibit.iter().any(|p| stream_pattern_matches(p, n)))
+    }
+
+    /// The rule's time window, `None` when it has none (always on).
+    pub fn timetable(&self) -> Result<Option<caudal_record::Timetable>, String> {
+        let spec = caudal_record::TimetableConfig {
+            start: self.start.clone(),
+            stop: self.stop.clone(),
+            cron: self.cron.clone(),
+            tz: self.tz.clone(),
+            duration_secs: self.duration_secs,
+        };
+        if spec == caudal_record::TimetableConfig::default() {
+            return Ok(None);
+        }
+        if spec.tz.is_some() && spec.cron.is_none() {
+            return Err(self.ctx("`tz` only applies to `cron` (`start`/`stop` carry their own offset)"));
+        }
+        caudal_record::Timetable::parse(&spec).map(Some).map_err(|e| self.ctx(e))
     }
 
     /// The UDP/RTP target for `stream`, through the same checks as
@@ -582,7 +691,8 @@ impl AutoPushEntry {
         if self.streams.is_empty() {
             return Err(self.ctx("`streams` is empty"));
         }
-        for p in &self.streams {
+        self.timetable()?;
+        for p in self.streams.iter().chain(&self.inhibit) {
             let concrete = p.strip_suffix('*').unwrap_or(p);
             if p != "*" && (concrete.contains('*') || !caudal_core::media::valid_stream_name(concrete)) {
                 return Err(self.ctx(format!(
@@ -600,6 +710,11 @@ impl AutoPushEntry {
         if kind != AutoPushKind::Udp && (self.ttl.is_some() || self.interface.is_some() || self.pacing.is_some()) {
             return Err(self.ctx("`ttl`, `interface` and `pacing` only apply to udp:// and rtp:// targets"));
         }
+        match (&self.token, kind) {
+            (Some(t), AutoPushKind::Whip) => whip_token_ok("[[push.auto]]", t)?,
+            (Some(_), _) => return Err(self.ctx("`token` only applies to whip:// and whip+http:// targets")),
+            (None, _) => {}
+        }
         let sample = self.sample_stream();
         let url = expand_push_template(&self.url, &sample);
         match kind {
@@ -610,6 +725,9 @@ impl AutoPushEntry {
                     );
                 }
                 self.udp_target(&sample)?;
+            }
+            AutoPushKind::Whip => {
+                caudal_webrtc::whip_endpoint(&url).map_err(|e| self.ctx(format!("expands to {e}")))?;
             }
             AutoPushKind::Restream | AutoPushKind::Srt => {
                 let parsed = url::Url::parse(&url).map_err(|e| self.ctx(format!("expands to {url:?}: {e}")))?;
@@ -1360,7 +1478,7 @@ fn default_webrtc_udp() -> SocketAddr {
     "0.0.0.0:8189".parse().unwrap()
 }
 
-/// WHIP ingest and WHEP playback over one UDP port.
+/// WHIP ingest and WHEP playback over one UDP port, and WHIP pushes out.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct WebRtcSection {
@@ -1371,12 +1489,61 @@ pub struct WebRtcSection {
     /// Peer engines sharing the UDP port (cores doing SRTP). 0: one per
     /// core, at most 8.
     pub threads: usize,
+    /// `[[webrtc.push]]`: send streams to remote WHIP endpoints. Hot
+    /// reloadable, unlike the rest of the section.
+    pub push: Vec<WhipPushEntry>,
 }
 
 impl Default for WebRtcSection {
     fn default() -> Self {
-        Self { udp_bind: default_webrtc_udp(), public_ips: Vec::new(), threads: 0 }
+        Self { udp_bind: default_webrtc_udp(), public_ips: Vec::new(), threads: 0, push: Vec::new() }
     }
+}
+
+impl WebRtcSection {
+    /// Whether the part wired at startup (the UDP port and its engines)
+    /// changed; `push` reloads on its own.
+    pub fn listener_changed(&self, other: &Self) -> bool {
+        (self.udp_bind, &self.public_ips, self.threads) != (other.udp_bind, &other.public_ips, other.threads)
+    }
+
+    pub fn push_targets(&self) -> Vec<caudal_webrtc::WhipPush> {
+        self.push
+            .iter()
+            .map(|p| caudal_webrtc::WhipPush { stream: p.stream.clone(), url: p.url.clone(), token: p.token.clone() })
+            .collect()
+    }
+}
+
+/// One `[[webrtc.push]]`: while `stream` is live, publish it to the WHIP
+/// endpoint `url` (`whip://` = HTTPS, `whip+http://` = plain HTTP, or an
+/// `https://` / `http://` URL as is).
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WhipPushEntry {
+    pub stream: String,
+    pub url: String,
+    /// Sent as `Authorization: Bearer <token>`.
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for WhipPushEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WhipPushEntry")
+            .field("stream", &self.stream)
+            .field("url", &caudal_webrtc::redact_whip_url(&self.url))
+            .field("token", &self.token.as_ref().map(|_| "****"))
+            .finish()
+    }
+}
+
+/// A bearer token: printable ASCII without spaces (it goes in a header).
+pub(crate) fn whip_token_ok(ctx: &str, token: &str) -> Result<(), String> {
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(format!("{ctx}: `token` must be non-empty printable ASCII without spaces"));
+    }
+    Ok(())
 }
 
 /// HTTPS next to plain HTTP. Either `cert` + `key` files, or `acme_domains`
@@ -1445,6 +1612,102 @@ pub struct AuthSection {
     pub play: bool,
     /// Blocking authorization webhook, asked after the token check.
     pub hook: Option<AuthHookSection>,
+    /// Blocking routing webhook, asked before everything else but stream
+    /// keys.
+    pub rewrite: Option<AuthRewriteSection>,
+    /// `[[auth.stream_keys]]`: secrets an encoder publishes with in place
+    /// of the stream name. See `docs/STREAM-KEYS.md`.
+    pub stream_keys: Vec<StreamKeySection>,
+    /// A TOML file of more `[[stream_keys]]`, read at start and on every
+    /// reload (SIGHUP, `POST /api/v1/config/reload`). A relative path is
+    /// relative to the working directory.
+    pub stream_keys_file: Option<std::path::PathBuf>,
+    /// A stream with a publish key refuses a publish that came without
+    /// it (a token or the bare name). Default false.
+    pub stream_keys_only: bool,
+    /// The most tokens signed with `secret` may grant.
+    pub secret_permissions: Option<KeyPermissionsSection>,
+    /// The most tokens signed with a JWKS key may grant, by `kid`.
+    pub key_permissions: Vec<KidPermissionsSection>,
+    /// The keys read from `stream_keys_file` (see `Config::read_external`);
+    /// part of `PartialEq`, so a reload sees a changed file.
+    #[serde(skip)]
+    pub file_stream_keys: Vec<StreamKeySection>,
+}
+
+/// One stream key. `Debug` never prints the key.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StreamKeySection {
+    pub key: String,
+    pub stream: String,
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default)]
+    pub play: bool,
+}
+
+impl std::fmt::Debug for StreamKeySection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamKeySection")
+            .field("key", &"****")
+            .field("stream", &self.stream)
+            .field("publish", &self.publish)
+            .field("play", &self.play)
+            .finish()
+    }
+}
+
+/// The shape of `[auth] stream_keys_file`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct StreamKeysFile {
+    stream_keys: Vec<StreamKeySection>,
+}
+
+/// `[auth.secret_permissions]`: MistServer's per-key `input`/`output`/
+/// `stream`. Defaults allow everything, so only what is set narrows.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyPermissionsSection {
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// Exact names or `prefix*`; empty: any stream.
+    #[serde(default)]
+    pub streams: Vec<String>,
+}
+
+/// `[[auth.key_permissions]]`: [`KeyPermissionsSection`] for one JWKS `kid`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KidPermissionsSection {
+    pub kid: String,
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default = "default_true")]
+    pub play: bool,
+    #[serde(default)]
+    pub streams: Vec<String>,
+}
+
+fn key_permissions(
+    what: &str,
+    publish: bool,
+    play: bool,
+    streams: &[String],
+) -> Result<caudal_auth::KeyPermissions, String> {
+    if !publish && !play {
+        return Err(format!("{what}: `publish` and `play` are both false; remove the key instead"));
+    }
+    for p in streams {
+        let concrete = p.strip_suffix('*').unwrap_or(p);
+        if concrete.contains('*') || (!concrete.is_empty() && !caudal_core::media::valid_stream_name(concrete)) {
+            return Err(format!("{what}: `{p}` is not a stream name or a `prefix*` pattern"));
+        }
+    }
+    Ok(caudal_auth::KeyPermissions { publish, play, streams: streams.to_vec() })
 }
 
 impl Default for AuthSection {
@@ -1456,13 +1719,21 @@ impl Default for AuthSection {
             publish: true,
             play: false,
             hook: None,
+            rewrite: None,
+            stream_keys: Vec::new(),
+            stream_keys_file: None,
+            stream_keys_only: false,
+            secret_permissions: None,
+            key_permissions: Vec::new(),
+            file_stream_keys: Vec::new(),
         }
     }
 }
 
 /// `[auth.hook]`: before a publish or a play goes ahead, POST it (signed,
-/// Standard Webhooks) to `url` and wait for the answer. 2xx allows,
-/// 401/403 deny; a timeout or any other answer is decided by `on_error`.
+/// Standard Webhooks) to `url` and wait for the answer. 2xx allows
+/// (with `reply = "mistserver"`, only when the body reads as true), 401/403
+/// deny; a timeout or any other answer is decided by `on_error`.
 /// See `caudal_auth::GateHook` and `docs/AUTH-HOOK.md`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1476,6 +1747,11 @@ pub struct AuthHookSection {
     /// `"deny"` (default) or `"allow"` when the service fails.
     #[serde(default = "default_auth_hook_on_error")]
     pub on_error: String,
+    /// How a 2xx is read: `"status"` (default, any 2xx allows) or
+    /// `"mistserver"` (the body must read as true, as a MistServer
+    /// blocking trigger handler answers).
+    #[serde(default = "default_auth_hook_reply")]
+    pub reply: String,
     #[serde(default = "default_true")]
     pub publish: bool,
     #[serde(default = "default_true")]
@@ -1493,6 +1769,9 @@ fn default_auth_hook_timeout_ms() -> u64 {
 }
 fn default_auth_hook_on_error() -> String {
     "deny".into()
+}
+fn default_auth_hook_reply() -> String {
+    "status".into()
 }
 fn default_auth_hook_allow_cache_secs() -> u64 {
     30
@@ -1516,6 +1795,11 @@ impl AuthHookSection {
             "allow" => caudal_auth::OnError::Allow,
             other => return Err(format!("[auth.hook] on_error {other:?}: expected \"deny\" or \"allow\"")),
         };
+        let reply = match self.reply.as_str() {
+            "status" => caudal_auth::ReplyMode::Status,
+            "mistserver" => caudal_auth::ReplyMode::MistServer,
+            other => return Err(format!("[auth.hook] reply {other:?}: expected \"status\" or \"mistserver\"")),
+        };
         if !self.publish && !self.play {
             return Err("[auth.hook] `publish` and `play` are both false; remove the section instead".into());
         }
@@ -1527,9 +1811,81 @@ impl AuthHookSection {
             secret: self.secret.clone(),
             timeout: Duration::from_millis(self.timeout_ms),
             on_error,
+            reply,
             publish: self.publish,
             play: self.play,
             allow_cache: Duration::from_secs(self.allow_cache_secs),
+            deny_cache: Duration::from_secs(self.deny_cache_secs),
+        })
+    }
+}
+
+/// `[auth.rewrite]`: before a publish or a play, POST it (signed, Standard
+/// Webhooks) to `url` and use the stream name the answer gives (MistServer's
+/// `PUSH_REWRITE` / `PLAY_REWRITE`). An empty answer or 401/403 refuses; a
+/// timeout or any other answer is decided by `on_error` (`allow` keeps the
+/// requested name). See `caudal_auth::RewriteHook` and `docs/REWRITE-HOOK.md`.
+///
+/// It sits under `[auth]` rather than `[hooks]` because it behaves like
+/// `[auth.hook]` (blocking, fail-closed by default, reloaded with `[auth]`),
+/// while `[hooks]` only notifies, after the fact, and never blocks.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthRewriteSection {
+    pub url: String,
+    /// `whsec_...`, as in `[hooks]`.
+    pub secret: String,
+    /// One attempt, no retries. 100..=10000.
+    #[serde(default = "default_auth_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// `"deny"` (default) or `"allow"` (keep the requested name) when the
+    /// service fails.
+    #[serde(default = "default_auth_hook_on_error")]
+    pub on_error: String,
+    /// Route publishes (`PUSH_REWRITE`).
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    /// Route plays (`PLAY_REWRITE`).
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// How long an answer is remembered for the same protocol, stream, IP
+    /// and token; the service's `cache_secs` can only lower it.
+    #[serde(default = "default_auth_hook_allow_cache_secs")]
+    pub cache_secs: u64,
+    /// How long a denial or a failure is remembered.
+    #[serde(default = "default_auth_hook_deny_cache_secs")]
+    pub deny_cache_secs: u64,
+}
+
+impl AuthRewriteSection {
+    pub fn to_config(&self) -> Result<caudal_auth::RewriteHookConfig, String> {
+        let url = reqwest_url_ok(&self.url)
+            .ok_or_else(|| format!("[auth.rewrite] url {:?}: expected http(s)://", self.url))?;
+        if !self.secret.starts_with("whsec_") {
+            return Err("[auth.rewrite] `secret` must be a Standard Webhooks secret (whsec_...)".into());
+        }
+        if !(100..=10_000).contains(&self.timeout_ms) {
+            return Err(format!("[auth.rewrite] timeout_ms {} is outside 100..=10000", self.timeout_ms));
+        }
+        let on_error = match self.on_error.as_str() {
+            "deny" => caudal_auth::OnError::Deny,
+            "allow" => caudal_auth::OnError::Allow,
+            other => return Err(format!("[auth.rewrite] on_error {other:?}: expected \"deny\" or \"allow\"")),
+        };
+        if !self.publish && !self.play {
+            return Err("[auth.rewrite] `publish` and `play` are both false; remove the section instead".into());
+        }
+        if self.cache_secs > 3600 || self.deny_cache_secs > 3600 {
+            return Err("[auth.rewrite] cache times are at most 3600 s".into());
+        }
+        Ok(caudal_auth::RewriteHookConfig {
+            url,
+            secret: self.secret.clone(),
+            timeout: Duration::from_millis(self.timeout_ms),
+            on_error,
+            publish: self.publish,
+            play: self.play,
+            cache: Duration::from_secs(self.cache_secs),
             deny_cache: Duration::from_secs(self.deny_cache_secs),
         })
     }
@@ -1554,12 +1910,94 @@ impl AuthSection {
             }),
             (None, None) => None,
         };
-        Ok(caudal_auth::AuthConfig { keys, publish: self.publish, play: self.play })
+        let secret_permissions = match &self.secret_permissions {
+            Some(_) if self.secret.is_none() => {
+                return Err("[auth.secret_permissions] needs `secret`".into());
+            }
+            Some(p) => Some(key_permissions("[auth.secret_permissions]", p.publish, p.play, &p.streams)?),
+            None => None,
+        };
+        if !self.key_permissions.is_empty() && self.jwks_url.is_none() {
+            return Err("[[auth.key_permissions]] needs `jwks_url`".into());
+        }
+        let mut kid_permissions = std::collections::HashMap::new();
+        for k in &self.key_permissions {
+            if k.kid.is_empty() {
+                return Err("[[auth.key_permissions]] needs a `kid`".into());
+            }
+            let what = format!("[[auth.key_permissions]] kid `{}`", k.kid);
+            let perms = key_permissions(&what, k.publish, k.play, &k.streams)?;
+            if kid_permissions.insert(k.kid.clone(), perms).is_some() {
+                return Err(format!("{what} is listed twice"));
+            }
+        }
+        Ok(caudal_auth::AuthConfig {
+            keys,
+            publish: self.publish,
+            play: self.play,
+            secret_permissions,
+            kid_permissions,
+        })
+    }
+
+    /// Every stream key, from `[[auth.stream_keys]]` then the file,
+    /// validated. Errors name the stream, never the key.
+    pub fn stream_keys(&self) -> Result<Vec<caudal_auth::StreamKey>, String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(self.stream_keys.len() + self.file_stream_keys.len());
+        for (from, k) in self
+            .stream_keys
+            .iter()
+            .map(|k| ("[[auth.stream_keys]]", k))
+            .chain(self.file_stream_keys.iter().map(|k| ("stream_keys_file", k)))
+        {
+            let what = format!("{from} for `{}`", k.stream);
+            caudal_auth::validate_key(&k.key).map_err(|e| format!("{what}: {e}"))?;
+            if !caudal_core::media::valid_stream_name(&k.stream) {
+                return Err(format!("{what}: not a valid stream name"));
+            }
+            if !k.publish && !k.play {
+                return Err(format!("{what}: `publish` and `play` are both false"));
+            }
+            if !seen.insert(k.key.as_str()) {
+                return Err(format!("{what}: the same key is listed twice"));
+            }
+            out.push(caudal_auth::StreamKey {
+                key: k.key.clone(),
+                stream: k.stream.clone(),
+                publish: k.publish,
+                play: k.play,
+            });
+        }
+        if self.stream_keys_only && out.is_empty() {
+            return Err("[auth] stream_keys_only needs at least one stream key".into());
+        }
+        Ok(out)
+    }
+
+    /// Reads `stream_keys_file` into `file_stream_keys`.
+    fn read_stream_keys_file(&mut self) -> Result<(), String> {
+        let Some(path) = &self.stream_keys_file else {
+            self.file_stream_keys.clear();
+            return Ok(());
+        };
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("[auth] stream_keys_file {}: {e}", path.display()))?;
+        // `toml`'s error quotes the offending line, which may hold a key.
+        let file: StreamKeysFile = toml::from_str(&text)
+            .map_err(|_| format!("[auth] stream_keys_file {}: not a valid `[[stream_keys]]` file", path.display()))?;
+        self.file_stream_keys = file.stream_keys;
+        Ok(())
     }
 
     /// `[auth.hook]` as the runtime config, `None` when absent.
     pub fn hook_config(&self) -> Result<Option<caudal_auth::GateHookConfig>, String> {
         self.hook.as_ref().map(AuthHookSection::to_config).transpose()
+    }
+
+    /// `[auth.rewrite]` as the runtime config, `None` when absent.
+    pub fn rewrite_config(&self) -> Result<Option<caudal_auth::RewriteHookConfig>, String> {
+        self.rewrite.as_ref().map(AuthRewriteSection::to_config).transpose()
     }
 }
 
@@ -1785,7 +2223,9 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         self.tls.to_tls_config()?;
         self.auth.to_auth_config()?;
+        self.auth.stream_keys()?;
         self.auth.hook_config()?;
+        self.auth.rewrite_config()?;
         self.access.to_access_config()?;
         self.server.trusted_proxy_cidrs()?;
         self.hooks.to_hooks_config()?;
@@ -1793,6 +2233,7 @@ impl Config {
         self.record.to_record_config()?;
         self.transcode.to_transcode_config(self.buffer.to_buffer_config())?;
         self.rtsp.to_tls_config()?;
+        self.rtmp.tls_source(&self.tls)?;
         self.validate_pulls_and_pushes()?;
         if let Some(admin) = &self.admin {
             admin.validate()?;
@@ -1934,7 +2375,7 @@ impl Config {
 }
 
 impl Config {
-    /// `[[rtsp.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
+    /// Every `[[*.pull]]`, `[[srt.push]]` and `[[restream]]`: a valid stream
     /// name, the right URL scheme, and one pull per stream (two would race
     /// to publish the same name).
     fn validate_pulls_and_pushes(&self) -> Result<(), String> {
@@ -1958,6 +2399,7 @@ impl Config {
             .chain(self.srt.pull.iter().map(|p| ("[[srt.pull]]", &p.stream, &p.url, &["srt"][..])))
             .chain(self.udp.pull.iter().map(|p| ("[[udp.pull]]", &p.stream, &p.url, &["udp", "rtp"][..])))
             .chain(self.http.pull.iter().map(|p| ("[[http.pull]]", &p.stream, &p.url, &["http", "https"][..])))
+            .chain(self.rtmp.pull.iter().map(|p| ("[[rtmp.pull]]", &p.stream, &p.url, &["rtmp", "rtmps"][..])))
             .chain(self.hls.pull.iter().map(|p| ("[[hls.pull]]", &p.stream, &p.url, &["http", "https"][..])));
         for (section, stream, url, schemes) in pulls {
             name_ok(section, stream)?;
@@ -1968,6 +2410,9 @@ impl Config {
         }
         for p in &self.http.pull {
             caudal_http_pull::parse_url(&p.url).map_err(|e| format!("[[http.pull]] url {e}"))?;
+        }
+        for p in &self.rtmp.pull {
+            caudal_rtmp::pull::parse_url(&p.url).map_err(|e| format!("[[rtmp.pull]] url {e}"))?;
         }
         for p in &self.hls.pull {
             caudal_hls_pull::parse_url(&p.url).map_err(|e| format!("[[hls.pull]] url {e}"))?;
@@ -1986,6 +2431,17 @@ impl Config {
         for p in &self.srt.push {
             name_ok("[[srt.push]]", &p.stream)?;
             scheme_ok("[[srt.push]]", &p.url, &["srt"])?;
+            caudal_srt::check_caller_url(&p.url).map_err(|e| format!("[[srt.push]] url {e}"))?;
+        }
+        for p in &self.srt.pull {
+            caudal_srt::check_caller_url(&p.url).map_err(|e| format!("[[srt.pull]] url {e}"))?;
+        }
+        for p in &self.webrtc.push {
+            name_ok("[[webrtc.push]]", &p.stream)?;
+            caudal_webrtc::whip_endpoint(&p.url).map_err(|e| format!("[[webrtc.push]] url {e}"))?;
+            if let Some(t) = &p.token {
+                whip_token_ok("[[webrtc.push]]", t)?;
+            }
         }
         for r in &self.restream {
             name_ok("[[restream]]", &r.stream)?;
@@ -2000,14 +2456,117 @@ impl Config {
 /// span-aware `Display` impl).
 pub fn load(path: &Path) -> Result<Config, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let cfg: Config = toml::from_str(&text).map_err(|e| e.to_string())?;
+    let mut cfg: Config = toml::from_str(&text).map_err(|e| e.to_string())?;
+    cfg.read_external()?;
     cfg.validate()?;
     Ok(cfg)
+}
+
+impl Config {
+    /// Reads the files the config points at whose contents are part of the
+    /// config itself (`[auth] stream_keys_file`). Called by every path that
+    /// turns TOML text into a running config, before `validate`.
+    pub fn read_external(&mut self) -> Result<(), String> {
+        self.auth.read_stream_keys_file()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `caudal.example.toml` as shipped, then with each commented example
+    /// block uncommented in turn: every one must parse and validate, so the
+    /// example never shows a key that was renamed or removed. A block is a
+    /// run of commented TOML lines (`# [table]`, `# key = ...`, `# # alt`,
+    /// or a `#   # note` continuation); a prose comment, a bare `#` or a blank
+    /// line ends it. A block that needs another one (RTMPS needs `[tls]`'s
+    /// certificate) is uncommented together with it. Placeholders such as
+    /// `$argon2id$...` are filled in first, as a reader would.
+    #[test]
+    fn example_config_blocks_each_validate() {
+        const EXAMPLE: &str = include_str!("../../../caudal.example.toml");
+        fn is_toml_line(rest: &str) -> bool {
+            let t = rest.trim_start();
+            if t.starts_with('#') {
+                return true; // `# # alt = ...`, or an aligned continuation of the comment above
+            }
+            if rest.starts_with(' ') {
+                return false;
+            }
+            let header = t.starts_with('[')
+                && t.rsplit_once(']').is_some_and(|(_, after)| {
+                    let after = after.trim();
+                    after.is_empty() || after.starts_with('#')
+                });
+            header
+                || t.split_once(" = ").is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                })
+        }
+        let lines: Vec<&str> = EXAMPLE.lines().collect();
+        let toml_line = |l: &str| l.strip_prefix("# ").is_some_and(is_toml_line);
+        let mut blocks: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if toml_line(lines[i]) {
+                let start = i;
+                while i < lines.len() && toml_line(lines[i]) {
+                    i += 1;
+                }
+                blocks.push((start, i));
+            } else {
+                i += 1;
+            }
+        }
+        let uncomment = |ranges: &[(usize, usize)]| -> String {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(n, l)| if ranges.iter().any(|&(a, b)| (a..b).contains(&n)) { &l[2..] } else { l })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let block_with =
+            |needle: &str| *blocks.iter().find(|&&(a, b)| lines[a..b].iter().any(|l| l.contains(needle))).unwrap();
+        // Blocks that only make sense together with another one.
+        let needs = [
+            ("# tls_bind = \"0.0.0.0:1936\"", "# [tls]"),
+            ("# [[access.rules]]", "# [access]"),
+            ("# [auth.secret_permissions]", "# [auth]"),
+        ];
+        // Placeholders the reader replaces, with values of the right shape.
+        let phc = caudal_admin::hash_password("example passphrase").unwrap();
+        let placeholders =
+            [("$argon2id$v=19$m=19456,t=2,p=1$...", phc.as_str()), ("<64 hex characters>", &"ab".repeat(32))];
+        let check = |what: &str, text: &str| {
+            let mut text = text.to_owned();
+            for (placeholder, value) in &placeholders {
+                text = text.replace(placeholder, value);
+            }
+            let cfg: Config = toml::from_str(&text).unwrap_or_else(|e| panic!("{what}: does not parse: {e}"));
+            if let Err(e) = cfg.validate() {
+                // Features compiled out reject their section with a clear
+                // message; a file the example names (the GeoIP database) is
+                // not on this machine.
+                // Not found: os error 2 on Unix; on Windows 2 (file) or 3
+                // (a directory of the path is missing, as `/etc/caudal/`).
+                let missing_file = e.contains("(os error 2)") || (cfg!(windows) && e.contains("(os error 3)"));
+                assert!(e.contains(crate::captions::NOT_BUILT) || missing_file, "{what}: does not validate: {e}");
+            }
+        };
+        check("the file as shipped", EXAMPLE);
+        assert!(blocks.len() > 30, "found only {} example blocks: the splitter broke", blocks.len());
+        for &(a, b) in &blocks {
+            let mut ranges = vec![(a, b)];
+            for (dependent, dependency) in needs {
+                if lines[a..b].iter().any(|l| l.contains(dependent)) {
+                    ranges.push(block_with(dependency));
+                }
+            }
+            check(&format!("lines {}-{} uncommented ({})", a + 1, b, lines[a].trim()), &uncomment(&ranges));
+        }
+    }
 
     #[test]
     fn multicast_entries() {
@@ -2296,6 +2855,18 @@ origins = ["http://origin-a:8080", "https://origin-b"]
     }
 
     #[test]
+    fn rtmps_bind_change_restarts_the_listener() {
+        let a = RtmpSection::default();
+        let b = RtmpSection { tls_bind: Some("0.0.0.0:1936".parse().unwrap()), ..RtmpSection::default() };
+        assert!(a.listener_changed(&b), "turning RTMPS on must restart the listener");
+        let c = RtmpSection {
+            pull: vec![RtmpPullEntry { stream: "x".into(), url: "rtmp://h/a/k".into() }],
+            ..RtmpSection::default()
+        };
+        assert!(!a.listener_changed(&c), "a pull change alone does not");
+    }
+
+    #[test]
     fn http_pulls_are_validated() {
         let ok: Config = toml::from_str(
             "[[http.pull]]\nstream = \"web\"\nurl = \"http://10.0.0.5:8080/stream.ts\"\n\
@@ -2308,6 +2879,26 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"udp://h:1\"\n").contains("http://"));
         assert!(bad("[[http.pull]]\nstream = \"a\"\nurl = \"http://h/live/index.m3u8\"\n").contains("[[hls.pull]]"));
         let twice = "[[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n[[udp.pull]]\nstream = \"a\"\nurl = \"udp://:5000\"\n";
+        assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
+    }
+
+    #[test]
+    fn rtmp_pulls_are_validated() {
+        let ok: Config = toml::from_str(
+            "[rtmp]\n[[rtmp.pull]]\nstream = \"remote\"\nurl = \"rtmp://10.0.0.5/live/cam1\"\n\
+             [[rtmp.pull]]\nstream = \"cdn\"\nurl = \"rtmps://live.example:443/app/KEY\"\n",
+        )
+        .unwrap();
+        ok.validate().unwrap();
+        assert_eq!(ok.rtmp.pull_targets()[1].url, "rtmps://live.example:443/app/KEY");
+        assert!(!ok.rtmp.listener_changed(&RtmpSection::default()), "pulls are not the listener");
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"srt://h:1\"\n").contains("rtmp://"));
+        assert!(bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/\"\n").contains("stream key"));
+        let e = bad("[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h:x/live/SECRET\"\n");
+        assert!(!e.contains("SECRET"), "{e}");
+        let twice = "[[rtmp.pull]]\nstream = \"a\"\nurl = \"rtmp://h/live/k\"\n\
+                     [[http.pull]]\nstream = \"a\"\nurl = \"http://h/x\"\n";
         assert!(bad(twice).contains("pulled twice"), "one pull per stream across protocols");
     }
 
@@ -2360,6 +2951,7 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let h = ok.auth.hook_config().unwrap().unwrap();
         assert_eq!(h.timeout, Duration::from_millis(2000), "short default timeout");
         assert_eq!(h.on_error, caudal_auth::OnError::Deny, "fails closed by default");
+        assert_eq!(h.reply, caudal_auth::ReplyMode::Status, "status codes decide by default");
         assert!(h.publish && h.play);
         assert_eq!((h.allow_cache, h.deny_cache), (Duration::from_secs(30), Duration::from_secs(5)));
         assert!(Config::default().auth.hook_config().unwrap().is_none());
@@ -2375,9 +2967,43 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         assert!(bad("on_error = \"maybe\"\n").contains("on_error"));
         assert!(bad("publish = false\nplay = false\n").contains("both false"));
         assert!(bad("allow_cache_secs = 86400\n").contains("3600"));
+        assert!(bad("reply = \"body\"\n").contains("reply"));
+        let mist: Config = toml::from_str(&format!(
+            "[auth.hook]\nurl = \"https://a/g\"\nsecret = \"{secret}\"\nreply = \"mistserver\"\n"
+        ))
+        .unwrap();
+        assert_eq!(mist.auth.hook_config().unwrap().unwrap().reply, caudal_auth::ReplyMode::MistServer);
         let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
         assert!(err("[auth.hook]\nurl = \"auth.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
         assert!(err("[auth.hook]\nurl = \"https://a/g\"\nsecret = \"hunter2\"\n").contains("whsec_"));
+    }
+
+    #[test]
+    fn auth_rewrite_section() {
+        let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+        let ok: Config =
+            toml::from_str(&format!("[auth.rewrite]\nurl = \"https://route.example/r\"\nsecret = \"{secret}\"\n"))
+                .unwrap();
+        ok.validate().unwrap();
+        let r = ok.auth.rewrite_config().unwrap().unwrap();
+        assert_eq!(r.timeout, Duration::from_millis(2000));
+        assert_eq!(r.on_error, caudal_auth::OnError::Deny, "fails closed by default");
+        assert!(r.publish && r.play);
+        assert_eq!((r.cache, r.deny_cache), (Duration::from_secs(30), Duration::from_secs(5)));
+        assert!(Config::default().auth.rewrite_config().unwrap().is_none());
+        let bad = |extra: &str| {
+            toml::from_str::<Config>(&format!("[auth.rewrite]\nurl = \"https://a/r\"\nsecret = \"{secret}\"\n{extra}"))
+                .unwrap()
+                .validate()
+                .unwrap_err()
+        };
+        assert!(bad("timeout_ms = 50\n").contains("[auth.rewrite] timeout_ms"));
+        assert!(bad("on_error = \"maybe\"\n").contains("on_error"));
+        assert!(bad("publish = false\nplay = false\n").contains("both false"));
+        assert!(bad("cache_secs = 86400\n").contains("3600"));
+        let err = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(err("[auth.rewrite]\nurl = \"route.example\"\nsecret = \"whsec_x\"\n").contains("http(s)"));
+        assert!(err("[auth.rewrite]\nurl = \"https://a/r\"\nsecret = \"hunter2\"\n").contains("whsec_"));
     }
 
     #[test]
@@ -2418,6 +3044,83 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         .validate()
         .unwrap_err();
         assert!(err.contains("one stream per destination"), "{err}");
+    }
+
+    #[test]
+    fn whip_pushes() {
+        let cfg: Config = toml::from_str(
+            "[webrtc]\nudp_bind = \"0.0.0.0:8189\"\n\
+             [[webrtc.push]]\nstream = \"main\"\nurl = \"whip://live.example/whip/main\"\ntoken = \"t0k\"\n\
+             [[webrtc.push]]\nstream = \"main\"\nurl = \"https://cf.example/0123456789abcdef0123/webRTC/publish\"\n\
+             [[push.auto]]\nstreams = [\"cam*\"]\nurl = \"whip+http://10.0.0.7:8080/whip/$stream\"\ntoken = \"x\"\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let t = cfg.webrtc.push_targets();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].token.as_deref(), Some("t0k"));
+        assert_eq!(cfg.push.auto[0].kind().unwrap(), AutoPushKind::Whip);
+        assert!(!format!("{cfg:?}").contains("t0k"), "Debug masks the token");
+
+        // Only the pushes changed: no restart.
+        let mut other = cfg.webrtc.clone();
+        other.push.clear();
+        assert!(!cfg.webrtc.listener_changed(&other));
+        other.threads = 2;
+        assert!(cfg.webrtc.listener_changed(&other));
+
+        let bad = |t: &str| toml::from_str::<Config>(t).unwrap().validate().unwrap_err();
+        assert!(bad("[[webrtc.push]]\nstream = \"a\"\nurl = \"rtmp://h/a/k\"\n").contains("whip://"));
+        assert!(bad("[[webrtc.push]]\nstream = \"a b\"\nurl = \"whip://h/w\"\n").contains("stream name"));
+        assert!(bad("[[webrtc.push]]\nstream = \"a\"\nurl = \"whip://h/w\"\ntoken = \"a b\"\n").contains("token"));
+        assert!(bad("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\ntoken = \"x\"\n").contains("only applies"));
+        assert!(bad("[[push.auto]]\nstreams = [\"a\"]\nurl = \"whip://\"\n").contains("host"));
+    }
+
+    #[test]
+    fn auto_push_schedules_and_conditions() {
+        let cfg: Config = toml::from_str(
+            "[[push.auto]]\nstreams = [\"main\"]\nurl = \"srt://h:1\"\n\
+             start = \"2026-12-24T20:00:00-04:00\"\nstop = \"2026-12-24T23:00:00-04:00\"\n\
+             [[push.auto]]\nstreams = [\"backup\"]\nurl = \"srt://h:2\"\ninhibit = [\"main\", \"cam*\"]\n\
+             enabled = false\ncron = \"0 18 * * MON-FRI\"\ntz = \"America/Puerto_Rico\"\nduration_secs = 3600\n\
+             [[push.auto]]\nstreams = [\"x\"]\nurl = \"srt://h:3\"\nstop = \"2026-12-31T00:00:00Z\"\n\
+             [[push.auto]]\nstreams = [\"y\"]\nurl = \"srt://h:4\"\nstart = \"2026-12-31T00:00:00Z\"\nduration_secs = 60\n",
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let r = &cfg.push.auto;
+        assert!(r[0].enabled && !r[1].enabled, "enabled defaults to true");
+        assert!(r[0].timetable().unwrap().is_some());
+        assert_eq!(r[1].inhibited_by(&["cam2".into()]).map(String::as_str), Some("cam2"));
+        assert!(r[1].inhibited_by(&["backup".into(), "main+720p".into()]).is_none());
+
+        let bad = |rule: &str| {
+            toml::from_str::<Config>(&format!("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\n{rule}"))
+                .unwrap()
+                .validate()
+                .unwrap_err()
+        };
+        assert!(bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T19:00:00Z\"\n").contains("after `start`"));
+        assert!(bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T20:00:00Z\"\n").contains("after `start`"));
+        assert!(bad("start = \"tomorrow\"\n").contains("bad `start`"));
+        assert!(bad("stop = \"2026-12-24 20:00\"\n").contains("bad `stop`"));
+        assert!(bad("cron = \"every day\"\nduration_secs = 60\n").contains("bad `cron`"));
+        assert!(bad("cron = \"0 18 * * *\"\n").contains("needs `duration_secs`"));
+        assert!(
+            bad("cron = \"0 18 * * *\"\nduration_secs = 60\nstart = \"2026-12-24T20:00:00Z\"\n").contains("not both")
+        );
+        assert!(bad("cron = \"0 18 * * *\"\nduration_secs = 60\ntz = \"Mars/Base\"\n").contains("bad `tz`"));
+        assert!(bad("cron = \"0 18 * * *\"\nduration_secs = 0\n").contains("at least 1"));
+        assert!(bad("tz = \"UTC\"\nstart = \"2026-12-24T20:00:00Z\"\n").contains("only applies to `cron`"));
+        assert!(bad("duration_secs = 60\n").contains("needs `start` or `cron`"));
+        assert!(
+            bad("start = \"2026-12-24T20:00:00Z\"\nstop = \"2026-12-24T21:00:00Z\"\nduration_secs = 60\n")
+                .contains("not both")
+        );
+        assert!(bad("inhibit = [\"c*m\"]\n").contains("pattern"));
+        // An unknown key is still refused.
+        assert!(toml::from_str::<Config>("[[push.auto]]\nstreams = [\"a\"]\nurl = \"srt://h:1\"\nwhen = 1\n").is_err());
     }
 
     #[test]
@@ -2481,6 +3184,28 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         let ok: Config = toml::from_str("[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n[auth]\nsecret = \"0123456789abcdef0123456789abcdef\"\nplay = true").unwrap();
         assert!(ok.validate().is_ok());
         assert!(ok.auth.publish, "publish defaults to required once keys exist");
+    }
+
+    #[test]
+    fn rtmps_needs_tls_certificates() {
+        let parse = |t: &str| toml::from_str::<Config>(t).unwrap();
+        assert!(parse("").rtmp.tls_bind.is_none(), "RTMPS is off by default");
+        let no_tls = parse("[rtmp]\ntls_bind = \"0.0.0.0:1936\"").validate().unwrap_err();
+        assert!(no_tls.contains("[tls]"), "{no_tls}");
+        let tls = "[tls]\nbind = \"0.0.0.0:8443\"\ncert = \"c.pem\"\nkey = \"k.pem\"\n";
+        let clash = parse(&format!("{tls}[rtmp]\ntls_bind = \"0.0.0.0:8443\"")).validate().unwrap_err();
+        assert!(clash.contains("differ"), "{clash}");
+        let same = parse(&format!("{tls}[rtmp]\nbind = \"0.0.0.0:1936\"\ntls_bind = \"0.0.0.0:1936\"")).validate();
+        assert!(same.unwrap_err().contains("differ"));
+        let ok = parse(&format!("{tls}[rtmp]\ntls_bind = \"0.0.0.0:1936\""));
+        assert!(ok.validate().is_ok());
+        let (bind, source) = ok.rtmp.tls_source(&ok.tls).unwrap().unwrap();
+        assert_eq!(bind, "0.0.0.0:1936".parse().unwrap());
+        assert!(matches!(source, caudal_tls::CertSource::Files { .. }));
+        let acme = parse(
+            "[tls]\nbind = \"0.0.0.0:443\"\nacme_domains = [\"live.example\"]\n[rtmp]\ntls_bind = \"0.0.0.0:1936\"",
+        );
+        assert!(matches!(acme.rtmp.tls_source(&acme.tls).unwrap().unwrap().1, caudal_tls::CertSource::Acme { .. }));
     }
 
     #[test]

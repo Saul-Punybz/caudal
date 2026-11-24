@@ -64,16 +64,16 @@ async fn send_until_ended(push: &SrtPush, stream: &Arc<Stream>) {
     while !stream.is_ended() {
         match connect(&push.url).await {
             Ok(socket) => {
-                tracing::info!(url = %push.url, stream = %push.stream, "srt push connected");
+                tracing::info!(url = %caudal_core::net::redact_url(&push.url), stream = %push.stream, "srt push connected");
                 let sent_any = run_push_session(socket, stream).await;
                 if stream.is_ended() {
                     return;
                 }
-                tracing::info!(url = %push.url, stream = %push.stream, "srt push connection ended; reconnecting");
+                tracing::info!(url = %caudal_core::net::redact_url(&push.url), stream = %push.stream, "srt push connection ended; reconnecting");
                 backoff = if sent_any { BACKOFF_MIN } else { (backoff * 2).min(BACKOFF_MAX) };
             }
             Err(err) => {
-                tracing::warn!(url = %push.url, stream = %push.stream, %err, "srt push connect failed");
+                tracing::warn!(url = %caudal_core::net::redact_url(&push.url), stream = %push.stream, %err, "srt push connect failed");
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
         }
@@ -123,8 +123,37 @@ async fn run_push_session(socket: SrtSocket, stream: &Arc<Stream>) -> bool {
 /// Parses `srt://host:port[?streamid=&passphrase=&latency=]` and connects
 /// as a caller.
 pub(crate) async fn connect(url: &str) -> Result<SrtSocket, String> {
-    let (addr, opts) = parse_url(url).ok_or_else(|| format!("invalid SRT URL: {url}"))?;
+    check_caller_url(url)?;
+    let (addr, opts) =
+        parse_url(url).ok_or_else(|| format!("invalid SRT URL: {}", caudal_core::net::redact_url(url)))?;
     SrtSocket::connect(addr, opts).await.map_err(|err| err.to_string())
+}
+
+/// Pulls and pushes are SRT callers. `mode=rendezvous` (and `mode=listener`)
+/// in the URL, as ffmpeg and srt-live-transmit spell it, is refused rather
+/// than silently dialled as a caller: `rsrt` implements caller and listener
+/// only, no rendezvous handshake (WAVEAHAND is dropped).
+pub fn check_caller_url(url: &str) -> Result<(), String> {
+    let query = url.split_once('?').map_or("", |(_, q)| q);
+    for kv in query.split('&') {
+        let Some(("mode", value)) = kv.split_once('=') else { continue };
+        match value.to_ascii_lowercase().as_str() {
+            "caller" | "client" => {}
+            "rendezvous" => {
+                return Err(format!(
+                    "{}: SRT rendezvous mode is not supported (the SRT library, rsrt, has caller and listener only)",
+                    caudal_core::net::redact_url(url)
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "{}: SRT mode={other} not supported here; pulls and pushes are callers",
+                    caudal_core::net::redact_url(url)
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_url(url: &str) -> Option<(String, SrtOptions)> {
@@ -186,6 +215,15 @@ mod tests {
     fn rejects_non_srt_scheme() {
         assert!(parse_url("http://example.com:9000").is_none());
         assert!(parse_url("srt://").is_none());
+    }
+
+    #[test]
+    fn refuses_rendezvous_and_listener_modes() {
+        assert!(check_caller_url("srt://h:9000?streamid=x").is_ok());
+        assert!(check_caller_url("srt://h:9000?mode=caller&latency=200").is_ok());
+        let err = check_caller_url("srt://h:9000?mode=rendezvous").unwrap_err();
+        assert!(err.contains("rendezvous"), "{err}");
+        assert!(check_caller_url("srt://h:9000?latency=1&mode=listener").is_err());
     }
 
     #[test]

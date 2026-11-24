@@ -74,6 +74,9 @@ async fn reload_config(State(state): State<ReloadState>) -> Response {
 struct EntryBody {
     stream: String,
     url: String,
+    /// `whip://` pushes only: the endpoint's bearer token.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,8 +143,57 @@ async fn list_pushes(State(state): State<ReloadState>) -> Json<Vec<config_edit::
     Json(rows)
 }
 
+/// One row of `GET /api/v1/stream-keys`. The key itself is never sent.
+#[derive(Debug, Serialize)]
+struct StreamKeyJson {
+    stream: String,
+    key: &'static str,
+    publish: bool,
+    play: bool,
+    /// `"config"` (`[[auth.stream_keys]]`) or `"file"` (`stream_keys_file`).
+    source: &'static str,
+}
+
+/// `GET /api/v1/stream-keys`: which streams have keys and what each key
+/// allows, keys masked. Keys are managed in the config or the keys file.
+async fn list_stream_keys(State(state): State<ReloadState>) -> Json<Vec<StreamKeyJson>> {
+    let auth = current(&state).auth;
+    let row = |source| {
+        move |k: &crate::config::StreamKeySection| StreamKeyJson {
+            stream: k.stream.clone(),
+            key: "****",
+            publish: k.publish,
+            play: k.play,
+            source,
+        }
+    };
+    let rows =
+        auth.stream_keys.iter().map(row("config")).chain(auth.file_stream_keys.iter().map(row("file"))).collect();
+    Json(rows)
+}
+
 async fn list_auto_pushes(State(state): State<ReloadState>) -> Json<Vec<crate::auto_push::RuleJson>> {
     Json(state.supervisor.auto_pushes())
+}
+
+/// `POST /api/v1/auto-pushes/{index}/enable` or `/disable`: a runtime
+/// override of the rule's `enabled`, not written to the file. Kept across
+/// reloads that leave the rule unchanged; lost on restart or when the rule
+/// is edited. `200` with the rule as `GET` shows it, `404` for no such rule.
+async fn toggle_auto_push(State(state): State<ReloadState>, Path((index, action)): Path<(usize, String)>) -> Response {
+    let enabled = match action.as_str() {
+        "enable" => true,
+        "disable" => false,
+        _ => return error(StatusCode::NOT_FOUND, "expected /enable or /disable"),
+    };
+    if !state.supervisor.set_auto_push_enabled(index, enabled) {
+        return error(StatusCode::NOT_FOUND, format!("no [[push.auto]] rule {index}"));
+    }
+    tracing::info!(rule = index, enabled, "auto push rule toggled over the api");
+    match state.supervisor.auto_pushes().into_iter().find(|r| r.index == index) {
+        Some(rule) => (StatusCode::OK, Json(rule)).into_response(),
+        None => error(StatusCode::NOT_FOUND, format!("no [[push.auto]] rule {index}")),
+    }
 }
 
 async fn add_pull(State(state): State<ReloadState>, Json(b): Json<EntryBody>) -> Response {
@@ -157,7 +209,7 @@ async fn add_push(State(state): State<ReloadState>, Json(b): Json<EntryBody>) ->
         Ok(k) => k,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };
-    edit_config(&state, "add push", |t| config_edit::add(t, kind, &b.stream, &b.url)).await
+    edit_config(&state, "add push", |t| config_edit::add_with(t, kind, &b.stream, &b.url, b.token.as_deref())).await
 }
 
 /// Removes from every kind in `kinds`; `NotFound` only when none matched.
@@ -204,6 +256,8 @@ pub fn router(state: ReloadState) -> Router {
         .route("/api/v1/pushes", get(list_pushes).post(add_push))
         .route("/api/v1/pushes/{stream}", delete(remove_push))
         .route("/api/v1/auto-pushes", get(list_auto_pushes))
+        .route("/api/v1/stream-keys", get(list_stream_keys))
+        .route("/api/v1/auto-pushes/{index}/{action}", post(toggle_auto_push))
         .with_state(state)
 }
 
@@ -361,6 +415,92 @@ mod tests {
         assert!(text.starts_with("# production box\n"));
     }
 
+    /// Stream keys from the config and from `stream_keys_file`: listed
+    /// masked, and a changed keys file applies on reload with no restart.
+    #[tokio::test]
+    async fn stream_keys_list_masked_and_reload_from_their_file() {
+        use caudal_core::Access;
+        let dir = tempfile::tempdir().unwrap();
+        let keys = dir.path().join("keys.toml");
+        std::fs::write(&keys, "[[stream_keys]]\nkey = \"file-key-aaaaaaaaaaaa\"\nstream = \"backup\"\n").unwrap();
+        let path = dir.path().join("caudal.toml");
+        let text = format!(
+            "[rtmp]\nbind = \"127.0.0.1:0\"\n[srt]\nbind = \"127.0.0.1:0\"\n\
+             [auth]\nstream_keys_file = {:?}\n[[auth.stream_keys]]\nkey = \"config-key-bbbbbbbbbb\"\nstream = \"main\"\nplay = true\n",
+            keys.display().to_string()
+        );
+        std::fs::write(&path, text).unwrap();
+        let registry = caudal_core::Registry::new();
+        let started = Supervisor::start(&crate::config::load(&path).unwrap(), registry.clone());
+        let state = ReloadState { supervisor: started.supervisor, config_path: Some(path), edits: Default::default() };
+        let app = router(state.clone());
+
+        let (st, list) = call(&app, "GET", "/api/v1/stream-keys", None).await;
+        assert_eq!(st, StatusCode::OK);
+        let raw = list.to_string();
+        assert!(!raw.contains("config-key") && !raw.contains("file-key"), "keys never listed: {raw}");
+        assert_eq!(list[0]["stream"], "main");
+        assert_eq!((list[0]["publish"].as_bool(), list[0]["play"].as_bool()), (Some(true), Some(true)));
+        assert_eq!((list[1]["stream"].as_str(), list[1]["source"].as_str()), (Some("backup"), Some("file")));
+        assert_eq!(list[1]["key"], "****");
+
+        let resolve = |k: &'static str| {
+            let registry = registry.clone();
+            async move { registry.resolve(Access::Publish, "rtmp", k, None, None).await }
+        };
+        assert_eq!(resolve("file-key-aaaaaaaaaaaa").await, Ok("backup".into()));
+        assert_eq!(resolve("config-key-bbbbbbbbbb").await, Ok("main".into()));
+
+        // Rotate the file's key; only the file changed.
+        std::fs::write(&keys, "[[stream_keys]]\nkey = \"file-key-cccccccccccc\"\nstream = \"backup\"\n").unwrap();
+        let report = reload_from_disk(&state).unwrap();
+        assert!(report.applied.iter().any(|a| a == "auth"), "{:?}", report.applied);
+        assert_eq!(resolve("file-key-cccccccccccc").await, Ok("backup".into()));
+        assert_eq!(
+            resolve("file-key-aaaaaaaaaaaa").await,
+            Ok("file-key-aaaaaaaaaaaa".into()),
+            "old key is a plain name"
+        );
+
+        // A broken keys file is refused and the running keys stay.
+        std::fs::write(&keys, "[[stream_keys]]\nkey = \"short\"\nstream = \"backup\"\n").unwrap();
+        let err = reload_from_disk(&state).unwrap_err();
+        assert!(err.contains("backup") && !err.contains("short\""), "{err}");
+        assert_eq!(resolve("file-key-cccccccccccc").await, Ok("backup".into()));
+    }
+
+    /// A WHIP push over the API: written to `[[webrtc.push]]` with its
+    /// token, applied live (not a `[webrtc]` restart), listed masked.
+    #[tokio::test]
+    async fn whip_push_over_the_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("caudal.toml");
+        std::fs::write(&path, "[rtmp]\nbind = \"127.0.0.1:0\"\n[srt]\nbind = \"127.0.0.1:0\"\n").unwrap();
+        let cfg = crate::config::load(&path).unwrap();
+        let started = Supervisor::start(&cfg, caudal_core::Registry::new());
+        let supervisor = started.supervisor.clone();
+        let app = router(ReloadState {
+            supervisor: started.supervisor,
+            config_path: Some(path.clone()),
+            edits: Default::default(),
+        });
+        let add = r#"{"stream":"main","url":"whip://cf.example/0123456789abcdef0123/webRTC/publish","token":"s3cr3t"}"#;
+        let (st, body) = call(&app, "POST", "/api/v1/pushes", Some(add)).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert!(body["applied"].as_array().unwrap().iter().any(|a| a == "webrtc.push"), "{body}");
+        assert!(body["requires_restart"].as_array().unwrap().is_empty(), "{body}");
+        assert_eq!(supervisor.current_config().webrtc.push[0].token.as_deref(), Some("s3cr3t"));
+        let (_, list) = call(&app, "GET", "/api/v1/pushes", None).await;
+        assert_eq!(
+            list,
+            serde_json::json!([{"stream": "main", "url": "whip://cf.example/****/webRTC/publish", "section": "[[webrtc.push]]"}])
+        );
+        let tok = r#"{"stream":"main","url":"srt://127.0.0.1:9","token":"x"}"#;
+        assert_eq!(call(&app, "POST", "/api/v1/pushes", Some(tok)).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(call(&app, "DELETE", "/api/v1/pushes/main", None).await.0, StatusCode::OK);
+        assert!(supervisor.current_config().webrtc.push.is_empty());
+    }
+
     /// `[[push.auto]]` arrives by reload, shows in `GET /api/v1/pushes` in
     /// the same row shape (masked), and `GET /api/v1/auto-pushes` lists the
     /// push it runs for a live matching stream.
@@ -397,6 +537,21 @@ mod tests {
         assert_eq!(st, StatusCode::OK);
         assert_eq!(rules[0]["kind"], "rtmp");
         assert_eq!(rules[0]["active"], serde_json::json!([{"stream": "cam1", "url": "rtmp://127.0.0.1:9/live/****"}]));
+        assert_eq!((rules[0]["index"].clone(), rules[0]["enabled"].clone()), (0.into(), true.into()));
+        assert!(rules[0]["idle"].is_null() && rules[0]["schedule"].is_null());
+
+        // Runtime toggle: the push stops and the rule says why; the file
+        // is not touched.
+        let file = std::fs::read_to_string(&path).unwrap();
+        let (st, rule) = call(&app, "POST", "/api/v1/auto-pushes/0/disable", None).await;
+        assert_eq!(st, StatusCode::OK, "{rule}");
+        assert_eq!(rule["idle"]["reason"], "disabled");
+        assert_eq!(rule["active"], serde_json::json!([]));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), file);
+        let (_, rule) = call(&app, "POST", "/api/v1/auto-pushes/0/enable", None).await;
+        assert_eq!((rule["enabled"].clone(), rule["active"].as_array().unwrap().len()), (true.into(), 1));
+        assert_eq!(call(&app, "POST", "/api/v1/auto-pushes/7/enable", None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(call(&app, "POST", "/api/v1/auto-pushes/0/pause", None).await.0, StatusCode::NOT_FOUND);
 
         std::fs::write(&path, base).unwrap();
         let (st, _) = call(&app, "POST", "/api/v1/config/reload", None).await;

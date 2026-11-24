@@ -101,12 +101,18 @@ async fn handle_publish(
     name: &str,
     token: Option<&str>,
 ) {
-    if let Err(denied) =
-        registry.authorize(caudal_core::Access::Publish, name, token, Some(std::net::IpAddr::V4(*peer.ip()))).await
+    let name = match registry
+        .resolve(caudal_core::Access::Publish, "srt", name, token, Some(std::net::IpAddr::V4(*peer.ip())))
+        .await
     {
-        tracing::info!(%peer, stream = %name, reason = ?denied, "srt publish rejected");
-        return;
-    }
+        Ok(n) => n,
+        Err(denied) => {
+            let stream = registry.loggable(name);
+            tracing::info!(%peer, %stream, reason = ?denied, "srt publish rejected");
+            return;
+        }
+    };
+    let name = name.as_str();
 
     let publisher = match registry.publish(name, buffer) {
         Ok(p) => p,

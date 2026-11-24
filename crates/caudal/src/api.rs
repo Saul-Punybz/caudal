@@ -39,6 +39,9 @@ pub struct AppState {
     captions: std::sync::OnceLock<caudal_captions::Captions>,
     /// Set once on a cluster edge; `/metrics` appends its pull metrics.
     edge: std::sync::OnceLock<caudal_cluster::Edge>,
+    /// Set once on a cluster origin with `[cluster.balance]`; `/metrics`
+    /// appends `caudal_cluster_balance_*`.
+    balancer: std::sync::OnceLock<Arc<caudal_cluster::Balancer>>,
     /// Set once at startup; `/metrics` appends `caudal_multicast_*`.
     multicast: std::sync::OnceLock<caudal_multicast::MulticastHandle>,
     /// Set once at startup: `/api/v1/omt/sources`, the `omt` fields of the
@@ -62,6 +65,7 @@ impl AppState {
             #[cfg(feature = "captions")]
             captions: std::sync::OnceLock::new(),
             edge: std::sync::OnceLock::new(),
+            balancer: std::sync::OnceLock::new(),
             multicast: std::sync::OnceLock::new(),
             omt: std::sync::OnceLock::new(),
             thumbnails: Default::default(),
@@ -108,6 +112,10 @@ impl AppState {
 
     pub fn set_edge(&self, edge: caudal_cluster::Edge) {
         let _ = self.edge.set(edge);
+    }
+
+    pub fn set_balancer(&self, balancer: Arc<caudal_cluster::Balancer>) {
+        let _ = self.balancer.set(balancer);
     }
 }
 
@@ -563,6 +571,9 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> impl IntoRespon
     }
     if let Some(edge) = state.edge.get() {
         edge.render_metrics(&mut body);
+    }
+    if let Some(b) = state.balancer.get() {
+        b.render_metrics(&mut body);
     }
     if let Some(stats) = state.hook_stats.get() {
         metrics::render_auth_hook(&mut body, &stats.gate);

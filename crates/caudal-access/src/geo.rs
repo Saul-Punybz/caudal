@@ -29,6 +29,15 @@ impl GeoDb {
         let record: maxminddb::geoip2::Country = result.decode().ok()??;
         record.country.iso_code.map(str::to_ascii_uppercase)
     }
+
+    /// Approximate latitude and longitude (degrees) for `ip`. Only City
+    /// databases (GeoLite2-City, DB-IP City) carry coordinates; a Country
+    /// database answers `None` for every address.
+    pub(crate) fn location(&self, ip: IpAddr) -> Option<(f64, f64)> {
+        let result = self.reader.lookup(ip).ok()?;
+        let record: maxminddb::geoip2::City = result.decode().ok()??;
+        Some((record.location.latitude?, record.location.longitude?))
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +79,45 @@ mod tests {
     fn unknown_address_has_no_country() {
         let db = GeoDb::from_bytes(tiny_country_db()).unwrap();
         assert_eq!(db.country("1.1.1.1".parse().unwrap()), None);
+    }
+
+    #[test]
+    fn location_needs_a_city_database() {
+        use maxminddb_writer::Database;
+        use maxminddb_writer::paths::IpAddrWithMask;
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct Rec<'a> {
+            country: RecCountry<'a>,
+            location: Loc,
+        }
+        #[derive(Serialize)]
+        struct RecCountry<'a> {
+            iso_code: &'a str,
+        }
+        #[derive(Serialize)]
+        struct Loc {
+            latitude: f64,
+            longitude: f64,
+        }
+        let mut db = Database::default();
+        db.metadata.binary_format_major_version = 2;
+        db.metadata.database_type = "GeoIP2-City-Test".to_owned();
+        let sj = db
+            .insert_value(Rec {
+                country: RecCountry { iso_code: "PR" },
+                location: Loc { latitude: 18.4655, longitude: -66.1057 },
+            })
+            .unwrap();
+        db.insert_node("24.0.0.0/8".parse::<IpAddrWithMask>().unwrap(), sj);
+        let city = GeoDb::from_bytes(db.write_to(Vec::new()).unwrap()).unwrap();
+        assert_eq!(city.location("24.1.2.3".parse().unwrap()), Some((18.4655, -66.1057)));
+        assert_eq!(city.country("24.1.2.3".parse().unwrap()), Some("PR".to_owned()));
+        assert_eq!(city.location("1.1.1.1".parse().unwrap()), None);
+
+        let country_only = GeoDb::from_bytes(tiny_country_db()).unwrap();
+        assert_eq!(country_only.location("24.1.2.3".parse().unwrap()), None);
     }
 
     #[test]

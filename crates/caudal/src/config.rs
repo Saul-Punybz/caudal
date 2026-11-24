@@ -371,7 +371,8 @@ pub struct Config {
 /// `docs/research/CLUSTER.md`). Origins take publishers and serve their
 /// streams to edges over MoQ; edges pull a stream from the first origin
 /// that has it when their first viewer asks for it.
-#[derive(Clone, Deserialize, PartialEq, Eq)]
+// Not `Eq`: `balance` holds f64s. `Debug` by hand (below): it never prints the secret.
+#[derive(Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     pub role: ClusterRole,
@@ -390,6 +391,148 @@ pub struct ClusterSection {
     /// Edge only: end a pulled stream when no origin has had it this long.
     #[serde(default = "default_cluster_source_secs")]
     pub source_timeout_secs: u64,
+    /// Weighted load balancing (MistServer's `MistUtilLoad`). Absent: no
+    /// load reports, no balancer.
+    #[serde(default)]
+    pub balance: Option<BalanceSection>,
+}
+
+/// `[cluster.balance]`: this node's load reports and, on an origin, how
+/// the balancer scores nodes. See `caudal_cluster::balance`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct BalanceSection {
+    /// Base URL viewers sent to this node use (`https://edge-1.example.com`).
+    /// Without it the node reports its load but is never chosen.
+    pub public_url: Option<String>,
+    /// `false`: report, but never send viewers here (an origin kept for
+    /// publishers and edges only).
+    pub accept_viewers: bool,
+    /// Outbound capacity, Mbit/s. A node at or over it is not chosen.
+    pub capacity_mbps: u64,
+    /// This node's position, degrees. Set both or neither.
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// ISO 3166-1 alpha-2, used for geography when coordinates are missing.
+    pub country: Option<String>,
+    pub report_interval_secs: f64,
+    /// Origin: a node whose last report is older than this is not chosen.
+    pub stale_after_secs: f64,
+    /// Origin: hard limits; a node over either is not chosen.
+    pub max_cpu_percent: f64,
+    pub max_ram_percent: f64,
+    /// Origin: score weights (MistServer's defaults).
+    pub weights: WeightsSection,
+}
+
+impl Default for BalanceSection {
+    fn default() -> Self {
+        Self {
+            public_url: None,
+            accept_viewers: true,
+            capacity_mbps: 1000,
+            latitude: None,
+            longitude: None,
+            country: None,
+            report_interval_secs: 2.0,
+            stale_after_secs: 6.0,
+            max_cpu_percent: 95.0,
+            max_ram_percent: 95.0,
+            weights: WeightsSection::default(),
+        }
+    }
+}
+
+/// `[cluster.balance.weights]`; defaults from `util_load.cpp:20-24`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct WeightsSection {
+    pub cpu: u64,
+    pub ram: u64,
+    pub bw: u64,
+    pub geo: u64,
+    pub bonus: u64,
+}
+
+impl Default for WeightsSection {
+    fn default() -> Self {
+        let w = caudal_cluster::Weights::default();
+        Self { cpu: w.cpu, ram: w.ram, bw: w.bw, geo: w.geo, bonus: w.bonus }
+    }
+}
+
+impl BalanceSection {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(u) = &self.public_url {
+            let p: url::Url = u.parse().map_err(|e| format!("[cluster.balance] public_url {u:?}: {e}"))?;
+            if !matches!(p.scheme(), "http" | "https") || p.host_str().is_none() {
+                return Err(format!("[cluster.balance] public_url {u:?}: expected an http(s)://host[:port] URL"));
+            }
+        }
+        match (self.latitude, self.longitude) {
+            (Some(lat), Some(lon)) => {
+                if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                    return Err("[cluster.balance] latitude must be -90..90 and longitude -180..180".into());
+                }
+            }
+            (None, None) => {}
+            _ => return Err("[cluster.balance] set both latitude and longitude, or neither".into()),
+        }
+        if let Some(c) = &self.country
+            && (c.len() != 2 || !c.bytes().all(|b| b.is_ascii_alphabetic()))
+        {
+            return Err(format!("[cluster.balance] country {c:?}: expected a two-letter ISO 3166-1 code"));
+        }
+        if !(0.1..=60.0).contains(&self.report_interval_secs) {
+            return Err("[cluster.balance] report_interval_secs must be 0.1..60".into());
+        }
+        if self.stale_after_secs.is_nan() || self.stale_after_secs <= self.report_interval_secs {
+            return Err("[cluster.balance] stale_after_secs must be larger than report_interval_secs".into());
+        }
+        for (k, v) in [("max_cpu_percent", self.max_cpu_percent), ("max_ram_percent", self.max_ram_percent)] {
+            if v.is_nan() || v <= 0.0 || v > 100.0 {
+                return Err(format!("[cluster.balance] {k} must be in (0, 100]"));
+            }
+        }
+        if self.capacity_mbps == 0 {
+            return Err("[cluster.balance] capacity_mbps must be at least 1".into());
+        }
+        Ok(())
+    }
+
+    /// The origin's scoring settings.
+    pub fn balance_config(&self) -> caudal_cluster::BalanceConfig {
+        let w = self.weights;
+        caudal_cluster::BalanceConfig {
+            weights: caudal_cluster::Weights { cpu: w.cpu, ram: w.ram, bw: w.bw, geo: w.geo, bonus: w.bonus },
+            max_cpu_percent: self.max_cpu_percent,
+            max_ram_percent: self.max_ram_percent,
+            stale_after: Duration::from_secs_f64(self.stale_after_secs),
+        }
+    }
+
+    /// This node's report settings; `origins` is empty on an origin.
+    pub fn reporter_config(
+        &self,
+        node_id: String,
+        secret: caudal_cluster::Secret,
+        origins: Vec<url::Url>,
+    ) -> caudal_cluster::ReporterConfig {
+        caudal_cluster::ReporterConfig {
+            node_id,
+            secret,
+            origins,
+            interval: Duration::from_secs_f64(self.report_interval_secs),
+            public_url: self.public_url.clone(),
+            accepts_viewers: self.accept_viewers,
+            capacity_bps: self.capacity_mbps.saturating_mul(1_000_000),
+            location: match (self.latitude, self.longitude) {
+                (Some(lat), Some(lon)) => Some(caudal_cluster::GeoPoint { lat, lon }),
+                _ => None,
+            },
+            country: self.country.as_ref().map(|c| c.to_ascii_uppercase()),
+        }
+    }
 }
 
 /// Hand-written so `{:?}` never prints `secret` in full.
@@ -402,6 +545,7 @@ impl std::fmt::Debug for ClusterSection {
             .field("origins", &self.origins)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("source_timeout_secs", &self.source_timeout_secs)
+            .field("balance", &self.balance)
             .finish()
     }
 }
@@ -2533,6 +2677,9 @@ impl Config {
         self.captions.validate(self.hls.segment_ms)?;
         if let Some(c) = &self.cluster {
             c.edge_config(self.buffer.to_buffer_config())?;
+            if let Some(b) = &c.balance {
+                b.validate()?;
+            }
             if c.role == ClusterRole::Origin && !self.moq.enabled {
                 return Err(r#"[cluster] role = "origin" needs [moq] enabled (edges pull over MoQ)"#.into());
             }
@@ -2895,6 +3042,7 @@ mod tests {
             ("# tls_bind = \"0.0.0.0:1936\"", "# [tls]"),
             ("# [[access.rules]]", "# [access]"),
             ("# [auth.secret_permissions]", "# [auth]"),
+            ("# [cluster.balance]", "# role = \"origin\""),
         ];
         // Placeholders the reader replaces, with values of the right shape.
         let phc = caudal_admin::hash_password("example passphrase").unwrap();
@@ -3197,6 +3345,45 @@ origins = ["http://origin-a:8080", "https://origin-b"]
         assert!(bad(&format!("{origin}origins = [\"http://a\"]\n")).contains("edge"));
         assert!(bad(&format!("[moq]\nenabled = false\n\n{origin}")).contains("[moq]"));
         assert!(toml::from_str::<Config>("[cluster]\nrole = \"relay\"\nsecret = \"x\"\n").is_err());
+    }
+
+    #[test]
+    fn cluster_balance_section() {
+        let base = "[cluster]\nrole = \"origin\"\nnode_id = \"o1\"\nsecret = \"0123456789abcdef\"\n";
+        let cfg: Config = toml::from_str(base).unwrap();
+        assert!(cfg.cluster.as_ref().unwrap().balance.is_none(), "no balancing unless asked");
+
+        let full = format!(
+            "{base}[cluster.balance]\npublic_url = \"https://o1.example\"\ncapacity_mbps = 10000\n\
+             latitude = 18.4655\nlongitude = -66.1057\ncountry = \"pr\"\n\
+             [cluster.balance.weights]\ncpu = 100\n"
+        );
+        let cfg: Config = toml::from_str(&full).unwrap();
+        cfg.validate().unwrap();
+        let b = cfg.cluster.as_ref().unwrap().balance.as_ref().unwrap();
+        let bc = b.balance_config();
+        // Unset weights keep MistServer's defaults.
+        assert_eq!(bc.weights, caudal_cluster::Weights { cpu: 100, ..caudal_cluster::Weights::default() });
+        assert_eq!(bc.stale_after, Duration::from_secs(6));
+        let secret = caudal_cluster::Secret::new("0123456789abcdef").unwrap();
+        let rc = b.reporter_config("o1".into(), secret, vec![]);
+        assert_eq!(rc.capacity_bps, 10_000_000_000);
+        assert_eq!(rc.country.as_deref(), Some("PR"));
+        assert_eq!(rc.location, Some(caudal_cluster::GeoPoint { lat: 18.4655, lon: -66.1057 }));
+        assert_eq!(rc.interval, Duration::from_secs(2));
+        assert!(rc.accepts_viewers);
+
+        let bad = |extra: &str| {
+            toml::from_str::<Config>(&format!("{base}[cluster.balance]\n{extra}\n")).unwrap().validate().unwrap_err()
+        };
+        assert!(bad("latitude = 10.0").contains("both"));
+        assert!(bad("latitude = 100.0\nlongitude = 0.0").contains("-90"));
+        assert!(bad("public_url = \"rtmp://x\"").contains("http"));
+        assert!(bad("country = \"PRI\"").contains("two-letter"));
+        assert!(bad("stale_after_secs = 1.0").contains("larger"));
+        assert!(bad("max_cpu_percent = 0.0").contains("max_cpu_percent"));
+        assert!(bad("capacity_mbps = 0").contains("capacity"));
+        assert!(toml::from_str::<Config>(&format!("{base}[cluster.balance]\nweight_cpu = 1\n")).is_err());
     }
 
     #[test]

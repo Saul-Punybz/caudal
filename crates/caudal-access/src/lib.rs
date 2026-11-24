@@ -81,6 +81,27 @@ struct State {
     geo: Option<Arc<geo::GeoDb>>,
 }
 
+/// A GeoIP database opened on its own, for code outside the access rules
+/// that needs a viewer's location (the cluster balancer). Same file format
+/// as `[access] geoip_db`.
+pub struct GeoIp(geo::GeoDb);
+
+impl GeoIp {
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        geo::GeoDb::open(path).map(Self)
+    }
+
+    /// Upper-case ISO 3166-1 alpha-2 code, when the database knows `ip`.
+    pub fn country(&self, ip: IpAddr) -> Option<String> {
+        self.0.country(ip)
+    }
+
+    /// `(latitude, longitude)` in degrees; City databases only.
+    pub fn location(&self, ip: IpAddr) -> Option<(f64, f64)> {
+        self.0.location(ip)
+    }
+}
+
 /// Why a request was refused: a low-cardinality `reason` for the
 /// `caudal_access_denied_total{stream,reason}` counter, plus a
 /// human-readable `detail` for the log line.

@@ -128,10 +128,13 @@ pub struct EntryJson {
 /// path segment, as `caudal-restream` shows it), SRT `passphrase` /
 /// `streamid` values, the password of an RTSP camera's `user:pass@`, and
 /// for a WHIP URL its user info, query values and any path segment long
-/// enough to be a key (see `caudal_webrtc::redact_whip_url`).
+/// enough to be a key (see `caudal_webrtc::redact_whip_url`), and for an
+/// HTTP(S) pull (`[[http.pull]]`, `[[hls.pull]]`) its password and query
+/// values (a CDN's signed token).
 pub fn redact(url: &str) -> String {
     match url.split_once("://") {
         Some(("whip" | "whip+http", _)) => caudal_webrtc::redact_whip_url(url),
+        Some(("http" | "https", _)) => caudal_core::net::redact_url(url),
         Some(("rtmp" | "rtmps", rest)) => match rest.rsplit_once('/') {
             Some((head, key)) if !key.is_empty() && head.contains('/') => {
                 format!("{}://{head}/****", url.split_once("://").unwrap().0)
@@ -368,6 +371,11 @@ mod tests {
         assert_eq!(redact("srt://h:9000"), "srt://h:9000");
         assert_eq!(redact("rtsp://admin:s3cret@10.0.0.5:554/live"), "rtsp://admin:****@10.0.0.5:554/live");
         assert_eq!(redact("rtsp://10.0.0.5/live"), "rtsp://10.0.0.5/live");
+        assert_eq!(
+            redact("https://cdn.example/live/index.m3u8?token=SIGNED&exp=9"),
+            "https://cdn.example/live/index.m3u8?token=****&exp=****"
+        );
+        assert_eq!(redact("http://u:pw@10.0.0.5:8080/stream.ts"), "http://u:****@10.0.0.5:8080/stream.ts");
         assert_eq!(
             redact("whip://customer-a.cloudflarestream.com/0123456789abcdef0123456789abcdef/webRTC/publish"),
             "whip://customer-a.cloudflarestream.com/****/webRTC/publish"

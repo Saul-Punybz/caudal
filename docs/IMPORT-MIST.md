@@ -58,7 +58,7 @@ protocol.
 | `srt://:port`, `srt://0.0.0.0:port`, `mode=listener`, `mode=rendezvous` | not imported: Caudal's SRT listener is the shared `[srt] bind` (publish with streamid `publish/<stream>`), and it has no rendezvous |
 | `tsudp://group:port`, `tsudp://:port`, `udp://...` | `[[udp.pull]]` as `udp://...`; a hostname instead of an IP, or a second unicast pull on one port, is reported |
 | `http-ts://...`, `https-ts://...`, `http(s)://....ts` | `[[http.pull]]` |
-| `http(s)://....m3u8`, `http-hls://...` | `[[hls.pull]]` (MPEG-TS segments) |
+| `http(s)://....m3u8`, `http-hls://...` | `[[hls.pull]]` (MPEG-TS or fMP4/CMAF segments) |
 | `rtmp://`, `rtmps://` | `[[rtmp.pull]]` |
 | `rtsp://`, `rtsps://` | `[[rtsp.pull]]` |
 | a local file or folder | `[[channel]]` (a looping 24/7 stream, not on-demand VoD) |

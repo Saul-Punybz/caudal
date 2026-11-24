@@ -190,7 +190,7 @@ fn apply_auth(
         let url = cfg.url.clone();
         match caudal_auth::GateHook::new(cfg, hook_stats.gate.clone()) {
             Ok(h) => {
-                tracing::info!(%url, "auth hook enabled");
+                tracing::info!(url = %caudal_core::net::redact_url(&url), "auth hook enabled");
                 Arc::new(h)
             }
             // Validated already; a failure here is an HTTP client that would
@@ -207,7 +207,7 @@ fn apply_auth(
             let (url, publish, play) = (cfg.url.clone(), cfg.publish, cfg.play);
             let hook = match caudal_auth::RewriteHook::new(cfg, hook_stats.rewrite.clone()) {
                 Ok(h) => {
-                    tracing::info!(%url, publish, play, "rewrite hook enabled");
+                    tracing::info!(url = %caudal_core::net::redact_url(&url), publish, play, "rewrite hook enabled");
                     h
                 }
                 Err(e) => {
